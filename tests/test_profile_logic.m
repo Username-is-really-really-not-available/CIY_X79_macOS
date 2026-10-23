@@ -298,6 +298,41 @@ static void test_fallback_profile_validation(void) {
     assert([resolvedFallbackId isEqualToString:@"p1"]);
 }
 
+static void test_malformed_json_slots_ignored(void) {
+    NSDictionary *malformedSlots = @{
+        @"-1": @"#FF0000",
+        @"99999": @"#00FF00",
+        @"125": @"#0000FF", // 125 + 1 = 126 (>= CIY_LED_COUNT)
+        @"invalid_key": @"#FFFFFF",
+        @"14": @"#FF5500", // Gültig (Taste W)
+        @"15": @"invalid_color" // Ungültige Farbe
+    };
+
+    NSMutableDictionary<NSString *, NSString *> *sanitized = [NSMutableDictionary dictionary];
+    for (id key in malformedSlots) {
+        NSString *keyStr = [NSString stringWithFormat:@"%@", key];
+        NSScanner *scanner = [NSScanner scannerWithString:keyStr];
+        int slot = -1;
+        if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+            NSString *hex = [NSString stringWithFormat:@"%@", malformedSlots[key]];
+            if ([hex hasPrefix:@"#"] && hex.length == 7) {
+                sanitized[@(slot).stringValue] = hex;
+            }
+        }
+    }
+
+    assert(sanitized.count == 1);
+    assert([sanitized[@"14"] isEqualToString:@"#FF5500"]);
+
+    // Test mit Backend-Pufferübertragung: Darf niemals crashen
+    NSMutableDictionary<NSNumber *, NSColor *> *keyColors = [NSMutableDictionary dictionary];
+    keyColors[@(-999)] = [NSColor redColor];
+    keyColors[@(9999)] = [NSColor blueColor];
+    keyColors[@(14)] = [NSColor redColor];
+    BOOL ok = [[KeyboardBackend shared] sendKeyColors:keyColors brightness:5 defaultColor:nil];
+    (void)ok;
+}
+
 int main(void) {
     @autoreleasepool {
         test_hex_conversion();
@@ -311,6 +346,7 @@ int main(void) {
         test_menu_item_titles();
         test_app_binding_deduplication();
         test_fallback_profile_validation();
+        test_malformed_json_slots_ignored();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

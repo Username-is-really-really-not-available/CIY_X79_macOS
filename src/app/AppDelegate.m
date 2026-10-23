@@ -765,9 +765,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     NSMutableDictionary<NSNumber *, NSColor *> *keyColors = [NSMutableDictionary dictionaryWithCapacity:slots.count];
     for (NSString *slotStr in slots) {
-        int slot = [slotStr intValue];
-        NSString *hex = slots[slotStr];
-        keyColors[@(slot)] = ColorFromHex(hex);
+        NSScanner *scanner = [NSScanner scannerWithString:slotStr];
+        int slot = -1;
+        // Strikt gegen Out-of-Bounds absichern: Slot muss eine Ganzzahl >= 0 und Slot + 1 < CIY_LED_COUNT sein
+        if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+            NSString *hex = slots[slotStr];
+            keyColors[@(slot)] = ColorFromHex(hex);
+        }
     }
     [_keyboardView applyKeyColors:keyColors];
     if (self->_colorWell && self->_currentSelectedSlot >= 0) {
@@ -1205,7 +1209,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                         }
                         for (id slotKey in slots) {
                             NSString *keyStr = [NSString stringWithFormat:@"%@", slotKey];
-                            fullSlots[keyStr] = [NSString stringWithFormat:@"%@", slots[slotKey]];
+                            NSScanner *scanner = [NSScanner scannerWithString:keyStr];
+                            int slot = -1;
+                            // Strikte Validierung: Muss echte Zahl sein und im Bereich 0..124 liegen
+                            if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+                                NSString *hex = [NSString stringWithFormat:@"%@", slots[slotKey]];
+                                if ([hex hasPrefix:@"#"] && hex.length == 7) {
+                                    fullSlots[@(slot).stringValue] = hex;
+                                }
+                            }
                         }
                         NSMutableDictionary *newProf = [NSMutableDictionary dictionary];
                         NSString *newId = [[NSUUID UUID] UUIDString];
