@@ -1,5 +1,5 @@
 // Hardware-freie Tests für ciy_hid (Pufferaufbau, Validierung).
-// Ausführen: ./run_tests.sh
+// Ausführen: ./scripts/run_tests.sh
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

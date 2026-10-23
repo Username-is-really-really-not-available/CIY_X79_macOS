@@ -22,18 +22,16 @@ jobs:
 
       - name: Run Automated Tests
         run: |
-          chmod +x run_tests.sh scripts/*.sh
-          ./run_tests.sh
+          chmod +x scripts/*.sh
+          ./scripts/run_tests.sh
 
       - name: Compile Universal Binaries (arm64 & x86_64)
         run: |
-          chmod +x build_app.sh
-          ./build_app.sh
+          ./scripts/build_app.sh
 
       - name: Build DMG Installer Package
         run: |
-          chmod +x create_dmg.sh
-          ./create_dmg.sh
+          ./scripts/create_dmg.sh
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4

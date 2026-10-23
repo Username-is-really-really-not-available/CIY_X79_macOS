@@ -316,7 +316,7 @@ Ideal for shell scripts, menubar tools (SketchyBar, SwiftBar), Alfred, or Raycas
 
 Run the hardware-free automated test suite:
 ```bash
-./run_tests.sh
+./scripts/run_tests.sh
 ```
 Covers planar RGB buffer calculations, hex conversions, edge cases, JSON profile serialization, status menu item formatting, app binding deduplication, and fallback profile recovery.
 
@@ -327,10 +327,10 @@ Covers planar RGB buffer calculations, hex conversions, edge cases, JSON profile
 Compile native Universal Binaries (`arm64` & `x86_64`) using Clang:
 ```bash
 # Build universal App and CLI (embeds AppIcon & docs, signs both binaries)
-./build_app.sh
+./scripts/build_app.sh
 
 # Build redistributable DMG installer image
-./create_dmg.sh
+./scripts/create_dmg.sh
 ```
 
 ---

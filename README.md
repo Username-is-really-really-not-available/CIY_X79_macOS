@@ -16,7 +16,7 @@ Eine native, vollständige macOS-Lösung (Apple Silicon & Intel) zur Ansteuerung
 7. [Die macOS-App (CIYX79Control.app)](#7-die-macos-app-ciyx79controlapp)
 8. [Das Terminal-Tool (ciy_ctl)](#8-das-terminal-tool-ciy_ctl)
 9. [Architektur & Schichtenmodell](#9-architektur--schichtenmodell)
-10. [Automatisierte Tests (run_tests.sh)](#10-automatisierte-tests-run_testssh)
+10. [Automatisierte Tests (scripts/run_tests.sh)](#10-automatisierte-tests-scriptsrun_testssh)
 11. [Kompilierung & Build-Prozess](#11-kompilierung--build-prozess)
 12. [Sicherheit, Datenschutz & Ressourcen](#12-sicherheit-datenschutz--ressourcen)
 13. [Lizenz, Markenhinweis & Haftungsausschluss](#13-lizenz-markenhinweis--haftungsausschluss)
@@ -359,9 +359,6 @@ CIY_X79_macOS/
 │   ├── CIYX79Control.app
 │   ├── ciy_ctl
 │   └── CIYX79Control-1.0.dmg
-├── build_app.sh                 # Root-Wrapper für scripts/build_app.sh
-├── create_dmg.sh                # Root-Wrapper für scripts/create_dmg.sh
-├── run_tests.sh                 # Root-Wrapper für scripts/run_tests.sh
 ├── README.md                    # Umfassende Dokumentation & Anleitung
 ├── LICENSE                      # MIT-Lizenz
 └── .gitignore                   # Git-Ausschlussregeln
@@ -420,12 +417,12 @@ Das Projekt ist modular nach dem Single-Responsibility-Prinzip in klare Schichte
 
 ---
 
-## 10. Automatisierte Tests (`run_tests.sh`)
+## 10. Automatisierte Tests (`scripts/run_tests.sh`)
 
 Das Projekt beinhaltet eine hardwarefreie automatisierte Test-Suite, die Logik, Pufferberechnungen, Hex-Konvertierungen und Grenzwerte prüft:
 
 ```bash
-./run_tests.sh
+./scripts/run_tests.sh
 ```
 
 ### Enthaltene Tests:
@@ -449,7 +446,7 @@ Alle Komponenten werden mit Clang und nativen macOS-Frameworks kompiliert. Es we
 
 ### 1. Universal Binary App & CLI kompilieren:
 ```bash
-./build_app.sh
+./scripts/build_app.sh
 ```
 Das Skript:
 * Kompiliert sowohl die GUI-App als auch das CLI-Tool `ciy_ctl` als **Universal Binary** (`-arch arm64 -arch x86_64`), lauffähig auf Apple Silicon (M1–M4) und Intel-Macs.
@@ -458,7 +455,7 @@ Das Skript:
 
 ### 2. Installationsdatei (DMG) erstellen:
 ```bash
-./create_dmg.sh
+./scripts/create_dmg.sh
 ```
 Erzeugt die distributionsfertige Datei `CIYX79Control-1.0.dmg` mit Drag-and-Drop-Verknüpfung zum `/Applications`-Ordner, Lizenz und Dokumentation.
 
