@@ -8,6 +8,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     name: Build & Test (macOS Universal)
@@ -32,7 +35,7 @@ jobs:
           chmod +x create_dmg.sh
           ./create_dmg.sh
 
-      - name: Upload Release Artifacts
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: CIYX79Control-macOS-Universal
@@ -40,3 +43,13 @@ jobs:
             dist/CIYX79Control-1.0.dmg
             dist/ciy_ctl
             dist/CIYX79Control.app
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "CIY X79 Control ${{ github.ref_name }}"
+          files: |
+            dist/CIYX79Control-1.0.dmg
+            dist/ciy_ctl
+          generate_release_notes: true
