@@ -37,6 +37,11 @@ typedef struct {
 bool ciy_open(CIYDevice *d);
 void ciy_close(CIYDevice *d);
 
+/// Systemweiter Inter-Process-Lock auf den USB-Bus (verhindert Race Conditions zwischen GUI und CLI).
+/// Reentrant innerhalb desselben Threads/Prozesses und kernel-basiert via flock().
+bool ciy_bus_lock(void);
+void ciy_bus_unlock(void);
+
 /// Liest Report 0x0A. Ausgabeparameter dürfen NULL sein.
 bool ciy_get_state(CIYDevice *d, CIYLightingState *out);
 

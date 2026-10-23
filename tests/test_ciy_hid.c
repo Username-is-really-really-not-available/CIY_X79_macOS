@@ -203,6 +203,16 @@ static void test_load_profile_file(void) {
     remove(tmp_path);
 }
 
+static void test_bus_lock_reentrancy(void) {
+    // 1. Erstes Locken
+    assert(ciy_bus_lock());
+    // 2. Reentrantes Locken auf demselben Thread
+    assert(ciy_bus_lock());
+    // 3. Entsperren der beiden Stufen
+    ciy_bus_unlock();
+    ciy_bus_unlock();
+}
+
 int main(void) {
     test_build_profile_wasd();
     test_build_profile_yellow_no_base();
@@ -214,6 +224,7 @@ int main(void) {
     test_solid_color_profile();
     test_parse_profile_json();
     test_load_profile_file();
+    test_bus_lock_reentrancy();
     puts("Alle Tests bestanden.");
     return 0;
 }
