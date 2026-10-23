@@ -173,7 +173,24 @@ static void test_parse_profile_json(void) {
     assert(strcmp(name, "BOM Profil") == 0);
     assert(rgb[10] == 0xFF && rgb[CIY_LED_COUNT + 10] == 0xAA && rgb[2 * CIY_LED_COUNT + 10] == 0x00);
 
-    // 6. Ungültiges JSON
+    // 6. Integer-Overflow und Out-of-Bounds Slots (INT_MAX, LONG_MAX, Slot 125, negative Werte)
+    const char *overflow_json =
+        "{\n"
+        "  \"name\": \"Overflow Test\",\n"
+        "  \"slots\": {\n"
+        "    \"2147483647\": \"#FF0000\",\n"
+        "    \"9223372036854775807\": \"#00FF00\",\n"
+        "    \"125\": \"#0000FF\",\n"
+        "    \"124\": \"#FFFFFF\",\n"
+        "    \"-1\": \"#123456\"\n"
+        "  }\n"
+        "}";
+    memset(name, 0, sizeof(name));
+    assert(ciy_parse_profile_json(overflow_json, NULL, rgb, name, sizeof(name), &count));
+    assert(count == 1); // Nur Slot 124 ist gültig (Index 125)
+    assert(rgb[125] == 0xFF && rgb[CIY_LED_COUNT + 125] == 0xFF && rgb[2 * CIY_LED_COUNT + 125] == 0xFF);
+
+    // 7. Ungültiges JSON
     assert(!ciy_parse_profile_json("{}", NULL, rgb, name, sizeof(name), &count));
     assert(!ciy_parse_profile_json("kein json", NULL, rgb, name, sizeof(name), &count));
     assert(!ciy_parse_profile_json(NULL, NULL, rgb, name, sizeof(name), &count));

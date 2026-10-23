@@ -37,7 +37,10 @@ NSNotificationName const KeyboardBackendHotplugNotification = @"KeyboardBackendH
     ciy_close(&_device);
     if (_matchedIter) IOObjectRelease(_matchedIter);
     if (_terminatedIter) IOObjectRelease(_terminatedIter);
-    if (_notifyPort) IONotificationPortDestroy(_notifyPort);
+    if (_notifyPort) {
+        IONotificationPortSetDispatchQueue(_notifyPort, NULL);
+        IONotificationPortDestroy(_notifyPort);
+    }
 }
 
 #pragma mark - Hotplug
@@ -108,6 +111,7 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             _terminatedIter = 0;
         }
         if (_notifyPort) {
+            IONotificationPortSetDispatchQueue(_notifyPort, NULL);
             IONotificationPortDestroy(_notifyPort);
             _notifyPort = NULL;
         }
@@ -192,9 +196,10 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 
     for (NSNumber *slotNum in keyColors) {
         int slot = [slotNum intValue];
-        int idx = slot + 1; // +1 offset (siehe README 2.C)
-        // Gültige Slots: 0..CIY_LED_COUNT-2, da der USB-Index (Slot + 1) höchstens CIY_LED_COUNT-1 sein darf.
-        if (slot >= 0 && idx < CIY_LED_COUNT) {
+        // Gültige Slots: 0..CIY_LED_COUNT-2 (0..124), da der USB-Index (Slot + 1) höchstens CIY_LED_COUNT-1 sein darf.
+        // Überlaufsichere Prüfung ohne vorzeitige Addition gegen Integer-Overflow bei INT_MAX
+        if (slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
+            int idx = slot + 1; // +1 offset (siehe README 2.C)
             NSColor *c = keyColors[slotNum];
             NSColor *srgb = [c colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
             if (srgb) {

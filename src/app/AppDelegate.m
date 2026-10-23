@@ -34,6 +34,7 @@
     NSMutableArray<NSMutableDictionary *> *_profiles;
     NSString *_currentActiveProfileId;
     BOOL _hasUnsavedEdits;
+    BOOL _isWakingUp;
     NSStatusItem *_statusItem;
 }
 @end
@@ -777,8 +778,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     for (NSString *slotStr in slots) {
         NSScanner *scanner = [NSScanner scannerWithString:slotStr];
         int slot = -1;
-        // Strikt gegen Out-of-Bounds absichern: Slot muss eine Ganzzahl >= 0 und Slot + 1 < CIY_LED_COUNT sein
-        if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+        // Strikt gegen Out-of-Bounds absichern: Slot muss eine Ganzzahl >= 0 und < (CIY_LED_COUNT - 1) sein (überlaufsicher ohne Addition)
+        if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
             NSString *hex = slots[slotStr];
             keyColors[@(slot)] = ColorFromHex(hex);
         }
@@ -1095,25 +1096,26 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)onHotplug:(NSNotification *)note {
     BOOL connected = [note.userInfo[@"connected"] boolValue];
     if (!connected) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
         [[KeyboardBackend shared] disconnect];
         [self updateConnectionStatus];
         return;
     }
-    [self runHardware:^BOOL{
-        return [[KeyboardBackend shared] connect];
-    } completion:^(BOOL ok) {
-        [self updateConnectionStatus];
-        if (ok) {
-            // Tastatur nach erneutem Einstecken automatisch mit dem aktiven Profil synchronisieren
-            [self sendCurrentProfileToHardware];
-        }
-    }];
+    if (_isWakingUp) {
+        // Während des Aufwachvorgangs übernimmt der verzögerte Timer in onSystemDidWake: die Synchronisation
+        return;
+    }
+    // Normaler Hotplug im laufenden Betrieb: 100 ms Debouncing gegen Kontaktprellen
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
+    [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:0.1];
 }
 
 - (void)onSystemWillSleep:(NSNotification *)note {
     (void)note;
-    // Anstehende Auto-Switches stornieren, damit während des Suspend-Vorgangs keine Transfers laufen
+    _isWakingUp = YES;
+    // Anstehende Auto-Switches und Hardware-Syncs stornieren, damit während des Suspend-Vorgangs keine Transfers laufen
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
     // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
     [[KeyboardBackend shared] disconnect];
     [self updateConnectionStatus];
@@ -1121,32 +1123,29 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onSystemDidWake:(NSNotification *)note {
     (void)note;
-    // 500 ms Verzögerung, damit macOS USB-Root-Hub und MCU nach dem Aufwachen vollständig initialisiert sind
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        [self runHardware:^BOOL{
-            [[KeyboardBackend shared] disconnect];
-            return [[KeyboardBackend shared] connect];
-        } completion:^(BOOL ok) {
-            [self updateConnectionStatus];
-            if (ok) {
-                // Den durch den Ruhezustand gelöschten flüchtigen XRAM der Tastatur wieder mit dem Profil befüllen
-                [self sendCurrentProfileToHardware];
-            }
-        }];
-    });
+    // 500 ms Verzögerung, damit macOS USB-Root-Hub und MCU nach dem Aufwachen vollständig initialisiert sind.
+    // Konsolidiert Aufwach- und Hotplug-Events zu einem einzigen Reconnect.
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
+    [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:0.5];
 }
 
-- (void)onReconnect:(id)sender {
-    (void)sender;
+- (void)performHardwareSync {
+    _isWakingUp = NO;
     [self runHardware:^BOOL{
         [[KeyboardBackend shared] disconnect];
         return [[KeyboardBackend shared] connect];
     } completion:^(BOOL ok) {
         [self updateConnectionStatus];
         if (ok) {
+            // Tastatur mit dem aktuell aktiven Profil synchronisieren
             [self sendCurrentProfileToHardware];
         }
     }];
+}
+
+- (void)onReconnect:(id)sender {
+    (void)sender;
+    [self performHardwareSync];
 }
 
 - (void)setHasUnsavedEdits:(BOOL)edited {
@@ -1247,8 +1246,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                             NSString *keyStr = [NSString stringWithFormat:@"%@", slotKey];
                             NSScanner *scanner = [NSScanner scannerWithString:keyStr];
                             int slot = -1;
-                            // Strikte Validierung: Muss echte Zahl sein und im Bereich 0..124 liegen
-                            if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+                            // Strikte Validierung: Muss echte Zahl sein und im Bereich 0..124 liegen (überlaufsicher ohne vorzeitige Addition)
+                            if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
                                 NSString *hex = [NSString stringWithFormat:@"%@", slots[slotKey]];
                                 if ([hex hasPrefix:@"#"] && hex.length == 7) {
                                     fullSlots[@(slot).stringValue] = hex;

@@ -62,11 +62,16 @@ static int s_bus_lock_fd = -1;
 static int s_bus_lock_depth = 0;
 
 static int ciy_open_lock_file(void) {
-    int fd = open("/tmp/ciy_x79_bus.lock", O_RDWR | O_CREAT, 0666);
-    if (fd < 0 && (errno == EACCES || errno == EPERM)) {
+    int fd = open("/tmp/ciy_x79_bus.lock", O_RDONLY | O_CREAT | O_NOFOLLOW, 0644);
+    if (fd >= 0) {
+        fchmod(fd, 0644);
+    } else if (errno == EACCES || errno == EPERM || errno == ELOOP) {
         char user_path[64];
         snprintf(user_path, sizeof(user_path), "/tmp/ciy_x79_bus_%u.lock", (unsigned)getuid());
-        fd = open(user_path, O_RDWR | O_CREAT, 0666);
+        fd = open(user_path, O_RDONLY | O_CREAT | O_NOFOLLOW, 0644);
+        if (fd >= 0) {
+            fchmod(fd, 0644);
+        }
     }
     return fd;
 }
@@ -421,7 +426,7 @@ bool ciy_parse_profile_json(const char *json, const char *target_profile,
                             if (ciy_parse_hex_color(hex_val, &r, &g, &b)) {
                                 char *endptr = NULL;
                                 long slot = strtol(slot_key, &endptr, 10);
-                                if (endptr != slot_key && *endptr == '\0' && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+                                if (endptr != slot_key && *endptr == '\0' && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
                                     int idx = (int)(slot + 1);
                                     temp_rgb[idx] = r;
                                     temp_rgb[CIY_LED_COUNT + idx] = g;
@@ -447,7 +452,7 @@ bool ciy_parse_profile_json(const char *json, const char *target_profile,
                     if (ciy_parse_hex_color(hex_val, &r, &g, &b)) {
                         char *endptr = NULL;
                         long slot = strtol(key, &endptr, 10);
-                        if (endptr != key && *endptr == '\0' && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+                        if (endptr != key && *endptr == '\0' && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
                             int idx = (int)(slot + 1);
                             temp_rgb[idx] = r;
                             temp_rgb[CIY_LED_COUNT + idx] = g;
