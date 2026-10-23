@@ -27,18 +27,20 @@ jobs:
 
       - name: Compile Universal Binaries (arm64 & x86_64)
         run: |
-          ./scripts/build_app.sh
+          VERSION="${GITHUB_REF_NAME#v}"
+          ./scripts/build_app.sh "${VERSION:-1.0.1}"
 
       - name: Build DMG Installer Package
         run: |
-          ./scripts/create_dmg.sh
+          VERSION="${GITHUB_REF_NAME#v}"
+          ./scripts/create_dmg.sh "${VERSION:-1.0.1}"
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: CIYX79Control-macOS-Universal
           path: |
-            dist/CIYX79Control-1.0.dmg
+            dist/CIYX79Control-*.dmg
             dist/ciy_ctl
             dist/CIYX79Control.app
 
@@ -48,6 +50,6 @@ jobs:
         with:
           name: "CIY X79 Control ${{ github.ref_name }}"
           files: |
-            dist/CIYX79Control-1.0.dmg
+            dist/CIYX79Control-*.dmg
             dist/ciy_ctl
           generate_release_notes: true

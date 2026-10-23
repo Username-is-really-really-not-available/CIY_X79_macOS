@@ -4,12 +4,14 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 APP_NAME="CIYX79Control"
+VERSION="${1:-${VERSION:-1.0.1}}"
+VERSION="${VERSION#v}"
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
 MACOS_DIR="${APP_BUNDLE}/Contents/MacOS"
 RESOURCES_DIR="${APP_BUNDLE}/Contents/Resources"
 
-echo "=== Erstelle ${APP_NAME}.app (Universal Binary) ==="
+echo "=== Erstelle ${APP_NAME}.app v${VERSION} (Universal Binary) ==="
 
 mkdir -p "${DIST_DIR}"
 mkdir -p "${MACOS_DIR}"
@@ -45,7 +47,7 @@ if [ -f "resources/AppIcon.icns" ]; then
 fi
 cp README*.md "${RESOURCES_DIR}/" 2>/dev/null || true
 
-cat << 'EOF' > "${APP_BUNDLE}/Contents/Info.plist"
+cat << EOF > "${APP_BUNDLE}/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -61,9 +63,9 @@ cat << 'EOF' > "${APP_BUNDLE}/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>

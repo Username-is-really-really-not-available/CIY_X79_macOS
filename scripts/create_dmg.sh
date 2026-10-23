@@ -4,19 +4,21 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 APP_NAME="CIYX79Control"
+VERSION="${1:-${VERSION:-1.0.1}}"
+VERSION="${VERSION#v}"
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
-DMG_NAME="${DIST_DIR}/${APP_NAME}-1.0.dmg"
+DMG_NAME="${DIST_DIR}/${APP_NAME}-${VERSION}.dmg"
 STAGING_DIR="/tmp/ciy_dmg_staging_$$"
 
 trap 'rm -rf "${STAGING_DIR}"' EXIT INT TERM
 
-echo "=== Erstelle ${APP_NAME}-1.0.dmg ==="
+echo "=== Erstelle ${APP_NAME}-${VERSION}.dmg ==="
 
 # 1. Sicherstellen, dass die App frisch kompiliert und signiert ist
 if [ ! -d "${APP_BUNDLE}" ]; then
     echo "Baue ${APP_BUNDLE} zuerst..."
-    "${PROJECT_ROOT}/scripts/build_app.sh"
+    "${PROJECT_ROOT}/scripts/build_app.sh" "${VERSION}"
 fi
 
 # 2. Bereite Staging-Verzeichnis vor
@@ -44,7 +46,7 @@ hdiutil create \
 rm -rf "${STAGING_DIR}"
 
 # Symlink im Root-Verzeichnis bereitstellen
-ln -sfn "dist/${APP_NAME}-1.0.dmg" "${PROJECT_ROOT}/${APP_NAME}-1.0.dmg"
+ln -sfn "dist/${APP_NAME}-${VERSION}.dmg" "${PROJECT_ROOT}/${APP_NAME}-${VERSION}.dmg"
 
 echo "3. DMG erfolgreich erstellt: ${DMG_NAME}"
 echo "Dateigröße: $(du -sh "${DMG_NAME}" | cut -f1)"
