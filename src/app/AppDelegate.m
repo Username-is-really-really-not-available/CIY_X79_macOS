@@ -151,6 +151,16 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                                                name:NSWorkspaceDidActivateApplicationNotification
                                                              object:nil];
 
+    // Sleep / Wake: Ruhezustand und Aufwachen für saubere USB-Reinitialisierung überwachen
+    [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                                                           selector:@selector(onSystemWillSleep:)
+                                                               name:NSWorkspaceWillSleepNotification
+                                                             object:nil];
+    [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                                                           selector:@selector(onSystemDidWake:)
+                                                               name:NSWorkspaceDidWakeNotification
+                                                             object:nil];
+
     [self.window makeKeyAndOrderFront:nil];
 }
 
@@ -1098,6 +1108,32 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self sendCurrentProfileToHardware];
         }
     }];
+}
+
+- (void)onSystemWillSleep:(NSNotification *)note {
+    (void)note;
+    // Anstehende Auto-Switches stornieren, damit während des Suspend-Vorgangs keine Transfers laufen
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
+    // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
+    [[KeyboardBackend shared] disconnect];
+    [self updateConnectionStatus];
+}
+
+- (void)onSystemDidWake:(NSNotification *)note {
+    (void)note;
+    // 500 ms Verzögerung, damit macOS USB-Root-Hub und MCU nach dem Aufwachen vollständig initialisiert sind
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        [self runHardware:^BOOL{
+            [[KeyboardBackend shared] disconnect];
+            return [[KeyboardBackend shared] connect];
+        } completion:^(BOOL ok) {
+            [self updateConnectionStatus];
+            if (ok) {
+                // Den durch den Ruhezustand gelöschten flüchtigen XRAM der Tastatur wieder mit dem Profil befüllen
+                [self sendCurrentProfileToHardware];
+            }
+        }];
+    });
 }
 
 - (void)onReconnect:(id)sender {
