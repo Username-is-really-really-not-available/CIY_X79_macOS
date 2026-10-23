@@ -1,0 +1,125 @@
+#compdef ciy_ctl
+
+_ciy_ctl() {
+    local context curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    local -a commands
+    commands=(
+        'status:Zeigt aktuellen Beleuchtungsstatus an (Modus, Farbe, Helligkeit, Tempo)'
+        'fill:Färbt alle Tasten vollflächig in einer benutzerdefinierten Hex-Farbe'
+        'load:Wendet eine exportierte JSON-Profildatei auf die Tastatur an'
+        'wasd:Aktiviert WASD Gaming-Profil (WASD Rot, Basis Blau)'
+        'wasd-arrows:Kombiniertes Profil (WASD Rot, Pfeiltasten Gelb, Basis Blau)'
+        'all-red:Aktiviert statisches Vollrot für alle Tasten'
+        'list-modes:Listet alle 20 Beleuchtungsmodi und 11 Farbpaletten auf'
+        'set:Setzt Beleuchtungsmodus, Farbe, Tempo und Helligkeit'
+        'help:Zeigt Hilfe und Befehlsübersicht an'
+    )
+
+    local -a modes
+    modes=(
+        '0:Aus (Off)'
+        '1:Welle / Regenbogen (Wave)'
+        '2:Atmung (Breathing)'
+        '3:Reaktiv / Ripple'
+        '4:Regentropfen (Raindrops)'
+        '5:Neon-Strom'
+        '6:Sternenhimmel'
+        '7:Schlange / Snake'
+        '8:Farbzyklus (Spectrum Cycle)'
+        '9:Kreisel / Vortex'
+        '10:Komet / Meteor'
+        '11:Aurora / Polarlicht'
+        '12:Windmühle'
+        '13:Blüte / Ripple Bloom'
+        '14:Laser-Spur'
+        '15:Statisch / Solide (Solid Single Color)'
+        '16:Wellenbrecher'
+        '17:Glühen'
+        '18:Funkenflug'
+        '19:Benutzerdefiniert (Customize / Matrix)'
+        '20:Ripple / Regenbogen-Welle'
+    )
+
+    local -a colors
+    colors=(
+        '0:Rot'
+        '1:Orange'
+        '2:Gelb'
+        '3:Grün'
+        '4:Cyan / Türkis'
+        '5:Blau'
+        '6:Lila / Violett'
+        '7:Weiß'
+        '8:Bunt / Regenbogen'
+        '9:Farbwechsel 1'
+        '10:Farbwechsel 2'
+    )
+
+    local -a brightness_levels
+    brightness_levels=(
+        '0:Aus (0 %)'
+        '1:Sehr dunkel (20 %)'
+        '2:Dunkel (40 %)'
+        '3:Mittel (60 %)'
+        '4:Hell (80 %)'
+        '5:Maximum (100 %)'
+    )
+
+    local -a speed_levels
+    speed_levels=(
+        '0:Sehr langsam'
+        '1:Langsam'
+        '2:Mittel'
+        '3:Schnell'
+        '4:Sehr schnell'
+    )
+
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Hilfe und Verwendung anzeigen]' \
+        '--json[Maschinenlesbare JSON-Ausgabe für Skripte und Widgets]' \
+        '1:Befehl:->command' \
+        '*::Optionen:->args'
+
+    case $state in
+        command)
+            _describe -t commands 'ciy_ctl Befehl' commands
+            ;;
+        args)
+            case $words[1] in
+                status)
+                    _arguments \
+                        '--json[Maschinenlesbare JSON-Ausgabe ausgeben]'
+                    ;;
+                fill)
+                    _arguments \
+                        '1:Hex-Farbe (#RRGGBB):(#FF0000 #00FF00 #0000FF #FFFF00 #00FFFF #FF00FF #FFFFFF #FF5500 #FFA500)' \
+                        '2:Helligkeit (0..5):_describe "Helligkeit" brightness_levels' \
+                        '--json[Status als JSON zurückgeben]'
+                    ;;
+                load)
+                    _arguments \
+                        '1:JSON-Profildatei:_files -g "*.json"' \
+                        '2:Profilname oder Helligkeit: ' \
+                        '3:Helligkeit (0..5):_describe "Helligkeit" brightness_levels' \
+                        '--json[Status als JSON zurückgeben]'
+                    ;;
+                list-modes)
+                    _arguments \
+                        '--json[Modi und Farbpaletten als JSON ausgeben]'
+                    ;;
+                set)
+                    _arguments \
+                        '1:Beleuchtungsmodus:_describe "Modus (0..20)" modes' \
+                        '2:Farbe:_describe "Farbpalette (0..10)" colors' \
+                        '3:Tempo:_describe "Tempo (0..4)" speed_levels' \
+                        '4:Helligkeit:_describe "Helligkeit (0..5)" brightness_levels' \
+                        '--json[Ergebnis als JSON zurückgeben]'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_ciy_ctl "$@"

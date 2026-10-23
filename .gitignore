@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+._*
+
+# Build- und Distributionsartefakte
+dist/
+ciy_ctl
+CIYX79Control.app
+CIYX79Control-*.dmg
+*.o
+*.dSYM/
+
+# Archive & Packaging
+*.zip
+*.dmg
+*.tar.gz
+
+# Temporäre Dateien & Clang Static Analyzer Reports
+*.tmp
+*~
+/*.plist

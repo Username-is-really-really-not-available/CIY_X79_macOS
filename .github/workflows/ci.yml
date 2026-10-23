@@ -1,0 +1,42 @@
+name: CI & Release Build
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & Test (macOS Universal)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Automated Tests
+        run: |
+          chmod +x run_tests.sh scripts/*.sh
+          ./run_tests.sh
+
+      - name: Compile Universal Binaries (arm64 & x86_64)
+        run: |
+          chmod +x build_app.sh
+          ./build_app.sh
+
+      - name: Build DMG Installer Package
+        run: |
+          chmod +x create_dmg.sh
+          ./create_dmg.sh
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CIYX79Control-macOS-Universal
+          path: |
+            dist/CIYX79Control-1.0.dmg
+            dist/ciy_ctl
+            dist/CIYX79Control.app
