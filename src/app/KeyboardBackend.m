@@ -227,6 +227,13 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
     }
 }
 
+static inline uint8_t ClampColorChannel(CGFloat val) {
+    int ival = (int)(val * 255.0 + 0.5);
+    if (ival < 0) return 0;
+    if (ival > 255) return 255;
+    return (uint8_t)ival;
+}
+
 - (BOOL)sendKeyColors:(NSDictionary<NSNumber *, NSColor *> *)keyColors defaultColor:(nullable NSColor *)defaultColor {
     return [self sendKeyColors:keyColors brightness:CIY_MAX_BRIGHTNESS defaultColor:defaultColor];
 }
@@ -245,10 +252,14 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
         }
     }
 
+    uint8_t defRu = ClampColorChannel(defR);
+    uint8_t defGu = ClampColorChannel(defG);
+    uint8_t defBu = ClampColorChannel(defB);
+
     for (int i = 0; i < CIY_LED_COUNT; i++) {
-        plane0_r[i] = (uint8_t)(defR * 255.0 + 0.5);
-        plane1_g[i] = (uint8_t)(defG * 255.0 + 0.5);
-        plane2_b[i] = (uint8_t)(defB * 255.0 + 0.5);
+        plane0_r[i] = defRu;
+        plane1_g[i] = defGu;
+        plane2_b[i] = defBu;
     }
 
     for (NSNumber *slotNum in keyColors) {
@@ -262,9 +273,9 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             if (srgb) {
                 CGFloat r = 0, g = 0, b = 0, a = 0;
                 [srgb getRed:&r green:&g blue:&b alpha:&a];
-                plane0_r[idx] = (uint8_t)(r * 255.0 + 0.5);
-                plane1_g[idx] = (uint8_t)(g * 255.0 + 0.5);
-                plane2_b[idx] = (uint8_t)(b * 255.0 + 0.5);
+                plane0_r[idx] = ClampColorChannel(r);
+                plane1_g[idx] = ClampColorChannel(g);
+                plane2_b[idx] = ClampColorChannel(b);
             }
         }
     }

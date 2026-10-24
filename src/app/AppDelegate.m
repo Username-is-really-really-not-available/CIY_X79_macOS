@@ -60,18 +60,17 @@ static NSString *HexFromColor(NSColor *color) {
 }
 
 static NSColor *ColorFromHex(NSString *hex) {
-    if (!hex || ![hex isKindOfClass:[NSString class]] || ![hex hasPrefix:@"#"] || hex.length != 7) {
+    if (!hex || ![hex isKindOfClass:[NSString class]]) {
         return [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0];
     }
-    unsigned int rgbVal = 0;
-    NSScanner *scanner = [NSScanner scannerWithString:[hex substringFromIndex:1]];
-    if (![scanner scanHexInt:&rgbVal]) {
+    uint8_t r = 0, g = 0, b = 0;
+    if (!ciy_parse_hex_color([hex UTF8String], &r, &g, &b)) {
         return [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0];
     }
-    CGFloat r = ((rgbVal >> 16) & 0xFF) / 255.0;
-    CGFloat g = ((rgbVal >> 8) & 0xFF) / 255.0;
-    CGFloat b = (rgbVal & 0xFF) / 255.0;
-    return [NSColor colorWithSRGBRed:r green:g blue:b alpha:1.0];
+    return [NSColor colorWithSRGBRed:(CGFloat)r / 255.0
+                               green:(CGFloat)g / 255.0
+                                blue:(CGFloat)b / 255.0
+                               alpha:1.0];
 }
 
 @implementation AppDelegate
@@ -130,14 +129,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // Status Item in macOS-Menüleiste einrichten
     [self setupStatusItem];
 
-    // Mit Tastatur verbinden
-    [[KeyboardBackend shared] connect];
-    [self updateConnectionStatus];
-
-    // Zuletzt aktives Profil direkt auf die Tastatur übertragen
-    if ([KeyboardBackend shared].isConnected) {
-        [self sendCurrentProfileToHardware];
-    }
+    // Mit Tastatur asynchron im Hintergrund verbinden und aktives Profil übertragen (blockiert nicht den UI-Start)
+    [self runHardware:^BOOL{
+        return [[KeyboardBackend shared] connect];
+    } completion:^(BOOL ok) {
+        [self updateConnectionStatus];
+        if (ok) {
+            [self sendCurrentProfileToHardware];
+        }
+    }];
 
     // Hotplug: Tastatur an-/abstecken automatisch überwachen
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -361,6 +361,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _brightnessSlider.numberOfTickMarks = 5;
     _brightnessSlider.allowsTickMarkValuesOnly = YES;
     _brightnessSlider.integerValue = 5;
+    _brightnessSlider.continuous = NO; // Verhindert mehrfaches Queueing beim Ziehen
     _brightnessSlider.target = self;
     _brightnessSlider.action = @selector(onBrightnessChanged:);
     _brightnessSlider.toolTip = @"Helligkeit des Profils (1 bis 5)";
@@ -1245,8 +1246,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 if ([item isKindOfClass:[NSDictionary class]]) {
                     NSDictionary *dict = (NSDictionary *)item;
                     NSString *name = @"Importiertes Profil";
-                    if ([dict[@"name"] isKindOfClass:[NSString class]] && [dict[@"name"] length] > 0) {
-                        name = dict[@"name"];
+                    if ([dict[@"name"] isKindOfClass:[NSString class]]) {
+                        NSString *trimmed = [dict[@"name"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                        if (trimmed.length > 0) {
+                            if (trimmed.length > 40) trimmed = [trimmed substringToIndex:40];
+                            name = trimmed;
+                        }
                     }
                     NSDictionary *slots = dict[@"slots"];
                     if (slots && [slots isKindOfClass:[NSDictionary class]]) {
@@ -1261,8 +1266,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                             // Strikte Validierung: Muss echte Zahl sein und im Bereich 0..124 liegen (überlaufsicher ohne vorzeitige Addition)
                             if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
                                 NSString *hex = [NSString stringWithFormat:@"%@", slots[slotKey]];
-                                if ([hex hasPrefix:@"#"] && hex.length == 7) {
-                                    fullSlots[@(slot).stringValue] = hex;
+                                uint8_t tr = 0, tg = 0, tb = 0;
+                                if (ciy_parse_hex_color([hex UTF8String], &tr, &tg, &tb)) {
+                                    fullSlots[@(slot).stringValue] = [NSString stringWithFormat:@"#%02X%02X%02X", tr, tg, tb];
                                 }
                             }
                         }
@@ -1281,9 +1287,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                 }
                             }
                             newProf[@"appBundleId"] = importedBundleId;
-                        }
-                        if ([dict[@"appName"] isKindOfClass:[NSString class]]) {
-                            newProf[@"appName"] = dict[@"appName"];
+                            if ([dict[@"appName"] isKindOfClass:[NSString class]] && [dict[@"appName"] length] > 0) {
+                                newProf[@"appName"] = dict[@"appName"];
+                            }
                         }
                         [self->_profiles addObject:newProf];
                         lastId = newId;

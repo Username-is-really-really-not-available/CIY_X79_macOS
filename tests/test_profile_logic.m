@@ -20,18 +20,17 @@ static NSString *HexFromColor(NSColor *color) {
 }
 
 static NSColor *ColorFromHex(NSString *hex) {
-    if (!hex || ![hex isKindOfClass:[NSString class]] || ![hex hasPrefix:@"#"] || hex.length != 7) {
+    if (!hex || ![hex isKindOfClass:[NSString class]]) {
         return [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0];
     }
-    unsigned int rgbVal = 0;
-    NSScanner *scanner = [NSScanner scannerWithString:[hex substringFromIndex:1]];
-    if (![scanner scanHexInt:&rgbVal]) {
+    uint8_t r = 0, g = 0, b = 0;
+    if (!ciy_parse_hex_color([hex UTF8String], &r, &g, &b)) {
         return [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0];
     }
-    CGFloat r = ((rgbVal >> 16) & 0xFF) / 255.0;
-    CGFloat g = ((rgbVal >> 8) & 0xFF) / 255.0;
-    CGFloat b = (rgbVal & 0xFF) / 255.0;
-    return [NSColor colorWithSRGBRed:r green:g blue:b alpha:1.0];
+    return [NSColor colorWithSRGBRed:(CGFloat)r / 255.0
+                               green:(CGFloat)g / 255.0
+                                blue:(CGFloat)b / 255.0
+                               alpha:1.0];
 }
 
 static void test_hex_conversion(void) {
@@ -50,6 +49,12 @@ static void test_hex_conversion(void) {
     NSColor *fallbackNil = ColorFromHex(nil);
     assert(fallbackNil != nil);
     assert([HexFromColor(nil) isEqualToString:@"#000000"]);
+
+    // Ungültige Hex-Strings mit ungültigen Ziffern (müssen zuverlässig abgewiesen werden)
+    NSColor *invalidHex = ColorFromHex(@"#12ZZZZ");
+    CGFloat ir = 0, ig = 0, ib = 0, ia = 0;
+    [invalidHex getRed:&ir green:&ig blue:&ib alpha:&ia];
+    assert(fabs(ir - 0.0) < 0.01 && fabs(ig - 0.0) < 0.01 && fabs(ib - 0.0) < 0.01);
 }
 
 static void test_profile_creation_and_update(void) {
@@ -196,6 +201,20 @@ static void test_brightness_and_backend(void) {
 
     assert(kb.currentState.brightness == 3);
     assert(kb.currentState.mode == 19);
+
+    // Test für Wide-Gamut-Farbclamping (Out-of-sRGB-Gamut darf nicht overflowen)
+    [KeyboardBackend resetTestingPayload];
+    NSColor *outOfGamut = [NSColor colorWithDisplayP3Red:1.5 green:-0.5 blue:0.5 alpha:1.0];
+    NSDictionary *p3Cols = @{@(14): outOfGamut};
+    BOOL p3Ok = [kb sendKeyColors:p3Cols brightness:5 defaultColor:nil];
+    assert(p3Ok);
+
+    NSData *p3Payload = [KeyboardBackend lastSentPlanarPayload];
+    assert(p3Payload != nil && p3Payload.length == CIY_PLANAR_RGB_SIZE);
+    const uint8_t *p3Bytes = (const uint8_t *)p3Payload.bytes;
+    // Rot muss auf 0xFF gesättigt sein, Grün auf 0x00
+    assert(p3Bytes[15] == 0xFF);
+    assert(p3Bytes[CIY_LED_COUNT + 15] == 0x00);
 }
 
 static void test_keyboard_key_lookup(void) {
