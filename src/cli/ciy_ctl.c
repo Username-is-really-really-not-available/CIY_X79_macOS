@@ -142,12 +142,54 @@ static void print_modes_json(void) {
     printf("  ]\n}\n");
 }
 
+// Extrahiert -b / --brightness / --brightness=<val> aus argv.
+// Entfernt gefundene Flags aus argv und aktualisiert *argc.
+static bool extract_brightness_option(int *argc, char **argv, uint8_t *out_brightness, bool *has_brightness, const char **err_str) {
+    *has_brightness = false;
+    *err_str = NULL;
+    for (int i = 1; i < *argc; i++) {
+        if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--brightness") == 0) {
+            if (i + 1 >= *argc) {
+                *err_str = argv[i];
+                return false;
+            }
+            uint8_t b = 0;
+            if (!parse_range(argv[i + 1], 0, CIY_MAX_BRIGHTNESS, &b)) {
+                *err_str = argv[i + 1];
+                return false;
+            }
+            *out_brightness = b;
+            *has_brightness = true;
+            for (int j = i; j + 2 < *argc; j++) {
+                argv[j] = argv[j + 2];
+            }
+            *argc -= 2;
+            i--;
+        } else if (strncmp(argv[i], "--brightness=", 13) == 0) {
+            const char *val = argv[i] + 13;
+            uint8_t b = 0;
+            if (!parse_range(val, 0, CIY_MAX_BRIGHTNESS, &b)) {
+                *err_str = val;
+                return false;
+            }
+            *out_brightness = b;
+            *has_brightness = true;
+            for (int j = i; j + 1 < *argc; j++) {
+                argv[j] = argv[j + 1];
+            }
+            (*argc)--;
+            i--;
+        }
+    }
+    return true;
+}
+
 static void print_help(const char *prog_name) {
     printf("\nVerwendung: %s [Befehl] [Optionen]\n\n", prog_name);
     printf("Verfügbare Befehle:\n");
     printf("  status                              Zeigt aktuellen Beleuchtungsstatus an (Standard)\n");
-    printf("  fill <#RRGGBB> [Hell.]              Färbt alle Tasten in einer Farbe (Helligkeit: 0..5, Standard: 5)\n");
-    printf("  load <Datei.json> [Name] [Hell.]    Wendet ein JSON-Beleuchtungsprofil auf die Tastatur an\n");
+    printf("  fill <#RRGGBB> [-b 0..5]            Färbt alle Tasten in einer Farbe (Standardhelligkeit: 5)\n");
+    printf("  load <Datei.json> [Name|Idx] [-b..] Wendet ein JSON-Beleuchtungsprofil auf die Tastatur an\n");
     printf("  wasd                                Aktiviert WASD-Gaming-Profil (WASD Rot, Basis Blau)\n");
     printf("  wasd-arrows                         Kombiniertes Profil (WASD Rot, Pfeile Gelb, Basis Blau)\n");
     printf("  all-red                             Aktiviert statisches Vollrot für alle Tasten\n");
@@ -155,6 +197,7 @@ static void print_help(const char *prog_name) {
     printf("  set <Modus> [F] [T] [H]             Setzt Modus (0..20), Farbe (0..10), Tempo (0..4), Helligkeit (0..5)\n");
     printf("  help, --help, -h                    Zeigt diese Hilfe an\n\n");
     printf("Optionen:\n");
+    printf("  -b, --brightness <0..5>             Helligkeit für Befehle wie fill und load (Standard: 5)\n");
     printf("  --json                              Ausgabe im maschinenlesbaren JSON-Format\n\n");
 }
 
@@ -173,7 +216,22 @@ int main(int argc, char **argv) {
         }
     }
 
-    // 2. Befehl identifizieren (erstes Argument, das kein Flag ist)
+    // 2. Optionale Helligkeits-Option (-b / --brightness) extrahieren
+    uint8_t flag_brightness = CIY_MAX_BRIGHTNESS;
+    bool has_flag_brightness = false;
+    const char *bright_err = NULL;
+    if (!extract_brightness_option(&argc, argv, &flag_brightness, &has_flag_brightness, &bright_err)) {
+        if (json_mode) {
+            printf("{\n  \"connected\": false,\n  \"error\": \"Ungültige Helligkeit '");
+            print_escaped_json_string(stdout, bright_err);
+            printf("' (erlaubt: 0..5)\"\n}\n");
+        } else {
+            fprintf(stderr, "Fehler: Ungültige Helligkeit '%s'. Erlaubter Bereich: 0..5.\n", bright_err ? bright_err : "");
+        }
+        return 1;
+    }
+
+    // 3. Befehl identifizieren (erstes Argument, das kein Flag ist)
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') {
             cmd = argv[i];
@@ -184,7 +242,7 @@ int main(int argc, char **argv) {
         cmd = "status";
     }
 
-    // 3. Auf unbekannte Optionen prüfen
+    // 4. Auf unbekannte Optionen prüfen
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
             if (strcmp(argv[i], "--json") != 0) {
@@ -245,9 +303,9 @@ int main(int argc, char **argv) {
 
         if (!color_arg) {
             if (json_mode) {
-                printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Hex-Farbe. Verwendung: ciy_ctl fill <#RRGGBB> [Helligkeit (0..5)]\"\n}\n");
+                printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Hex-Farbe. Verwendung: ciy_ctl fill <#RRGGBB> [-b 0..5]\"\n}\n");
             } else {
-                fprintf(stderr, "Verwendung: %s fill <#RRGGBB> [Helligkeit (0..5)]\n", argv[0]);
+                fprintf(stderr, "Verwendung: %s fill <#RRGGBB> [-b 0..5]\n", argv[0]);
             }
             rc = 1;
         } else {
@@ -262,8 +320,8 @@ int main(int argc, char **argv) {
                 }
                 rc = 1;
             } else {
-                uint8_t brightness = CIY_MAX_BRIGHTNESS;
-                if (bright_arg && !parse_range(bright_arg, 0, CIY_MAX_BRIGHTNESS, &brightness)) {
+                uint8_t brightness = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+                if (!has_flag_brightness && bright_arg && !parse_range(bright_arg, 0, CIY_MAX_BRIGHTNESS, &brightness)) {
                     if (json_mode) {
                         printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '");
                         print_escaped_json_string(stdout, bright_arg);
@@ -299,7 +357,7 @@ int main(int argc, char **argv) {
     } else if (strcmp(cmd, "load") == 0) {
         const char *file_arg = NULL;
         const char *target_profile = NULL;
-        uint8_t brightness = CIY_MAX_BRIGHTNESS;
+        uint8_t brightness = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
 
         const char *extra_args[2] = {NULL, NULL};
         int num_extras = 0;
@@ -315,23 +373,19 @@ int main(int argc, char **argv) {
 
         if (!file_arg) {
             if (json_mode) {
-                printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Datei. Verwendung: ciy_ctl load <profile.json> [Profilname] [Helligkeit (0..5)]\"\n}\n");
+                printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Datei. Verwendung: ciy_ctl load <profile.json> [Profilname|Index] [-b 0..5]\"\n}\n");
             } else {
-                fprintf(stderr, "Verwendung: %s load <profile.json> [Profilname] [Helligkeit (0..5)]\n", argv[0]);
+                fprintf(stderr, "Verwendung: %s load <profile.json> [Profilname|Index] [-b 0..5]\n", argv[0]);
             }
             rc = 1;
         } else {
             bool bright_error = false;
             if (num_extras == 1) {
-                uint8_t b_tmp = 0;
-                if (parse_range(extra_args[0], 0, CIY_MAX_BRIGHTNESS, &b_tmp)) {
-                    brightness = b_tmp;
-                } else {
-                    target_profile = extra_args[0];
-                }
+                // Ein einzelnes Extra-Argument ist immer der Profilselektor (Name oder 1-basierter Index)
+                target_profile = extra_args[0];
             } else if (num_extras >= 2) {
                 target_profile = extra_args[0];
-                if (!parse_range(extra_args[1], 0, CIY_MAX_BRIGHTNESS, &brightness)) {
+                if (!has_flag_brightness && !parse_range(extra_args[1], 0, CIY_MAX_BRIGHTNESS, &brightness)) {
                     bright_error = true;
                 }
             }

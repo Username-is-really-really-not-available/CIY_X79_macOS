@@ -94,14 +94,16 @@ _ciy_ctl() {
                     ;;
                 fill)
                     _arguments \
+                        '(-b --brightness)'{-b,--brightness}'[Helligkeit (0..5)]:Helligkeit:_describe "Helligkeit" brightness_levels' \
                         '1:Hex-Farbe (#RRGGBB):(#FF0000 #00FF00 #0000FF #FFFF00 #00FFFF #FF00FF #FFFFFF #FF5500 #FFA500)' \
                         '2:Helligkeit (0..5):_describe "Helligkeit" brightness_levels' \
                         '--json[Status als JSON zurückgeben]'
                     ;;
                 load)
                     _arguments \
+                        '(-b --brightness)'{-b,--brightness}'[Helligkeit (0..5)]:Helligkeit:_describe "Helligkeit" brightness_levels' \
                         '1:JSON-Profildatei:_files -g "*.json"' \
-                        '2:Profilname oder Helligkeit: ' \
+                        '2:Profilname oder Index: ' \
                         '3:Helligkeit (0..5):_describe "Helligkeit" brightness_levels' \
                         '--json[Status als JSON zurückgeben]'
                     ;;
