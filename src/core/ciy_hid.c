@@ -62,16 +62,11 @@ static int s_bus_lock_fd = -1;
 static int s_bus_lock_depth = 0;
 
 static int ciy_open_lock_file(void) {
-    int fd = open("/tmp/ciy_x79_bus.lock", O_RDONLY | O_CREAT | O_NOFOLLOW, 0644);
+    char user_path[128];
+    snprintf(user_path, sizeof(user_path), "/tmp/ciy_x79_bus_%u.lock", (unsigned)getuid());
+    int fd = open(user_path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
     if (fd >= 0) {
-        fchmod(fd, 0644);
-    } else if (errno == EACCES || errno == EPERM || errno == ELOOP) {
-        char user_path[64];
-        snprintf(user_path, sizeof(user_path), "/tmp/ciy_x79_bus_%u.lock", (unsigned)getuid());
-        fd = open(user_path, O_RDONLY | O_CREAT | O_NOFOLLOW, 0644);
-        if (fd >= 0) {
-            fchmod(fd, 0644);
-        }
+        fchmod(fd, 0600);
     }
     return fd;
 }
@@ -80,19 +75,24 @@ bool ciy_bus_lock(void) {
     pthread_mutex_lock(&s_bus_mutex);
     if (s_bus_lock_depth == 0) {
         s_bus_lock_fd = ciy_open_lock_file();
-        if (s_bus_lock_fd >= 0) {
-            // Bis zu 2.0s Timeout für Inter-Process-Locking gegen Race Conditions
-            struct timespec start, now;
-            clock_gettime(CLOCK_MONOTONIC, &start);
-            while (flock(s_bus_lock_fd, LOCK_EX | LOCK_NB) != 0) {
-                clock_gettime(CLOCK_MONOTONIC, &now);
-                double elapsed = (double)(now.tv_sec - start.tv_sec) + (double)(now.tv_nsec - start.tv_nsec) / 1e9;
-                if (elapsed > 2.0) {
-                    flock(s_bus_lock_fd, LOCK_EX); // Fallback auf blockierenden Lock
-                    break;
-                }
-                usleep(5000); // 5 ms Pause
+        if (s_bus_lock_fd < 0) {
+            pthread_mutex_unlock(&s_bus_mutex);
+            return false;
+        }
+        // Bis zu 2.0s Timeout für Inter-Process-Locking gegen Race Conditions
+        struct timespec start, now;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        while (flock(s_bus_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double elapsed = (double)(now.tv_sec - start.tv_sec) + (double)(now.tv_nsec - start.tv_nsec) / 1e9;
+            if (elapsed > 2.0) {
+                // Timeout erreicht: Keinen blockierenden Fallback erzwingen, sondern sauber mit false abbrechen
+                close(s_bus_lock_fd);
+                s_bus_lock_fd = -1;
+                pthread_mutex_unlock(&s_bus_mutex);
+                return false;
             }
+            usleep(5000); // 5 ms Pause
         }
     }
     s_bus_lock_depth++;
@@ -135,10 +135,10 @@ bool ciy_get_state(CIYDevice *d, CIYLightingState *out) {
     if (!d) return false;
     uint8_t buf[42] = {0x0A};
     UInt32 done = 0;
-    ciy_bus_lock();
+    if (!ciy_bus_lock()) return false;
     bool ok = ciy_request(d, false, 0x01 /* GET_REPORT */, 0x0A, buf, sizeof(buf), &done);
     ciy_bus_unlock();
-    if (!ok || done < 5) return false;
+    if (!ok || done < 5 || buf[0] != 0x0A) return false;
     if (out) {
         out->mode = buf[1];
         out->color = buf[2];
@@ -160,7 +160,7 @@ bool ciy_set_state(CIYDevice *d, CIYLightingState st) {
     buf[2] = st.color;
     buf[3] = CIY_MAX_SPEED - st.speed;
     buf[4] = st.brightness;
-    ciy_bus_lock();
+    if (!ciy_bus_lock()) return false;
     bool ok = ciy_request(d, true, 0x09 /* SET_REPORT */, 0x0A, buf, sizeof(buf), NULL);
     ciy_bus_unlock();
     return ok;
@@ -171,22 +171,26 @@ bool ciy_send_planar_rgb(CIYDevice *d, const uint8_t *rgb, size_t length) {
     uint8_t buf[1 + CIY_PLANAR_RGB_SIZE];
     buf[0] = 0x0B;
     memcpy(&buf[1], rgb, CIY_PLANAR_RGB_SIZE);
-    ciy_bus_lock();
+    if (!ciy_bus_lock()) return false;
     bool ok = ciy_request(d, true, 0x09, 0x0B, buf, sizeof(buf), NULL);
     ciy_bus_unlock();
     return ok;
 }
 
 bool ciy_apply_custom_profile_with_brightness(CIYDevice *d, const uint8_t *rgb, size_t length, uint8_t brightness) {
-    if (!d) return false;
-    ciy_bus_lock();
+    if (!d || !d->dev || !rgb || length != CIY_PLANAR_RGB_SIZE) return false;
+    if (!ciy_bus_lock()) return false;
     bool ok = ciy_send_planar_rgb(d, rgb, length);
+    if (!ok) {
+        ciy_bus_unlock();
+        return false;
+    }
     usleep(50000); // 50 ms wie im Hersteller-Treiber
     uint8_t b = (brightness <= CIY_MAX_BRIGHTNESS) ? brightness : CIY_MAX_BRIGHTNESS;
     CIYLightingState st = {19, 0, 0, b};
     bool modeOk = ciy_set_state(d, st);
     ciy_bus_unlock();
-    return ok && modeOk;
+    return modeOk;
 }
 
 bool ciy_apply_custom_profile(CIYDevice *d, const uint8_t *rgb, size_t length) {
