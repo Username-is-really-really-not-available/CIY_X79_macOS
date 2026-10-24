@@ -173,10 +173,29 @@ static void test_json_export_import(void) {
 static void test_brightness_and_backend(void) {
     KeyboardBackend *kb = [KeyboardBackend shared];
     assert(kb != nil);
-    // Aufruf muss thread-sicher und crash-frei sein (egal ob reale Hardware verbunden ist oder nicht)
+    [KeyboardBackend resetTestingPayload];
+
     NSDictionary *cols = @{@(14): [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0]};
     BOOL ok = [kb sendKeyColors:cols brightness:3 defaultColor:nil];
-    (void)ok;
+    assert(ok);
+
+    NSData *payload = [KeyboardBackend lastSentPlanarPayload];
+    assert(payload != nil && payload.length == CIY_PLANAR_RGB_SIZE);
+
+    const uint8_t *bytes = (const uint8_t *)payload.bytes;
+    assert(bytes[15] == 0xFF);
+    assert(bytes[CIY_LED_COUNT + 15] == 0x00);
+    assert(bytes[2 * CIY_LED_COUNT + 15] == 0x00);
+
+    for (int i = 0; i < CIY_LED_COUNT; i++) {
+        if (i == 15) continue;
+        assert(bytes[i] == 0x00);
+        assert(bytes[CIY_LED_COUNT + i] == 0x00);
+        assert(bytes[2 * CIY_LED_COUNT + i] == 0x00);
+    }
+
+    assert(kb.currentState.brightness == 3);
+    assert(kb.currentState.mode == 19);
 }
 
 static void test_keyboard_key_lookup(void) {
@@ -324,17 +343,36 @@ static void test_malformed_json_slots_ignored(void) {
     assert(sanitized.count == 1);
     assert([sanitized[@"14"] isEqualToString:@"#FF5500"]);
 
-    // Test mit Backend-Pufferübertragung: Darf niemals crashen
+    // Test mit Backend-Pufferübertragung: Darf niemals crashen und out-of-bounds Indizes müssen ignoriert werden
+    [KeyboardBackend resetTestingPayload];
     NSMutableDictionary<NSNumber *, NSColor *> *keyColors = [NSMutableDictionary dictionary];
-    keyColors[@(-999)] = [NSColor redColor];
-    keyColors[@(9999)] = [NSColor blueColor];
-    keyColors[@(14)] = [NSColor redColor];
+    keyColors[@(-999)] = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+    keyColors[@(9999)] = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+    keyColors[@(14)] = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0];
     BOOL ok = [[KeyboardBackend shared] sendKeyColors:keyColors brightness:5 defaultColor:nil];
-    (void)ok;
+    assert(ok);
+
+    NSData *payload = [KeyboardBackend lastSentPlanarPayload];
+    assert(payload != nil && payload.length == CIY_PLANAR_RGB_SIZE);
+    const uint8_t *bytes = (const uint8_t *)payload.bytes;
+
+    // Nur Slot 14 (Index 15) darf rot gesetzt sein
+    assert(bytes[15] == 0xFF);
+    assert(bytes[CIY_LED_COUNT + 15] == 0x00);
+    assert(bytes[2 * CIY_LED_COUNT + 15] == 0x00);
+
+    // Alle anderen Indizes müssen 0x00 sein
+    for (int i = 0; i < CIY_LED_COUNT; i++) {
+        if (i == 15) continue;
+        assert(bytes[i] == 0x00);
+        assert(bytes[CIY_LED_COUNT + i] == 0x00);
+        assert(bytes[2 * CIY_LED_COUNT + i] == 0x00);
+    }
 }
 
 int main(void) {
     @autoreleasepool {
+        [KeyboardBackend setTestingMode:YES];
         test_hex_conversion();
         test_profile_creation_and_update();
         test_keyboard_view_colors();

@@ -29,6 +29,23 @@ extern NSNotificationName const KeyboardBackendHotplugNotification;
 - (BOOL)sendKeyColors:(NSDictionary<NSNumber *, NSColor *> *)keyColors defaultColor:(nullable NSColor *)defaultColor;
 - (BOOL)sendKeyColors:(NSDictionary<NSNumber *, NSColor *> *)keyColors brightness:(uint8_t)brightness defaultColor:(nullable NSColor *)defaultColor;
 
+#pragma mark - Testing Mode Support
+
+/// Aktiviert oder deaktiviert den hardwarefreien Testmodus.
+/// Im Testmodus schlagen Verbindungen nicht fehl, Hardware-Schreibvorgänge werden simuliert
+/// und der jeweils zuletzt gesendete 378-Byte Planar-RGB-Payload wird im Speicher gepuffert.
++ (void)setTestingMode:(BOOL)enabled;
+
+/// Gibt zurück, ob der hardwarefreie Testmodus derzeit aktiv ist.
++ (BOOL)isTestingMode;
+
+/// Liefert den zuletzt im Testmodus gesendeten 378-Byte Planar-RGB-Payload oder nil,
+/// falls bisher kein Payload gesendet oder der Puffer zurückgesetzt wurde.
++ (nullable NSData *)lastSentPlanarPayload;
+
+/// Setzt den gespeicherten Test-Payload zurück (löscht lastSentPlanarPayload).
++ (void)resetTestingPayload;
+
 @end
 
 NS_ASSUME_NONNULL_END

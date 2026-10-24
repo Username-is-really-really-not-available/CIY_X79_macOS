@@ -116,15 +116,17 @@ void ciy_bus_unlock(void) {
 static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t reportId, uint8_t *buf, uint16_t len,
                         UInt32 *done) {
     if (!d || !d->dev) return false;
-    IOUSBDevRequest req = {
+    IOUSBDevRequestTO req = {
         .bmRequestType = (UInt8)USBmakebmRequestType(out ? kUSBOut : kUSBIn, kUSBClass, kUSBInterface),
         .bRequest = bRequest,
         .wValue = (uint16_t)((0x03 << 8) | reportId),
         .wIndex = 1,
         .wLength = len,
-        .pData = buf
+        .pData = buf,
+        .completionTimeout = 1000, // 1000 ms Timeout
+        .noDataTimeout = 1000      // 1000 ms Timeout
     };
-    IOReturn kr = (*d->dev)->DeviceRequest(d->dev, &req);
+    IOReturn kr = (*d->dev)->DeviceRequestTO(d->dev, &req);
     if (done) *done = req.wLenDone;
     return kr == kIOReturnSuccess;
 }

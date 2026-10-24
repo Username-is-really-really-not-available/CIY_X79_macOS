@@ -1,6 +1,10 @@
 #import "KeyboardBackend.h"
+#include <stdlib.h>
 
 NSNotificationName const KeyboardBackendHotplugNotification = @"KeyboardBackendHotplugNotification";
+
+static BOOL sTestingMode = NO;
+static NSData *sLastSentPlanarPayload = nil;
 
 @interface KeyboardBackend () {
     CIYDevice _device;
@@ -21,6 +25,35 @@ NSNotificationName const KeyboardBackendHotplugNotification = @"KeyboardBackendH
         instance = [[KeyboardBackend alloc] init];
     });
     return instance;
+}
+
+#pragma mark - Testing Mode Support
+
++ (void)setTestingMode:(BOOL)enabled {
+    @synchronized ([KeyboardBackend class]) {
+        sTestingMode = enabled;
+    }
+}
+
++ (BOOL)isTestingMode {
+    @synchronized ([KeyboardBackend class]) {
+        if (sTestingMode) {
+            return YES;
+        }
+        return (getenv("CIY_TESTING") != NULL);
+    }
+}
+
++ (nullable NSData *)lastSentPlanarPayload {
+    @synchronized ([KeyboardBackend class]) {
+        return [sLastSentPlanarPayload copy];
+    }
+}
+
++ (void)resetTestingPayload {
+    @synchronized ([KeyboardBackend class]) {
+        sLastSentPlanarPayload = nil;
+    }
 }
 
 - (instancetype)init {
@@ -123,6 +156,10 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 
 - (BOOL)connect {
     @synchronized (self) {
+        if ([KeyboardBackend isTestingMode]) {
+            self.isConnected = YES;
+            return YES;
+        }
         ciy_close(&_device);
         BOOL ok = ciy_open(&_device);
         self.isConnected = ok;
@@ -138,6 +175,10 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 
 - (void)disconnect {
     @synchronized (self) {
+        if ([KeyboardBackend isTestingMode]) {
+            self.isConnected = NO;
+            return;
+        }
         ciy_close(&_device);
         self.isConnected = NO;
     }
@@ -145,6 +186,9 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 
 - (BOOL)readCurrentState {
     @synchronized (self) {
+        if ([KeyboardBackend isTestingMode]) {
+            return YES;
+        }
         if (!_device.dev && ![self connect]) return NO;
         KeyboardLightingState st;
         if (!ciy_get_state(&_device, &st)) {
@@ -158,6 +202,19 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 /// Report 0x0B, 50 ms Pause, danach Modus 19 (siehe README 2.B).
 - (BOOL)applyProfile:(const uint8_t *)rgb brightness:(uint8_t)brightness {
     @synchronized (self) {
+        if ([KeyboardBackend isTestingMode]) {
+            @synchronized ([KeyboardBackend class]) {
+                sLastSentPlanarPayload = [NSData dataWithBytes:rgb length:CIY_PLANAR_RGB_SIZE];
+            }
+            KeyboardLightingState st = self.currentState;
+            st.mode = 19;
+            st.color = 0;
+            st.speed = 0;
+            st.brightness = (brightness <= CIY_MAX_BRIGHTNESS) ? brightness : CIY_MAX_BRIGHTNESS;
+            self.currentState = st;
+            return YES;
+        }
+
         if (!_device.dev && ![self connect]) return NO;
         if (!ciy_apply_custom_profile_with_brightness(&_device, rgb, CIY_PLANAR_RGB_SIZE, brightness)) {
             [self disconnect];

@@ -47,7 +47,7 @@ static NSString * const kFallbackProfileIdKey = @"CIYX79FallbackProfileId_v1";
 static NSString *HexFromColor(NSColor *color) {
     if (!color) return @"#000000";
     NSColor *srgb = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    if (!srgb) srgb = color;
+    if (!srgb) return @"#000000"; // Sicherer Fallback statt Crash bei inkompatiblem Farbraum
     CGFloat r = 0, g = 0, b = 0, a = 0;
     [srgb getRed:&r green:&g blue:&b alpha:&a];
     int ir = (int)(r * 255.0 + 0.5);
@@ -726,6 +726,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)executeAutoSwitch {
     if (!_autoTriggerEnabled || !_pendingAppBundleId) return;
 
+    // Ungespeicherte Bearbeitungen des Benutzers im Editor niemals automatisch überschreiben!
+    if (_hasUnsavedEdits) {
+        _statusLabel.stringValue = [NSString stringWithFormat:@"● Auto-Trigger pausiert: Profil „%@“ hat ungespeicherte Änderungen", [self currentProfileName]];
+        _statusLabel.textColor = [NSColor systemOrangeColor];
+        return;
+    }
+
     // 1. Suche nach einem Profil mit passender Bundle-ID
     NSInteger targetIdx = -1;
     for (NSUInteger i = 0; i < _profiles.count; i++) {
@@ -961,7 +968,6 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         if (returnCode == NSAlertFirstButtonReturn) {
             NSString *deletedId = self->_profiles[(NSUInteger)idx][@"id"];
             [self->_profiles removeObjectAtIndex:(NSUInteger)idx];
-            [self saveProfilesToDefaults];
 
             NSUInteger nextIdx = (idx > 0) ? (NSUInteger)(idx - 1) : 0;
             self->_currentActiveProfileId = self->_profiles[nextIdx][@"id"];
@@ -969,6 +975,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 self->_fallbackProfileId = self->_profiles[nextIdx][@"id"];
                 [[NSUserDefaults standardUserDefaults] setObject:self->_fallbackProfileId forKey:kFallbackProfileIdKey];
             }
+
+            [self saveProfilesToDefaults]; // Erst speichern, nachdem activeProfileId aktualisiert wurde!
+
             [self refreshProfilesPopUp];
             [self->_profilesPopUp selectItemAtIndex:(NSInteger)nextIdx];
             [self loadProfileIntoView:self->_profiles[nextIdx]];
@@ -1235,7 +1244,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             for (id item in items) {
                 if ([item isKindOfClass:[NSDictionary class]]) {
                     NSDictionary *dict = (NSDictionary *)item;
-                    NSString *name = dict[@"name"] ?: @"Importiertes Profil";
+                    NSString *name = @"Importiertes Profil";
+                    if ([dict[@"name"] isKindOfClass:[NSString class]] && [dict[@"name"] length] > 0) {
+                        name = dict[@"name"];
+                    }
                     NSDictionary *slots = dict[@"slots"];
                     if (slots && [slots isKindOfClass:[NSDictionary class]]) {
                         NSMutableDictionary<NSString *, NSString *> *fullSlots = [NSMutableDictionary dictionaryWithCapacity:126];
@@ -1259,8 +1271,20 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                         newProf[@"id"] = newId;
                         newProf[@"name"] = name;
                         newProf[@"slots"] = fullSlots;
-                        if (dict[@"appBundleId"]) newProf[@"appBundleId"] = dict[@"appBundleId"];
-                        if (dict[@"appName"]) newProf[@"appName"] = dict[@"appName"];
+                        if ([dict[@"appBundleId"] isKindOfClass:[NSString class]] && [dict[@"appBundleId"] length] > 0) {
+                            NSString *importedBundleId = dict[@"appBundleId"];
+                            // Bestehende Verknüpfung bei anderen Profilen lösen, um Konflikte zu vermeiden:
+                            for (NSMutableDictionary *existing in self->_profiles) {
+                                if ([existing[@"appBundleId"] isEqualToString:importedBundleId]) {
+                                    [existing removeObjectForKey:@"appBundleId"];
+                                    [existing removeObjectForKey:@"appName"];
+                                }
+                            }
+                            newProf[@"appBundleId"] = importedBundleId;
+                        }
+                        if ([dict[@"appName"] isKindOfClass:[NSString class]]) {
+                            newProf[@"appName"] = dict[@"appName"];
+                        }
                         [self->_profiles addObject:newProf];
                         lastId = newId;
                         importedCount++;

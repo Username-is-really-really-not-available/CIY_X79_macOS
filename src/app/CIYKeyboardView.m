@@ -230,6 +230,11 @@ static const KeyItem ROW_4[] = {
 }
 
 - (void)keyDown:(NSEvent *)event {
+    if (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) {
+        [super keyDown:event];
+        return;
+    }
+
     int targetSlot = -1;
     unsigned short code = event.keyCode;
 

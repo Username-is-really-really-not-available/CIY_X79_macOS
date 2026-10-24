@@ -46,6 +46,28 @@ static const char *COLOR_NAMES[] = {
     "Farbwechsel 2"     // 10
 };
 
+static void print_escaped_json_string(FILE *stream, const char *str) {
+    if (!str) return;
+    for (const char *p = str; *p; p++) {
+        switch (*p) {
+            case '"':  fputs("\\\"", stream); break;
+            case '\\': fputs("\\\\", stream); break;
+            case '\b': fputs("\\b", stream); break;
+            case '\f': fputs("\\f", stream); break;
+            case '\n': fputs("\\n", stream); break;
+            case '\r': fputs("\\r", stream); break;
+            case '\t': fputs("\\t", stream); break;
+            default:
+                if ((unsigned char)*p < 0x20) {
+                    fprintf(stream, "\\u%04x", (unsigned char)*p);
+                } else {
+                    fputc(*p, stream);
+                }
+                break;
+        }
+    }
+}
+
 // Parst eine Ganzzahl im Bereich [min, max]; false bei Text oder Bereichsverletzung.
 static bool parse_range(const char *str, long min, long max, uint8_t *out) {
     if (!str) return false;
@@ -171,7 +193,9 @@ int main(int argc, char **argv) {
                     continue;
                 }
                 if (json_mode) {
-                    printf("{\n  \"connected\": false,\n  \"error\": \"Unbekannte Option '%s'\"\n}\n", argv[i]);
+                    printf("{\n  \"connected\": false,\n  \"error\": \"Unbekannte Option '");
+                    print_escaped_json_string(stdout, argv[i]);
+                    printf("'\"\n}\n");
                 } else {
                     fprintf(stderr, "Fehler: Unbekannte Option '%s'.\n", argv[i]);
                     fprintf(stderr, "Rufen Sie '%s --help' für weitere Informationen auf.\n", argv[0]);
@@ -230,7 +254,9 @@ int main(int argc, char **argv) {
             uint8_t r = 0, g = 0, b = 0;
             if (!ciy_parse_hex_color(color_arg, &r, &g, &b)) {
                 if (json_mode) {
-                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Hex-Farbe '%s' (erwartet #RRGGBB oder RRGGBB)\"\n}\n", color_arg);
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Hex-Farbe '");
+                    print_escaped_json_string(stdout, color_arg);
+                    printf("' (erwartet #RRGGBB oder RRGGBB)\"\n}\n");
                 } else {
                     fprintf(stderr, "Fehler: Ungültige Hex-Farbe '%s'. Erwartet: #RRGGBB oder RRGGBB (z. B. #FF5500).\n", color_arg);
                 }
@@ -239,7 +265,9 @@ int main(int argc, char **argv) {
                 uint8_t brightness = CIY_MAX_BRIGHTNESS;
                 if (bright_arg && !parse_range(bright_arg, 0, CIY_MAX_BRIGHTNESS, &brightness)) {
                     if (json_mode) {
-                        printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '%s' (erlaubt: 0..5)\"\n}\n", bright_arg);
+                        printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '");
+                        print_escaped_json_string(stdout, bright_arg);
+                        printf("' (erlaubt: 0..5)\"\n}\n");
                     } else {
                         fprintf(stderr, "Fehler: Ungültige Helligkeit '%s'. Erlaubter Bereich: 0..5.\n", bright_arg);
                     }
@@ -310,7 +338,9 @@ int main(int argc, char **argv) {
 
             if (bright_error) {
                 if (json_mode) {
-                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '%s' (erlaubt: 0..5)\"\n}\n", extra_args[1]);
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '");
+                    print_escaped_json_string(stdout, extra_args[1]);
+                    printf("' (erlaubt: 0..5)\"\n}\n");
                 } else {
                     fprintf(stderr, "Fehler: Ungültige Helligkeit '%s'. Erlaubter Bereich: 0..5.\n", extra_args[1]);
                 }
@@ -322,9 +352,15 @@ int main(int argc, char **argv) {
                 if (!ciy_load_profile_file(file_arg, target_profile, rgb, profile_name, sizeof(profile_name), &slots_count)) {
                     if (json_mode) {
                         if (target_profile) {
-                            printf("{\n  \"success\": false,\n  \"error\": \"Profil '%s' konnte in '%s' nicht gefunden werden\"\n}\n", target_profile, file_arg);
+                            printf("{\n  \"success\": false,\n  \"error\": \"Profil '");
+                            print_escaped_json_string(stdout, target_profile);
+                            printf("' konnte in '");
+                            print_escaped_json_string(stdout, file_arg);
+                            printf("' nicht gefunden werden\"\n}\n");
                         } else {
-                            printf("{\n  \"success\": false,\n  \"error\": \"Profil aus '%s' konnte nicht geladen werden\"\n}\n", file_arg);
+                            printf("{\n  \"success\": false,\n  \"error\": \"Profil aus '");
+                            print_escaped_json_string(stdout, file_arg);
+                            printf("' konnte nicht geladen werden\"\n}\n");
                         }
                     } else {
                         if (target_profile) {
@@ -346,8 +382,12 @@ int main(int argc, char **argv) {
                     }
                     if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
                         if (json_mode) {
-                            printf("{\n  \"success\": true,\n  \"action\": \"load\",\n  \"file\": \"%s\",\n  \"name\": \"%s\",\n  \"keys\": %d,\n  \"brightness\": %u\n}\n",
-                                   file_arg, profile_name, slots_count, brightness);
+                            printf("{\n  \"success\": true,\n  \"action\": \"load\",\n  \"file\": \"");
+                            print_escaped_json_string(stdout, file_arg);
+                            printf("\",\n  \"name\": \"");
+                            print_escaped_json_string(stdout, profile_name);
+                            printf("\",\n  \"keys\": %d,\n  \"brightness\": %u\n}\n",
+                                   slots_count, brightness);
                         } else {
                             printf("Profil erfolgreich auf Tastatur übertragen!\n");
                         }
@@ -476,7 +516,9 @@ int main(int argc, char **argv) {
         }
     } else {
         if (json_mode) {
-            printf("{\n  \"success\": false,\n  \"error\": \"Unbekannter Befehl '%s'\"\n}\n", cmd);
+            printf("{\n  \"success\": false,\n  \"error\": \"Unbekannter Befehl '");
+            print_escaped_json_string(stdout, cmd);
+            printf("'\"\n}\n");
         } else {
             fprintf(stderr, "Unbekannter Befehl: %s\n", cmd);
             fprintf(stderr, "Verfügbare Befehle: status, fill, load, wasd, wasd-arrows, all-red, list-modes, set\n");
