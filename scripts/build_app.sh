@@ -19,6 +19,7 @@ mkdir -p "${RESOURCES_DIR}"
 
 echo "1. Kompiliere Universal Binary (arm64 & x86_64) mit Clang..."
 clang -arch arm64 -arch x86_64 \
+    -O2 \
     -Wall -Wextra \
     -fobjc-arc \
     -framework Cocoa \
@@ -34,6 +35,7 @@ clang -arch arm64 -arch x86_64 \
 
 echo "2. Kompiliere CLI-Tool ciy_ctl (Universal Binary)..."
 clang -arch arm64 -arch x86_64 \
+    -O2 \
     -Wall -Wextra \
     -framework IOKit \
     -framework CoreFoundation \

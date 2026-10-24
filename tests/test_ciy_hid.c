@@ -40,6 +40,9 @@ static void test_validation_without_device(void) {
     assert(!ciy_send_planar_rgb(&d, rgb, CIY_PLANAR_RGB_SIZE - 1)); // falsche Länge
     assert(!ciy_send_planar_rgb(&d, NULL, CIY_PLANAR_RGB_SIZE));
     assert(!ciy_send_planar_rgb(&d, rgb, CIY_PLANAR_RGB_SIZE));      // kein Gerät
+    assert(!ciy_apply_custom_profile_with_brightness(&d, rgb, sizeof(rgb), 5));
+    assert(!ciy_apply_custom_profile_with_brightness(&d, NULL, sizeof(rgb), 5));
+    assert(!ciy_apply_custom_profile_with_brightness(&d, rgb, 10, 5));
     CIYLightingState bad = {21, 0, 0, 0};
     assert(!ciy_set_state(&d, bad));
     CIYLightingState ok = {19, 0, 0, 5};
@@ -220,6 +223,9 @@ static void test_load_profile_file(void) {
     remove(tmp_path);
 }
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 static void test_bus_lock_reentrancy(void) {
     // 1. Erstes Locken
     assert(ciy_bus_lock());
@@ -227,6 +233,17 @@ static void test_bus_lock_reentrancy(void) {
     assert(ciy_bus_lock());
     // 3. Entsperren der beiden Stufen
     ciy_bus_unlock();
+    ciy_bus_unlock();
+}
+
+static void test_lockfile_security(void) {
+    assert(ciy_bus_lock());
+    char user_path[128];
+    snprintf(user_path, sizeof(user_path), "/tmp/ciy_x79_bus_%u.lock", (unsigned)getuid());
+    struct stat st;
+    assert(stat(user_path, &st) == 0);
+    // Prüfen, dass das Lockfile existiert und Modus 0600 hat (nur Besitzer darf zugreifen)
+    assert((st.st_mode & 0777) == 0600);
     ciy_bus_unlock();
 }
 
@@ -242,6 +259,7 @@ int main(void) {
     test_parse_profile_json();
     test_load_profile_file();
     test_bus_lock_reentrancy();
+    test_lockfile_security();
     puts("Alle Tests bestanden.");
     return 0;
 }

@@ -15,9 +15,9 @@ trap 'rm -rf "${STAGING_DIR}"' EXIT INT TERM
 
 echo "=== Erstelle ${APP_NAME}-${VERSION}.dmg ==="
 
-# 1. Sicherstellen, dass die App frisch kompiliert und signiert ist
-if [ ! -d "${APP_BUNDLE}" ]; then
-    echo "Baue ${APP_BUNDLE} zuerst..."
+# 1. Sicherstellen, dass App und CLI-Tool frisch kompiliert und signiert sind
+if [ ! -d "${APP_BUNDLE}" ] || [ ! -f "${DIST_DIR}/ciy_ctl" ]; then
+    echo "Baue ${APP_BUNDLE} und ciy_ctl zuerst..."
     "${PROJECT_ROOT}/scripts/build_app.sh" "${VERSION}"
 fi
 
@@ -27,7 +27,7 @@ rm -rf "${STAGING_DIR}"
 mkdir -p "${STAGING_DIR}"
 
 cp -R "${APP_BUNDLE}" "${STAGING_DIR}/"
-cp "${DIST_DIR}/ciy_ctl" "${STAGING_DIR}/" 2>/dev/null || true
+cp "${DIST_DIR}/ciy_ctl" "${STAGING_DIR}/"
 cp README*.md "${STAGING_DIR}/" 2>/dev/null || true
 cp "LICENSE" "${STAGING_DIR}/" 2>/dev/null || true
 ln -s /Applications "${STAGING_DIR}/Applications"

@@ -28,4 +28,7 @@ clang -Wall -Wextra \
     -o /tmp/test_profile_logic
 /tmp/test_profile_logic
 
+echo "=== Test 3: CLI ciy_ctl Tests ==="
+./tests/test_ciy_ctl.sh
+
 echo "=== Alle Test-Suiten erfolgreich durchgelaufen! ==="
