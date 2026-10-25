@@ -229,6 +229,15 @@ static void test_keyboard_key_lookup(void) {
     assert([[kv labelForSlot:83] isEqualToString:@"◄"]);
     assert([[kv labelForSlot:89] isEqualToString:@"▼"]);
     assert([[kv labelForSlot:95] isEqualToString:@"►"]);
+    // Deutsche ISO-DE Tasten
+    assert([[kv labelForSlot:76] isEqualToString:@"< >"]);
+    assert([[kv labelForSlot:75] isEqualToString:@"# '"]);
+    assert([[kv labelForSlot:67] isEqualToString:@"ß"]);
+    assert([[kv labelForSlot:73] isEqualToString:@"´"]);
+    assert([[kv labelForSlot:68] isEqualToString:@"Ü"]);
+    assert([[kv labelForSlot:63] isEqualToString:@"Ö"]);
+    assert([[kv labelForSlot:69] isEqualToString:@"Ä"]);
+    assert([[kv labelForSlot:81] isEqualToString:@"↵ Enter"]);
 }
 
 static void test_app_trigger_profile_attributes(void) {

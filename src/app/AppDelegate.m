@@ -343,7 +343,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [kbView addSubview:_colorWell];
 
     NSButton *fillAllBtn = [NSButton buttonWithTitle:@"Alle..." target:self action:@selector(onFillAllKeys:)];
-    fillAllBtn.toolTip = @"Alle 68 Tasten im Editor mit einer Basisfarbe füllen";
+    fillAllBtn.toolTip = @"Alle 69 Tasten im Editor mit einer Basisfarbe füllen";
     fillAllBtn.frame = NSMakeRect(btnX + 42, kbBoxH - 48, 64, 24);
     fillAllBtn.bezelStyle = NSBezelStyleRounded;
     fillAllBtn.autoresizingMask = NSViewMinYMargin;

@@ -15,7 +15,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 CIY_CTL = os.path.join(PROJECT_ROOT, "dist", "ciy_ctl")
 
-# Alle 68 Tasten der deutschen CIY X79 ISO-DE Matrix mit Reihen- und Zonen-Zuordnung
+# Alle 69 Tasten der deutschen CIY X79 ISO-DE Matrix mit Reihen- und Zonen-Zuordnung
 KEY_MATRIX = [
     # Reihe 0
     {"slot": 1,  "label": "Esc",        "row": 0, "zone": "accent"},

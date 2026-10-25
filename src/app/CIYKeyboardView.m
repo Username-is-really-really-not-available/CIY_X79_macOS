@@ -260,6 +260,18 @@ static const KeyItem ROW_4[] = {
         case 123: targetSlot = 83; break; // Left Arrow
         case 125: targetSlot = 89; break; // Down Arrow
         case 124: targetSlot = 95; break; // Right Arrow
+        // Deutsche ISO-Sonder- und Umlauttasten
+        case 50:  targetSlot = 76; break; // < > | (ISO Section Key)
+        case 42:  targetSlot = 75; break; // # '
+        case 24:  targetSlot = 74; break; // + *
+        case 27:  targetSlot = 67; break; // ß ?
+        case 30:  targetSlot = 73; break; // ´ `
+        case 33:  targetSlot = 68; break; // Ü
+        case 41:  targetSlot = 63; break; // Ö
+        case 39:  targetSlot = 69; break; // Ä
+        case 44:  targetSlot = 64; break; // - _
+        case 43:  targetSlot = 52; break; // , ;
+        case 47:  targetSlot = 58; break; // . :
         default: break;
     }
 
