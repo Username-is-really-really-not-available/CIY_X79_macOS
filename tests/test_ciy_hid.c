@@ -193,6 +193,19 @@ static void test_parse_profile_json(void) {
     assert(count == 1); // Nur Slot 124 ist gültig (Index 125)
     assert(rgb[125] == 0xFF && rgb[CIY_LED_COUNT + 125] == 0xFF && rgb[2 * CIY_LED_COUNT + 125] == 0xFF);
 
+    // 7. Unicode Escapes (\u00df = ß, \u00e4 = ä, \u00fc = ü)
+    const char *unicode_json =
+        "{\n"
+        "  \"name\": \"Profil-\\u00df-\\u00e4\",\n"
+        "  \"slots\": {\n"
+        "    \"10\": \"#123456\"\n"
+        "  }\n"
+        "}";
+    memset(name, 0, sizeof(name));
+    assert(ciy_parse_profile_json(unicode_json, "Profil-ß-ä", rgb, name, sizeof(name), &count));
+    assert(count == 1);
+    assert(strcmp(name, "Profil-ß-ä") == 0);
+
     // 7. Ungültiges JSON
     assert(!ciy_parse_profile_json("{}", NULL, rgb, name, sizeof(name), &count));
     assert(!ciy_parse_profile_json("kein json", NULL, rgb, name, sizeof(name), &count));

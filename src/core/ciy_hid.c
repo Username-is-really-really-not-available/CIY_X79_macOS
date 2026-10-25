@@ -312,6 +312,13 @@ static const char *skip_ws(const char *p) {
     return p;
 }
 
+static inline int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 static const char *parse_json_str(const char *p, char *out, size_t max_len) {
     if (!p || *p != '"') return NULL;
     p++;
@@ -320,6 +327,44 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
         if (*p == '\\') {
             p++;
             if (!*p) return NULL;
+            if (*p == 'u') {
+                int h0 = hex_digit(p[1]);
+                int h1 = hex_digit(p[2]);
+                int h2 = hex_digit(p[3]);
+                int h3 = hex_digit(p[4]);
+                if (h0 >= 0 && h1 >= 0 && h2 >= 0 && h3 >= 0) {
+                    uint32_t cp = (uint32_t)((h0 << 12) | (h1 << 8) | (h2 << 4) | h3);
+                    p += 4;
+                    if (cp < 0x80) {
+                        if (out && written + 1 < max_len) out[written++] = (char)cp;
+                    } else if (cp < 0x800) {
+                        if (out && written + 2 < max_len) {
+                            out[written++] = (char)(0xC0 | (cp >> 6));
+                            out[written++] = (char)(0x80 | (cp & 0x3F));
+                        }
+                    } else {
+                        if (out && written + 3 < max_len) {
+                            out[written++] = (char)(0xE0 | (cp >> 12));
+                            out[written++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                            out[written++] = (char)(0x80 | (cp & 0x3F));
+                        }
+                    }
+                    p++;
+                    continue;
+                }
+            } else if (*p == 'n') {
+                if (out && written + 1 < max_len) out[written++] = '\n';
+                p++;
+                continue;
+            } else if (*p == 'r') {
+                if (out && written + 1 < max_len) out[written++] = '\r';
+                p++;
+                continue;
+            } else if (*p == 't') {
+                if (out && written + 1 < max_len) out[written++] = '\t';
+                p++;
+                continue;
+            }
         }
         if (out && written + 1 < max_len) {
             out[written++] = *p;
