@@ -1,6 +1,6 @@
 # CIY X79 RGB macOS Steuerung & Protokolldokumentation
 
-Eine native, vollständige macOS-Lösung (Apple Silicon & Intel) zur Ansteuerung der Beleuchtung, Effekte und individueller Tasten-Farbprofile (z. B. WASD-Gaming-Profil) für die mechanische Tastatur **CIY X79** (ISO-DE Layout, 65%, 68 Tasten).
+Eine native, vollständige macOS-Lösung (Apple Silicon & Intel) zur Ansteuerung der Beleuchtung, Effekte und individueller Tasten-Farbprofile (z. B. WASD-Gaming-Profil) für die mechanische Tastatur **CIY X79** (ISO-DE Layout, 65%, 69 Tasten).
 
 **Sprachen / Languages:** [🇩🇪 Deutsch](README.md) | [🇬🇧 English](README_EN.md) | [🇨🇳 简体中文](README_ZH.md) | [🇷🇺 Русский](README_RU.md)
 
@@ -11,12 +11,12 @@ Eine native, vollständige macOS-Lösung (Apple Silicon & Intel) zur Ansteuerung
 2. [Installation & macOS Gatekeeper (Erststart)](#2-installation--macos-gatekeeper-erststart)
 3. [Die gelösten Kernprobleme & Hardware-Erkenntnisse](#3-die-gelösten-kernprobleme--hardware-erkenntnisse)
 4. [USB-HID Protokoll-Referenz](#4-usb-hid-protokoll-referenz)
-5. [Vollständige Tastenmatrix & LED-Indizes (68 Tasten ISO-DE)](#5-vollständige-tastenmatrix--led-indizes-68-tasten-iso-de)
+5. [Vollständige Tastenmatrix & LED-Indizes (69 Tasten ISO-DE)](#5-vollständige-tastenmatrix--led-indizes-69-tasten-iso-de)
 6. [Alle Beleuchtungsmodi & Farbpaletten](#6-alle-beleuchtungsmodi--farbpaletten)
 7. [Die macOS-App (CIYX79Control.app)](#7-die-macos-app-ciyx79controlapp)
 8. [Das Terminal-Tool (ciy_ctl)](#8-das-terminal-tool-ciy_ctl)
 9. [Architektur & Schichtenmodell](#9-architektur--schichtenmodell)
-10. [Automatisierte Tests (scripts/run_tests.sh)](#10-automatisierte-tests-scriptsrun_testssh)
+10. [Automatisierte Tests & Hardware-Diagnose](#10-automatisierte-tests--hardware-diagnose)
 11. [Kompilierung & Build-Prozess](#11-kompilierung--build-prozess)
 12. [Sicherheit, Datenschutz & Ressourcen](#12-sicherheit-datenschutz--ressourcen)
 13. [Lizenz, Markenhinweis & Haftungsausschluss](#13-lizenz-markenhinweis--haftungsausschluss)
@@ -32,10 +32,13 @@ Eine native, vollständige macOS-Lösung (Apple Silicon & Intel) zur Ansteuerung
   * **Product ID (PID):** `0x0049`
   * **USB Interface:** Interface `1` (Vendor-Defined HID Class)
 
-### Layout-Fokus: Deutsches ISO-DE Layout (68 Tasten)
-Diese Software wurde speziell für die **deutsche ISO-DE Version (68 Tasten)** der CIY X79 entwickelt:
-* **ISO-Besonderheiten:** Vollständige Unterstützung der hohen zweizeiligen Enter-Taste (Matrix-Slot 81) und der `< > |`-Taste (Matrix-Slot 76) neben der linken Shift-Taste sowie aller deutschen Umlaute (`Ä`, `Ö`, `Ü`, `ß`).
-* **Unterschied zu ANSI-US:** Die internationale ANSI-US Version der CIY X79 besitzt nur 67 Tasten (breite flache Enter-Taste, keine `< > |`-Taste). Das Protokoll ist identisch, die visuelle Vektormatrix dieser App bildet jedoch das authentische deutsche ISO-Layout ab.
+### Layout-Fokus: Deutsches ISO-DE Layout (69 physische Tasten)
+Diese Software wurde speziell für die **deutsche ISO-DE Version** der CIY X79 entwickelt:
+* **Exakte Tastenanzahl (69 Tasten):** Während 65%-Tastaturen im ANSI-US-Format meist 67 oder 68 Tasten besitzen, umfasst das deutsche ISO-DE Layout exakt **69 physische Tasten** mit eigenen Schaltern und einzeln steuerbaren RGB-LEDs:
+  * 61 Tasten im Haupt-Schreibblock (inkl. zweizeiligem ISO-Enter, `< > |` neben linker Shift-Taste und `# '` in Reihe 2)
+  * 8 Tasten im Navigations- und Pfeilblock (`Entf`, `BildAuf`, `BildAb`, `Ende` + 4 Pfeiltasten).
+* **ISO-Besonderheiten:** Vollständige native Unterstützung aller deutschen Umlaute (`Ä`, `Ö`, `Ü`, `ß`), Akzente (`´ \``) und Sonderzeichen.
+* **Unterschied zu ANSI-US:** Die internationale ANSI-US Version der CIY X79 besitzt nur 67 oder 68 Tasten (flache einzeilige Enter-Taste, keine `< > |`-Taste). Das USB-HID-Protokoll ist identisch; der interaktive Canvas der GUI und die Diagnose-Tools bilden jedoch das authentische deutsche ISO-Layout ab.
 
 ### Sofortige Nutzung:
 
@@ -43,8 +46,12 @@ Diese Software wurde speziell für die **deutsche ISO-DE Version (68 Tasten)** d
   Doppelklick auf [CIYX79Control.app](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/CIYX79Control.app) im Finder. Die App startet direkt im macOS Dock mit interaktiver Tastatur-Vektoransicht und Profilverwaltung.
 * **Terminal-Tool (CLI):**
   ```bash
-  # Status abfragen
+  # Status abfragen (mit Verbindungsprüfung)
   ./ciy_ctl status
+  ./ciy_ctl status --json
+
+  # Vollflächige Einzelfarbe mit Helligkeitsflag (-b 0..5)
+  ./ciy_ctl fill "#FF5500" -b 4
 
   # WASD-Gaming-Profil aktivieren (WASD Rot, Basis Blau)
   ./ciy_ctl wasd
@@ -108,6 +115,18 @@ $$\text{LED\_Index} = \text{Matrix\_Slot} + 1$$
 ### D. Volatiler XRAM vs. Hardware-Cycling per `Fn + ;`
 Die Sinowealth MCU besitzt für Per-Key-Matrizen keinen persistenten Flash-ROM, sondern hält benutzerdefinierte Farben im flüchtigen **XRAM**. Wird an der Tastatur per Shortcut (`Fn + ;`) durch Effekte geschaltet, überschreiben die integrierten Animationsroutinen den RAM. Über die macOS-App oder das CLI-Tool kann das Wunschprofil in weniger als 50 ms per Klick wiederhergestellt werden.
 
+### E. Multi-User Lockfile-Sicherheit (`/tmp/ciy_x79_bus_<UID>.lock`)
+Um gleichzeitige Zugriffe auf den USB-Endpunkt zwischen Cocoa-Hintergrund-Queue (`_hwQueue`) und CLI-Befehlen (`ciy_ctl`) abzusichern, nutzt der Treiber dateibasierte Mutexe. Anstelle eines unsicheren globalen Lockfiles verwendet das System benutzerspezifische Lockfiles mit der User-ID (`/tmp/ciy_x79_bus_<UID>.lock`) und striktem Modus `0600` (nur der aktuelle Benutzer hat Zugriffsrechte). Ein konfigurierter 2,0-Sekunden-Timeout verhindert blockierende Endlosschleifen.
+
+### F. Robuste JSON Unicode-Escape-Dekodierung (`\uXXXX`)
+Standard-JSON-Serialisierer (z. B. Pythons `json.dump` oder Web-Generatoren) kodieren Umlaute und Sonderzeichen standardmäßig als ASCII-Fluchtsequenzen (`\u00df` für `ß`, `\u00e4` für `ä`, `\u00fc` für `ü`). Der integrierte C-Parser in [`ciy_hid.c`](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/src/core/ciy_hid.c) dekodiert alle `\uXXXX`-Sequenzen automatisch nach standardkonformem UTF-8. Profilnamen mit deutschen Sonderzeichen werden damit systemweit einheitlich verarbeitet.
+
+### G. Wide-Gamut (Display P3) Farbklemmung
+Auf modernen Macs mit Apple Liquid Retina / Display P3 Bildschirmen können native Farbwähler (`NSColorPanel`) Farbkoordinaten außerhalb des Standard-sRGB-Gamuts liefern (Kanalwerte `< 0.0` oder `> 1.0`). Die Farb-Engine klemmt alle Farbkanäle mathematisch strikt auf `[0, 255]`, bevor der planare USB-Puffer generiert wird. Dies schließt Integer-Überläufe und unvorhersehbare LED-Farben kategorisch aus.
+
+### H. Hardware-Testisolation (`CIY_TESTING=1`)
+Automatisierte Unit- und Integrationstests (CI/CD) müssen unabhängig von physisch angeschlossener Hardware reproduzierbar durchlaufen. Wird die Umgebungsvariable `CIY_TESTING=1` gesetzt, schaltet der USB-Treiber automatisch auf ein internes Mock-HID-Device um. Sämtliche Schreibbefehle (Reports `0x0A`, `0x0B`) werden rein im RAM validiert – das reale USB-Interface wird niemals angesprochen und physische Beleuchtungen bleiben unangetastet.
+
 ---
 
 ## 4. USB-HID Protokoll-Referenz
@@ -140,9 +159,9 @@ Die Steuerung erfolgt über **USB Control Transfers** an Endpoint 0 (Interface 1
 
 ---
 
-## 5. Vollständige Tastenmatrix & LED-Indizes (68 Tasten ISO-DE)
+## 5. Vollständige Tastenmatrix & LED-Indizes (69 Tasten ISO-DE)
 
-Ermittelt durch die Analyse der HID-Matrix-Struktur und USB-Paket-Offsets der Tastatur:
+Ermittelt durch die Analyse der HID-Matrix-Struktur, Hardware-Latenz-Benchmarks und USB-Paket-Offsets der Tastatur. Das deutsche ISO-DE Layout besitzt **69 physische Tasten** (die hohe ISO-Enter-Taste belegt den Matrix-Slot 81 und erstreckt sich mechanisch über die Reihen 1 und 2):
 
 | Reihe | Tastenbeschriftung (ISO-DE) | Matrix Slot | USB LED-Index (`Slot + 1`) | Breite (U) |
 |---|---|---|---|---|
@@ -288,27 +307,30 @@ Die native macOS-Anwendung wurde in Objective-C/Cocoa geschrieben und benötigt 
 Für automatisierte Shell-Skripte, Menüleisten-Widgets (BitBar, SketchyBar), Raycast, Alfred oder puristische Bedienung ohne GUI:
 
 ```bash
-# Aktuellen Status anzeigen (Standard oder als JSON)
+# Aktuellen Status anzeigen (Standard oder maschinenlesbar als JSON)
 ./ciy_ctl status
 ./ciy_ctl status --json   # {"connected":true,"mode":19,"mode_name":"...","brightness":5,"speed":4}
 
 # Vollfarben & Hex-Töne sofort anwenden:
-# Syntax: ./ciy_ctl fill <#RRGGBB> [Helligkeit 0..5]
-./ciy_ctl fill "#FF5500"       # Alle Tasten in Orange (Helligkeit 5/5)
-./ciy_ctl fill 00FF88 3        # Hex ohne Raute, Helligkeit 3/5
-./ciy_ctl fill "#0088FF" --json # Mit JSON-Bestätigung für Skripte
+# Syntax: ./ciy_ctl fill <#RRGGBB> [-b 0..5]
+./ciy_ctl fill "#FF5500"             # Alle Tasten in Orange (Standardhelligkeit 5/5)
+./ciy_ctl fill "#00FF88" -b 3        # Helligkeit via Flag (-b oder --brightness)
+./ciy_ctl fill 0088FF 2              # Positionale Helligkeit (abwärtskompatibel)
+./ciy_ctl fill "#0088FF" --json      # Mit strukturierter JSON-Rückmeldung
 
-# Exportierte GUI-Profile (JSON) direkt über das Terminal anwenden:
-# Syntax: ./ciy_ctl load <profile.json> [Profilname] [Helligkeit 0..5]
-./ciy_ctl load meinkeyboard.json
-./ciy_ctl load meinkeyboard.json "Cyberpunk" 4 --json
+# Exportierte GUI-Profile (JSON) anwenden:
+# Syntax: ./ciy_ctl load <profile.json> [Profilname|Index] [-b 0..5]
+./ciy_ctl load meinkeyboard.json                        # Erstes Profil der Datei laden
+./ciy_ctl load meinkeyboard.json "Cyberpunk" -b 4       # Gezielt nach Name mit Helligkeit 4
+./ciy_ctl load meinkeyboard.json 2 -b 3                 # 2. Profil der Datei laden (1-basierter Index)
+./ciy_ctl load meinkeyboard.json "Büro" --json          # JSON-Status für Skripte
 
 # Standard-Gaming-Profile:
 ./ciy_ctl wasd          # WASD Rot, Basis Blau
 ./ciy_ctl wasd-arrows   # WASD Rot, Pfeile Gelb, Basis Blau
 ./ciy_ctl all-red       # Vollflächig statisch Rot
 
-# Beliebige Parameter manuell setzen:
+# Beliebige Firmware-Parameter manuell setzen:
 # Syntax: ./ciy_ctl set <Modus> [Farbe] [Tempo] [Helligkeit]
 ./ciy_ctl set 15 0 1 5  # Modus 15 (Statisch), Rot, Tempo 1, Helligkeit 5
 ./ciy_ctl set 0 0 0 0   # Beleuchtung komplett aus
@@ -322,9 +344,13 @@ Für automatisierte Shell-Skripte, Menüleisten-Widgets (BitBar, SketchyBar), Ra
 # fpath=(/Pfad/zu/CIY_X79_macOS/scripts/completions $fpath)
 # autoload -Uz compinit && compinit
 
-# Hilfe
+# Hilfe & Optionen
 ./ciy_ctl --help
 ```
+
+> [!TIP]
+> **Eindeutige Argument-Auflösung bei `load`:**
+> Folgt nach dem Dateinamen ein einzelnes Argument (z. B. `./ciy_ctl load meinkeyboard.json 3`), wird dies immer strikt als **Profilselektor** (hier: das 3. Profil der Datei) ausgewertet. Um die Helligkeit zu steuern, empfiehlt sich das explizite Flag `-b` bzw. `--brightness` (z. B. `-b 3`).
 
 ---
 
@@ -336,29 +362,31 @@ CIY_X79_macOS/
 ├── src/
 │   ├── core/                    # Reine C-USB-Treiber-Schicht (IOKit & HID)
 │   │   ├── ciy_hid.h            # USB HID Header, Planar-RGB- und JSON-Parser
-│   │   └── ciy_hid.c            # USB Control Requests, Low-Level Protocol
+│   │   └── ciy_hid.c            # USB Control Requests, Low-Level Protocol, Mock-Device
 │   ├── app/                     # Native Cocoa-Applikation (Objective-C)
 │   │   ├── main.m
 │   │   ├── AppDelegate.h / .m   # UI Lifecycle, Menüs, Export/Import, Farbauswahl
-│   │   ├── CIYKeyboardView.h / .m # Canvas-View (68 Tasten ISO-DE Vektoren)
-│   │   └── KeyboardBackend.h / .m # Thread-sicherer Treiber & Hotplug-Events
+│   │   ├── CIYKeyboardView.h / .m # Canvas-View (69 Tasten ISO-DE Vektoren)
+│   │   └── KeyboardBackend.h / .m # Thread-sicherer Treiber, P3-Clamp & Hotplug
 │   └── cli/                     # Kommandozeilen-Werkzeug
-│       └── ciy_ctl.c            # CLI ciy_ctl (Status, JSON, Fill, Load, Set)
+│       └── ciy_ctl.c            # CLI ciy_ctl (Status, JSON, Fill, Load, -b Flag)
 ├── resources/                   # App-Grafiken & Assets
 │   └── AppIcon.icns
 ├── scripts/                     # Build-, Test- und Packaging-Skripte
-│   ├── build_app.sh             # Universal Binary Compiler & Codesigning
+│   ├── build_app.sh             # Universal Binary Compiler & Codesigning (-O2)
 │   ├── create_dmg.sh            # Komprimiertes Disk Image (UDZO)
-│   ├── run_tests.sh             # Führt Test-Suiten aus
+│   ├── run_tests.sh             # Führt alle Test-Suiten isoliert aus
+│   ├── hardware_diagnostics.py  # Hardware-Diagnose, Latenz-Benchmark & Sweep
 │   └── completions/             # Shell Autovervollständigung
 │       └── _ciy_ctl             # Zsh Completion Definition
 ├── tests/                       # Automatisierte Test-Suiten
-│   ├── test_ciy_hid.c           # C-Protokoll-, Hex- & JSON-Parsing-Tests
-│   └── test_profile_logic.m     # Canvas- & Profil-Speicherlogik Tests
+│   ├── test_ciy_hid.c           # C-Protokoll-, Hex-, Unicode- & Lockfile-Tests
+│   ├── test_profile_logic.m     # Canvas-, P3-Clamp- & Profil-Speicherlogik Tests
+│   └── test_ciy_ctl.sh          # End-to-End CLI-Tests (Syntax, -b, Error-Handling)
 ├── dist/                        # Kompilierte Universal Binaries & DMG
 │   ├── CIYX79Control.app
 │   ├── ciy_ctl
-│   └── CIYX79Control-1.0.1.dmg
+│   └── CIYX79Control-1.0.2.dmg
 ├── README.md                    # Umfassende Dokumentation & Anleitung
 ├── LICENSE                      # MIT-Lizenz
 └── .gitignore                   # Git-Ausschlussregeln
@@ -377,19 +405,19 @@ Das Projekt ist modular nach dem Single-Responsibility-Prinzip in klare Schichte
 ┌───────────────────────────▼────────────────────────────┐
 │                  Interaktive Canvas-View               │
 │                    CIYKeyboardView.m                   │
-│         (68-Tasten ISO-DE Vektor-Rendering & Klicks)   │
+│         (69-Tasten ISO-DE Vektor-Rendering & Klicks)   │
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
 │                    Cocoa Hardware-Treiber              │
 │                     KeyboardBackend.m                  │
-│       (Thread-Sicherheit, _hwQueue, IOKit-Hotplug)     │
+│       (Thread-Sicherheit, _hwQueue, P3-Farbklemmung)   │
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
 │                Reine C USB-HID Engine                  │
 │                   ciy_hid.c / ciy_hid.h                │
-│  (Report 0x0A, 0x0B Planar RGB, IOKit Control Requests)│
+│  (Report 0x0A, 0x0B Planar RGB, IOKit & CIY_TESTING)   │
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
@@ -401,55 +429,89 @@ Das Projekt ist modular nach dem Single-Responsibility-Prinzip in klare Schichte
 1. **`src/core/` (`ciy_hid.c` / `ciy_hid.h`):**
    * Reine C-Schicht ohne UI-Abhängigkeiten.
    * Sendet USB Control Requests an Interface 1 via IOKit.
-   * Enthält die Pufferbauer (`ciy_build_profile`, `ciy_build_wasd_and_arrows_profile`, `ciy_build_all_red_profile`).
+   * Benutzerspezifisches Lockfile (`/tmp/ciy_x79_bus_<UID>.lock`, `0600`) mit Timeout.
+   * Integrierter virtueller Hardware-Mock bei gesetzter `CIY_TESTING`-Umgebungsvariable.
+   * Planare Pufferbauer und JSON-Parser mit RFC 8259 Unicode-Escape-Dekodierung (`\uXXXX`).
 2. **`src/app/` (`KeyboardBackend.m` / `KeyboardBackend.h`):**
    * Cocoa-Singleton (`[KeyboardBackend shared]`).
-   * Thread-Sicherheit durch synchrone Blöcke und serielle Hintergrund-Queue (`_hwQueue`).
-   * Hotplug-Überwachung via IOKit-Main-Port.
+   * Thread-Sicherheit durch serielle Hintergrund-Queue (`_hwQueue`) und asynchrone Initialisierung.
+   * Mathematische Farbklemmung für Wide-Gamut/Display P3 Farbräume.
+   * IOKit-Hotplug-Überwachung.
 3. **`src/app/` (`CIYKeyboardView.m` / `CIYKeyboardView.h`):**
-   * `NSView`-Subklasse mit präzisem 65% ISO-DE Vektordesign.
+   * `NSView`-Subklasse mit präzisem 65% ISO-DE Vektordesign (69 Tasten).
    * Crash-sichere sRGB-Farbextraktion (`[color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]]`).
    * Maus-Hover und Key-Selection Tracking.
 4. **`src/app/` (`AppDelegate.m` / `AppDelegate.h`):**
-   * App-Lebenszyklus, Layout-Aufbau, Farbpalette und Profil-Verwaltung.
+   * App-Lebenszyklus, Layout-Aufbau, Farbpalette und Profil-Verwaltung mit Namen-Sanitization.
 5. **`src/cli/` (`ciy_ctl.c`):**
-   * Leichtgewichtiges C-Kommandozeilen-Tool für Skripte und Terminalnutzung.
+   * Leichtgewichtiges C-Kommandozeilen-Tool für Skripte und Terminalnutzung mit sauberer Optionsextraktion (`-b / --brightness`).
 
 ---
 
-## 10. Automatisierte Tests (`scripts/run_tests.sh`)
+## 10. Automatisierte Tests & Hardware-Diagnose
 
-Das Projekt beinhaltet eine hardwarefreie automatisierte Test-Suite, die Logik, Pufferberechnungen, Hex-Konvertierungen und Grenzwerte prüft:
+### A. Automatisierte Test-Suiten (`scripts/run_tests.sh`)
+
+Das Projekt beinhaltet eine vollständig hardware-isolierte automatisierte Test-Batterie. Über den Guard `CIY_TESTING=1` wird sichergestellt, dass **kein Test jemals die physisch angeschlossene Tastatur beschreibt**:
 
 ```bash
 ./scripts/run_tests.sh
 ```
 
-### Enthaltene Tests:
-* **`tests/test_ciy_hid.c`:**
-  * Korrekter planarer RGB-Pufferaufbau für WASD, Pfeiltasten und Vollrot.
-  * Ignorieren von ungültigen Slot-Indizes (< 0 oder $\ge$ 126).
-  * Validierung ohne angeschlossene Hardware.
-* **`tests/test_profile_logic.m`:**
-  * Hex-zu-NSColor- und NSColor-zu-Hex-Konvertierung inklusive ungültiger Strings.
-  * Profil-Lifecycle (Erstellen, Aktualisieren von Farben, Umbenennen, Kürzen überlanger Namen, Löschen).
-  * Vollständige Abdeckung aller 126 Farbslots im Canvas-View.
-  * Menü-Titel-Formatierung (Normal, App-Tag `[Steam]`, Fallback `[Fallback]`, Aktiv-Status).
-  * App-Verknüpfungs-Deduplizierung (automatische Konfliktbeseitigung).
-  * Resilienzprüfung gegen ungültige/verwaiste Fallback-Profile.
+**Enthaltene Test-Suiten:**
+1. **`tests/test_ciy_hid.c` (HID- & Protokoll-Schicht):**
+   * Planarer RGB-Pufferaufbau für WASD, Pfeiltasten und Vollfarben.
+   * Grenzwerte, Out-of-Bounds-Slots (< 0 oder $\ge$ 126) und Integer-Overflow-Schutz.
+   * Validierung der JSON-Parser-Logik inkl. UTF-8 BOM, Sonderzeichen und `\uXXXX`-Unicode-Escapes.
+   * Reentranz des Bus-Locks und Berechtigungsprüfung (`0600`) der benutzerspezifischen Lockdatei.
+2. **`tests/test_profile_logic.m` (Cocoa-App & Backend):**
+   * Hex-zu-NSColor- und NSColor-zu-Hex-Konvertierung inklusive strikter Fehlererkennung (`ciy_parse_hex_color`).
+   * P3-Farbklemmung (`ClampColorChannel`) gegen Integer-Wrapping.
+   * Profil-Lifecycle (Erstellen, Aktualisieren, Umbenennen, Sanitisieren überlanger Namen, Löschen).
+   * Vollständige Abdeckung aller Farbslots im Canvas-View.
+   * App-Verknüpfungs-Deduplizierung und Resilienz gegen verwaiste Fallback-Profile.
+3. **`tests/test_ciy_ctl.sh` (CLI Integrationstests):**
+   * Hilfe- und Optionsprüfung (`--help`, `-h`).
+   * Text- und JSON-Ausgabe bei `list-modes`.
+   * Fehlerbehandlung bei ungültigen Optionen und Bereichsverletzungen von `-b 0..5`.
+   * Eindeutige Auflösung von `load <datei> [Profil|Index] [-b 0..5]` (Finding 5).
+
+### B. Hardware-Diagnose & Latenz-Benchmark (`scripts/hardware_diagnostics.py`)
+
+Wenn eine echte CIY X79 angeschlossen ist, kann das interaktive Diagnoseskript genutzt werden, um das Ansprechverhalten jeder Taste auf der physikalischen Matrix exakt zu prüfen:
+
+```bash
+# 1. Gesamte Diagnosebatterie ausführen (Isolation -> Benchmark -> Zonen -> Sweep -> Restore)
+python3 scripts/hardware_diagnostics.py all
+
+# 2. Latenz-Benchmark über alle 69 Tasten (USB-Quittierungszeiten in ms messen)
+python3 scripts/hardware_diagnostics.py benchmark
+
+# 3. Sichtbares LED-Lauflicht über alle 69 Tasten (Reihe 0 bis 4)
+python3 scripts/hardware_diagnostics.py sweep
+
+# 4. Funktionsblock-Dynamik (WASD, Pfeile, Navigation, Modifikatoren)
+python3 scripts/hardware_diagnostics.py clusters
+
+# 5. Gezielte Einzeltaste prüfen (z. B. Esc, Enter, Space, PfeilAuf, <>)
+python3 scripts/hardware_diagnostics.py key Space
+
+# 6. Standard WASD-Gaming-Profil wiederherstellen
+python3 scripts/hardware_diagnostics.py restore
+```
 
 ---
 
 ## 11. Kompilierung & Packaging (Universal Binary & DMG)
 
-Alle Komponenten werden mit Clang und nativen macOS-Frameworks kompiliert. Es werden keine externen Paketmanager (Homebrew, CocoaPods etc.) benötigt:
+Alle Komponenten werden mit Clang (`-O2`) und nativen macOS-Frameworks kompiliert. Es werden keine externen Paketmanager (Homebrew, CocoaPods etc.) benötigt:
 
 ### 1. Universal Binary App & CLI kompilieren:
 ```bash
 ./scripts/build_app.sh
 ```
 Das Skript:
-* Kompiliert sowohl die GUI-App als auch das CLI-Tool `ciy_ctl` als **Universal Binary** (`-arch arm64 -arch x86_64`), lauffähig auf Apple Silicon (M1–M4) und Intel-Macs.
+* Kompiliert sowohl die GUI-App als auch das CLI-Tool `ciy_ctl` mit Compiler-Optimierung (`-O2`) als **Universal Binary** (`-arch arm64 -arch x86_64`), lauffähig auf Apple Silicon (M1–M4) und Intel-Macs.
 * Bettet das hochauflösende Tastatur-App-Icon (`AppIcon.icns`) sowie alle mehrsprachigen Dokumentationen (`README*.md`) direkt in das App-Bundle ein.
 * Schreibt die `Info.plist` und signiert beide Artefakte (App und CLI-Tool `ciy_ctl`) per Ad-hoc-Codesigning (`codesign --force --sign -`).
 
@@ -457,11 +519,11 @@ Das Skript:
 ```bash
 ./scripts/create_dmg.sh
 ```
-Erzeugt die distributionsfertige Datei `CIYX79Control-1.0.1.dmg` mit Drag-and-Drop-Verknüpfung zum `/Applications`-Ordner, Lizenz und Dokumentation.
+Erzeugt die distributionsfertige Datei `CIYX79Control-1.0.2.dmg` mit Drag-and-Drop-Verknüpfung zum `/Applications`-Ordner, eingebettetem CLI-Tool `ciy_ctl`, Lizenz und Dokumentation.
 
 ### 3. CLI-Tool manuell kompilieren:
 ```bash
-clang -arch arm64 -arch x86_64 -Wall -Wextra -framework IOKit -framework CoreFoundation src/core/ciy_hid.c src/cli/ciy_ctl.c -o dist/ciy_ctl
+clang -O2 -arch arm64 -arch x86_64 -Wall -Wextra -framework IOKit -framework CoreFoundation src/core/ciy_hid.c src/cli/ciy_ctl.c -o dist/ciy_ctl
 ```
 
 ---

@@ -4,7 +4,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 APP_NAME="CIYX79Control"
-VERSION="${1:-${VERSION:-1.0.1}}"
+VERSION="${1:-${VERSION:-1.0.2}}"
 VERSION="${VERSION#v}"
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"

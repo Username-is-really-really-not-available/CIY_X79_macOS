@@ -1,6 +1,6 @@
 # CIY X79 RGB macOS Controller & Protocol Documentation
 
-A native, lightweight macOS solution (Apple Silicon & Intel) for controlling the RGB lighting, built-in dynamic effects, and individual per-key color profiles (e.g. WASD gaming layouts) for the **CIY X79** mechanical keyboard (ISO-DE 65%, 68 keys).
+A native, lightweight macOS solution (Apple Silicon & Intel) for controlling the RGB lighting, built-in dynamic effects, and individual per-key color profiles (e.g. WASD gaming layouts) for the **CIY X79** mechanical keyboard (ISO-DE 65%, 69 keys).
 
 **Languages:** [🇩🇪 Deutsch](README.md) | [🇬🇧 English](README_EN.md) | [🇨🇳 简体中文](README_ZH.md) | [🇷🇺 Русский](README_RU.md)
 
@@ -11,12 +11,12 @@ A native, lightweight macOS solution (Apple Silicon & Intel) for controlling the
 2. [Installation & macOS Gatekeeper (First Launch)](#2-installation--macos-gatekeeper-first-launch)
 3. [Key Hardware Insights & Protocol Architecture](#3-key-hardware-insights--protocol-architecture)
 4. [USB-HID Protocol Reference](#4-usb-hid-protocol-reference)
-5. [Key Matrix & LED Index Map (68-Key ISO-DE)](#5-key-matrix--led-index-map-68-key-iso-de)
+5. [Key Matrix & LED Index Map (69-Key ISO-DE)](#5-key-matrix--led-index-map-69-key-iso-de)
 6. [Lighting Modes & Color Palettes](#6-lighting-modes--color-palettes)
 7. [The macOS GUI App (CIYX79Control.app)](#7-the-macos-gui-app-ciyx79controlapp)
 8. [The Command Line Tool (ciy_ctl)](#8-the-command-line-tool-ciy_ctl)
 9. [Architecture & Layer Model](#9-architecture--layer-model)
-10. [Automated Test Suite](#10-automated-test-suite)
+10. [Automated Test Suite & Hardware Diagnostics](#10-automated-test-suite--hardware-diagnostics)
 11. [Compilation & Packaging](#11-compilation--packaging)
 12. [Security, Privacy & Performance](#12-security-privacy--performance)
 13. [License, Trademark Notice & Disclaimer](#13-license-trademark-notice--disclaimer)
@@ -32,10 +32,13 @@ A native, lightweight macOS solution (Apple Silicon & Intel) for controlling the
   * **Product ID (PID):** `0x0049`
   * **USB Interface:** Interface `1` (Vendor-Defined HID Class)
 
-### Layout Note: German ISO-DE (68 keys) vs. ANSI-US (67 keys)
-This project was tailored for the **German ISO-DE version (68 keys)**:
-* **ISO Specifics:** Full support for the tall two-row ISO Enter key (Matrix Slot 81) and the `< > |` key (Matrix Slot 76) next to left Shift.
-* **ANSI-US Compatibility:** The ANSI version has 67 keys (wide flat Enter, no `< > |` key). The underlying USB-HID protocol and slot mapping are completely identical; only the visual vector preview in the GUI reflects the ISO-DE layout.
+### Layout Note: German ISO-DE (69 physical keys) vs. ANSI-US (67/68 keys)
+This project was tailored specifically for the **German ISO-DE version (69 physical keys)**:
+* **Exact Key Count (69 keys):** While ANSI-US 65% keyboards typically have 67 or 68 keys, the German ISO-DE layout features **69 distinct physical switches and LEDs**:
+  * 61 keys in the main alphanumeric typing block (including the 2-row tall ISO Enter key, `< > |` next to left Shift, and `# '` in row 2).
+  * 8 keys in the navigation and arrow cluster (`Del`, `PgUp`, `PgDn`, `End` + 4 arrow keys).
+* **ISO Specifics:** Full support for German umlauts (`Ä`, `Ö`, `Ü`, `ß`), accent keys, and symbols.
+* **ANSI-US Compatibility:** The ANSI version has 67 or 68 keys (single-height Enter, wide Shift). The underlying USB-HID protocol is identical; only the interactive vector canvas reflects the German ISO-DE layout.
 
 ### Quick Start:
 
@@ -47,8 +50,8 @@ This project was tailored for the **German ISO-DE version (68 keys)**:
   ./ciy_ctl status
   ./ciy_ctl status --json
 
-  # Set full-board static color (Hex)
-  ./ciy_ctl fill "#FF5500" 5
+  # Set full-board static color with brightness flag (-b 0..5)
+  ./ciy_ctl fill "#FF5500" -b 4
 
   # Apply gaming profiles
   ./ciy_ctl wasd
@@ -110,6 +113,18 @@ $$\text{LED\_Index} = \text{Matrix\_Slot} + 1$$
 
 ### D. Volatile XRAM vs. On-Board Shortcuts (`Fn + ;`)
 Custom Per-Key RGB is held in volatile **XRAM** rather than persistent flash ROM. If you cycle through animations using hardware shortcuts (`Fn + ;`), the MCU overrides the custom buffer. The macOS app and CLI allow you to restore any profile in less than 50 ms.
+
+### E. Multi-User Lockfile Security (`/tmp/ciy_x79_bus_<UID>.lock`)
+To serialize USB transfers between the Cocoa background queue (`_hwQueue`) and CLI commands (`ciy_ctl`), the driver uses user-specific lockfiles (`/tmp/ciy_x79_bus_<UID>.lock`) with permissions `0600` (readable and writable strictly by the current user) and a non-blocking 2.0-second timeout, avoiding world-readable file security issues and lock freezes.
+
+### F. RFC 8259 Unicode Escape Decoding (`\uXXXX`)
+Standard JSON encoders (such as Python's `json.dump` or browser tools) escape non-ASCII characters to `\uXXXX` sequences (`\u00df` for `ß`, `\u00e4` for `ä`, etc.). The built-in C JSON parser in [`ciy_hid.c`](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/src/core/ciy_hid.c) decodes these sequences directly into valid UTF-8, ensuring profiles containing German special characters load seamlessly.
+
+### G. Wide-Gamut (Display P3) Color Clamping
+On macOS systems with wide-gamut displays (P3 ColorSpace), native color pickers may yield coordinates outside `[0.0, 1.0]` in standard sRGB. The Cocoa backend strictly clamps color channels mathematically into `[0, 255]` before transmitting RGB planes, preventing integer overflow and undefined LED colors.
+
+### H. Hardware Test Isolation (`CIY_TESTING=1`)
+Continuous Integration and automated test suites run completely isolated from real hardware: exporting `CIY_TESTING=1` routes all transfers through a virtual mock HID device, verifying packets and buffers in memory without touching endpoint 0 of any connected keyboard.
 
 ---
 
@@ -260,12 +275,15 @@ Ideal for shell scripts, menubar tools (SketchyBar, SwiftBar), Alfred, or Raycas
 ./ciy_ctl status
 ./ciy_ctl status --json
 
-# Fill all keys with a hex color
-./ciy_ctl fill "#00FF88" 5
+# Fill all keys with a hex color (supports explicit -b / --brightness flag)
+./ciy_ctl fill "#FF5500" -b 4
+./ciy_ctl fill 00FF88 3           # Positional fallback supported
 
-# Load an exported JSON profile (syntax: ./ciy_ctl load <profile.json> [profile_name] [brightness 0..5])
+# Load an exported JSON profile:
+# Syntax: ./ciy_ctl load <profile.json> [profile_name_or_index] [-b 0..5]
 ./ciy_ctl load gaming.json
-./ciy_ctl load gaming.json "WASD" 4 --json
+./ciy_ctl load gaming.json "WASD" -b 4 --json
+./ciy_ctl load gaming.json 2 -b 3  # Selects 2nd profile by index
 
 # Gaming shortcuts
 ./ciy_ctl wasd
@@ -289,19 +307,19 @@ Ideal for shell scripts, menubar tools (SketchyBar, SwiftBar), Alfred, or Raycas
 ┌───────────────────────────▼────────────────────────────┐
 │                    Interactive Canvas                  │
 │                     CIYKeyboardView.m                  │
-│         (68-Key ISO-DE Vector Rendering & Mouse)       │
+│         (69-Key ISO-DE Vector Rendering & Mouse)       │
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
 │                   Cocoa Driver Backend                 │
 │                     KeyboardBackend.m                  │
-│      (Thread safety, serial _hwQueue, IOKit hotplug)   │
+│      (Thread safety, serial _hwQueue, P3 clamping)     │
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
 │                  Pure C USB-HID Engine                 │
 │                  ciy_hid.c / ciy_hid.h                 │
-│      (Report 0x0A, 0x0B Planar RGB, IOKit transfers)   │
+│      (Report 0x0A, 0x0B Planar RGB, CIY_TESTING mock)  │
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
@@ -312,24 +330,44 @@ Ideal for shell scripts, menubar tools (SketchyBar, SwiftBar), Alfred, or Raycas
 
 ---
 
-## 10. Automated Test Suite
+## 10. Automated Test Suite & Hardware Diagnostics
 
-Run the hardware-free automated test suite:
+### A. Automated Test Suite (`scripts/run_tests.sh`)
+Run the hardware-free, fully isolated automated test suite:
 ```bash
 ./scripts/run_tests.sh
 ```
-Covers planar RGB buffer calculations, hex conversions, edge cases, JSON profile serialization, status menu item formatting, app binding deduplication, and fallback profile recovery.
+Covers:
+* `tests/test_ciy_hid.c`: Planar RGB buffer calculations, hex conversions, Unicode `\uXXXX` escape decoding, out-of-bounds guards, and secure per-user lockfile permissions (`0600`).
+* `tests/test_profile_logic.m`: Display P3 color clamping, profile lifecycle, app binding deduplication, and fallback recovery.
+* `tests/test_ciy_ctl.sh`: End-to-end CLI option extraction (`-b` flag vs profile selector), JSON validation, and error reporting.
+
+### B. Hardware Diagnostics & Benchmark (`scripts/hardware_diagnostics.py`)
+When a real CIY X79 is connected, use the diagnostic script to measure response times and verify key mappings:
+```bash
+# Run full diagnostic suite (Isolation -> Benchmark -> Clusters -> Sweep -> Restore)
+python3 scripts/hardware_diagnostics.py all
+
+# Run 69-key USB latency and acknowledgment benchmark
+python3 scripts/hardware_diagnostics.py benchmark
+
+# Run visual sweep light across all 69 keys
+python3 scripts/hardware_diagnostics.py sweep
+
+# Test individual key illumination (e.g. Esc, Enter, Space, Arrows, <>)
+python3 scripts/hardware_diagnostics.py key Space
+```
 
 ---
 
 ## 11. Compilation & Packaging
 
-Compile native Universal Binaries (`arm64` & `x86_64`) using Clang:
+Compile native Universal Binaries (`arm64` & `x86_64`) with optimization (`-O2`) using Clang:
 ```bash
 # Build universal App and CLI (embeds AppIcon & docs, signs both binaries)
 ./scripts/build_app.sh
 
-# Build redistributable DMG installer image
+# Build redistributable DMG installer image (CIYX79Control-1.0.2.dmg)
 ./scripts/create_dmg.sh
 ```
 
