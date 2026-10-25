@@ -11,9 +11,16 @@
 #include <time.h>
 #include <errno.h>
 
+#define CIY_TESTING_MOCK_DEV ((IOUSBDeviceInterface **)0x1)
+
 bool ciy_open(CIYDevice *d) {
     if (!d) return false;
     d->dev = NULL;
+
+    if (getenv("CIY_TESTING") != NULL) {
+        d->dev = CIY_TESTING_MOCK_DEV;
+        return true;
+    }
 
     CFMutableDictionaryRef matchingDict = IOServiceMatching(kIOUSBDeviceClassName);
     if (!matchingDict) return false;
@@ -52,7 +59,9 @@ bool ciy_open(CIYDevice *d) {
 
 void ciy_close(CIYDevice *d) {
     if (d && d->dev) {
-        (*d->dev)->Release(d->dev);
+        if (d->dev != CIY_TESTING_MOCK_DEV) {
+            (*d->dev)->Release(d->dev);
+        }
         d->dev = NULL;
     }
 }
@@ -116,6 +125,17 @@ void ciy_bus_unlock(void) {
 static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t reportId, uint8_t *buf, uint16_t len,
                         UInt32 *done) {
     if (!d || !d->dev) return false;
+    if (d->dev == CIY_TESTING_MOCK_DEV) {
+        if (!out && reportId == 0x0A && buf && len >= 5) {
+            buf[0] = 0x0A;
+            buf[1] = 19;
+            buf[2] = 0;
+            buf[3] = 0;
+            buf[4] = 5;
+        }
+        if (done) *done = len;
+        return true;
+    }
     IOUSBDevRequestTO req = {
         .bmRequestType = (UInt8)USBmakebmRequestType(out ? kUSBOut : kUSBIn, kUSBClass, kUSBInterface),
         .bRequest = bRequest,
