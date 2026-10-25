@@ -2,6 +2,7 @@
 // Ausführen: ./scripts/run_tests.sh
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../src/core/ciy_hid.h"
 
@@ -260,6 +261,81 @@ static void test_lockfile_security(void) {
     ciy_bus_unlock();
 }
 
+static void test_truncated_unicode_escapes(void) {
+    const char *cases[] = {
+        // Abgeschnittene Unicode-Escapes am Pufferende (ohne schließendes Anführungszeichen)
+        "{\"name\": \"\\u",
+        "{\"name\": \"\\u1",
+        "{\"name\": \"\\u12",
+        "{\"name\": \"\\u123",
+        "\"\\u",
+        "\"\\u1",
+        "\"\\u12",
+        "\"\\u123",
+        "{\"slots\": {\"0\": \"#\\u",
+        "{\"slots\": {\"0\": \"#\\u1",
+        "{\"slots\": {\"0\": \"#\\u12",
+        "{\"slots\": {\"0\": \"#\\u123",
+        "{\"slots\": {\"\\u",
+        "{\"slots\": {\"\\u1",
+        "{\"slots\": {\"\\u12",
+        "{\"slots\": {\"\\u123",
+
+        // Abgeschnittene Unicode-Escapes unmittelbar vor dem schließenden Anführungszeichen
+        "{\"name\": \"\\u\"}",
+        "{\"name\": \"\\u1\"}",
+        "{\"name\": \"\\u12\"}",
+        "{\"name\": \"\\u123\"}",
+        "\"\\u\"",
+        "\"\\u1\"",
+        "\"\\u12\"",
+        "\"\\u123\"",
+        "{\"slots\": {\"0\": \"#\\u\"}}",
+        "{\"slots\": {\"0\": \"#\\u1\"}}",
+        "{\"slots\": {\"0\": \"#\\u12\"}}",
+        "{\"slots\": {\"0\": \"#\\u123\"}}",
+        "{\"slots\": {\"\\u\": \"#FFFFFF\"}}",
+        "{\"slots\": {\"\\u1\": \"#FFFFFF\"}}",
+        "{\"slots\": {\"\\u12\": \"#FFFFFF\"}}",
+        "{\"slots\": {\"\\u123\": \"#FFFFFF\"}}"
+    };
+
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char name[64];
+    int count = 0;
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        size_t len = strlen(cases[i]);
+        // Exakte Heap-Allokation: ASan detektiert hier jeden 1-Byte-Überleser jenseits des \0
+        char *heap_buf = (char *)malloc(len + 1);
+        assert(heap_buf != NULL);
+        memcpy(heap_buf, cases[i], len + 1);
+
+        // Darf unter ASan weder crashen noch Out-of-Bounds lesen
+        ciy_parse_profile_json(heap_buf, NULL, rgb, name, sizeof(name), &count);
+
+        free(heap_buf);
+    }
+
+    // Zusätzlicher Test für Dateiende mit abgeschnittenen Escapes
+    const char *tmp_path = "/tmp/ciy_test_truncated_escape.json";
+    const char *file_cases[] = {
+        "{\"name\": \"\\u",
+        "{\"name\": \"\\u1",
+        "{\"name\": \"\\u12",
+        "{\"name\": \"\\u123"
+    };
+    for (size_t i = 0; i < sizeof(file_cases) / sizeof(file_cases[0]); i++) {
+        FILE *f = fopen(tmp_path, "w");
+        assert(f != NULL);
+        fputs(file_cases[i], f);
+        fclose(f);
+
+        ciy_load_profile_file(tmp_path, NULL, rgb, name, sizeof(name), &count);
+        remove(tmp_path);
+    }
+}
+
 int main(void) {
     test_build_profile_wasd();
     test_build_profile_yellow_no_base();
@@ -270,6 +346,7 @@ int main(void) {
     test_hex_parsing();
     test_solid_color_profile();
     test_parse_profile_json();
+    test_truncated_unicode_escapes();
     test_load_profile_file();
     test_bus_lock_reentrancy();
     test_lockfile_security();

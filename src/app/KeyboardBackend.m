@@ -1,5 +1,6 @@
 #import "KeyboardBackend.h"
 #include <stdlib.h>
+#include <math.h>
 
 NSNotificationName const KeyboardBackendHotplugNotification = @"KeyboardBackendHotplugNotification";
 
@@ -228,10 +229,9 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 }
 
 static inline uint8_t ClampColorChannel(CGFloat val) {
-    int ival = (int)(val * 255.0 + 0.5);
-    if (ival < 0) return 0;
-    if (ival > 255) return 255;
-    return (uint8_t)ival;
+    if (val <= 0.0) return 0;
+    if (val >= 1.0) return 255;
+    return (uint8_t)round(val * 255.0);
 }
 
 - (BOOL)sendKeyColors:(NSDictionary<NSNumber *, NSColor *> *)keyColors defaultColor:(nullable NSColor *)defaultColor {

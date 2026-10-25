@@ -91,7 +91,15 @@ bool ciy_bus_lock(void) {
         // Bis zu 2.0s Timeout für Inter-Process-Locking gegen Race Conditions
         struct timespec start, now;
         clock_gettime(CLOCK_MONOTONIC, &start);
-        while (flock(s_bus_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        while (true) {
+            int ret = flock(s_bus_lock_fd, LOCK_EX | LOCK_NB);
+            if (ret == 0) break; // Lock acquired
+            if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR) {
+                close(s_bus_lock_fd);
+                s_bus_lock_fd = -1;
+                pthread_mutex_unlock(&s_bus_mutex);
+                return false;
+            }
             clock_gettime(CLOCK_MONOTONIC, &now);
             double elapsed = (double)(now.tv_sec - start.tv_sec) + (double)(now.tv_nsec - start.tv_nsec) / 1e9;
             if (elapsed > 2.0) {
@@ -101,7 +109,8 @@ bool ciy_bus_lock(void) {
                 pthread_mutex_unlock(&s_bus_mutex);
                 return false;
             }
-            usleep(5000); // 5 ms Pause
+            struct timespec req = {0, 5000000}, rem;
+            nanosleep(&req, &rem); // 5 ms Pause, handles EINTR via rem
         }
     }
     s_bus_lock_depth++;
@@ -328,29 +337,33 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
             p++;
             if (!*p) return NULL;
             if (*p == 'u') {
-                int h0 = hex_digit(p[1]);
-                int h1 = hex_digit(p[2]);
-                int h2 = hex_digit(p[3]);
-                int h3 = hex_digit(p[4]);
-                if (h0 >= 0 && h1 >= 0 && h2 >= 0 && h3 >= 0) {
-                    uint32_t cp = (uint32_t)((h0 << 12) | (h1 << 8) | (h2 << 4) | h3);
-                    p += 4;
-                    if (cp < 0x80) {
-                        if (out && written + 1 < max_len) out[written++] = (char)cp;
-                    } else if (cp < 0x800) {
-                        if (out && written + 2 < max_len) {
-                            out[written++] = (char)(0xC0 | (cp >> 6));
-                            out[written++] = (char)(0x80 | (cp & 0x3F));
+                if (p[1] != '\0' && p[2] != '\0' && p[3] != '\0' && p[4] != '\0') {
+                    int h0 = hex_digit(p[1]);
+                    int h1 = hex_digit(p[2]);
+                    int h2 = hex_digit(p[3]);
+                    int h3 = hex_digit(p[4]);
+                    if (h0 >= 0 && h1 >= 0 && h2 >= 0 && h3 >= 0) {
+                        uint32_t cp = (uint32_t)((h0 << 12) | (h1 << 8) | (h2 << 4) | h3);
+                        if (cp >= 0xD800 && cp <= 0xDFFF) return NULL;
+                        if (cp > 0x10FFFF) return NULL;
+                        p += 4;
+                        if (cp < 0x80) {
+                            if (out && written + 1 < max_len) out[written++] = (char)cp;
+                        } else if (cp < 0x800) {
+                            if (out && written + 2 < max_len) {
+                                out[written++] = (char)(0xC0 | (cp >> 6));
+                                out[written++] = (char)(0x80 | (cp & 0x3F));
+                            }
+                        } else {
+                            if (out && written + 3 < max_len) {
+                                out[written++] = (char)(0xE0 | (cp >> 12));
+                                out[written++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                                out[written++] = (char)(0x80 | (cp & 0x3F));
+                            }
                         }
-                    } else {
-                        if (out && written + 3 < max_len) {
-                            out[written++] = (char)(0xE0 | (cp >> 12));
-                            out[written++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-                            out[written++] = (char)(0x80 | (cp & 0x3F));
-                        }
+                        p++;
+                        continue;
                     }
-                    p++;
-                    continue;
                 }
             } else if (*p == 'n') {
                 if (out && written + 1 < max_len) out[written++] = '\n';
