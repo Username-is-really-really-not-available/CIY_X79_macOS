@@ -379,6 +379,7 @@ static void test_load_profile_file(void) {
     remove(tmp_path);
 }
 
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -396,13 +397,19 @@ static void test_lockfile_security(void) {
     assert(ciy_bus_lock());
     char user_path[128];
     ciy_bus_lock_path(user_path, sizeof(user_path));
+
+    // Sicheres Öffnen mit O_NOFOLLOW und atomare Prüfung über Dateideskriptor (vermeidet TOCTOU-Race)
+    int fd = open(user_path, O_RDONLY | O_NOFOLLOW);
+    assert(fd >= 0);
     struct stat st;
-    assert(stat(user_path, &st) == 0);
+    assert(fstat(fd, &st) == 0);
     // Prüfen, dass das Lockfile existiert und Modus 0600 hat (nur Besitzer darf zugreifen)
     assert((st.st_mode & 0777) == 0600);
+    close(fd);
+
     ciy_bus_unlock();
-    unlink(user_path);
-    assert(stat(user_path, &st) != 0);
+    assert(unlink(user_path) == 0);
+    assert(access(user_path, F_OK) != 0);
 }
 
 static void test_truncated_unicode_escapes(void) {

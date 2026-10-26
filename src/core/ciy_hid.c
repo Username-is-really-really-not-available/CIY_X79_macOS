@@ -924,15 +924,26 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
         return false;
     }
 
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
         if (out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
-            snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' existiert nicht oder ist keine reguläre Datei", path);
+            snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' existiert nicht oder konnte nicht geöffnet werden", path);
+        }
+        return false;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        if (out_res) {
+            snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
+            snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' ist keine reguläre Datei", path);
         }
         return false;
     }
     if (st.st_size <= 0) {
+        close(fd);
         if (out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' ist leer (0 Bytes)", path);
@@ -940,6 +951,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
         return false;
     }
     if (st.st_size > 512 * 1024) {
+        close(fd);
         if (out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' überschreitet maximale Größe (512 KB)", path);
@@ -947,8 +959,9 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
         return false;
     }
 
-    FILE *f = fopen(path, "rb");
+    FILE *f = fdopen(fd, "rb");
     if (!f) {
+        close(fd);
         if (out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' konnte nicht geöffnet werden", path);
@@ -1151,12 +1164,24 @@ bool ciy_load_profile_file(const char *path, const char *target_profile,
                            int *out_slots_count) {
     if (!path || !rgb) return false;
 
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return false;
-    if (st.st_size <= 0 || st.st_size > 512 * 1024) return false;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
 
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return false;
+    }
+    if (st.st_size <= 0 || st.st_size > 512 * 1024) {
+        close(fd);
+        return false;
+    }
+
+    FILE *f = fdopen(fd, "rb");
+    if (!f) {
+        close(fd);
+        return false;
+    }
 
     char *buf = (char *)malloc((size_t)st.st_size + 1);
     if (!buf) {
