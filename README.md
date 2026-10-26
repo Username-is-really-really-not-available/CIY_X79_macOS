@@ -428,7 +428,7 @@ Das Projekt ist modular nach dem Single-Responsibility-Prinzip in klare Schichte
 ```
 ┌────────────────────────────────────────────────────────┐
 │                      Benutzeroberfläche                │
-│    CIYX79Control.app (AppDelegate.m)  /  ciy_ctl.c    │
+│    CIYX79Control.app (AppDelegate.m)  /  ciy_ctl.c     │
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
