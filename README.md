@@ -40,6 +40,21 @@ Diese Software wurde speziell für die **deutsche ISO-DE Version** der CIY X79 e
 * **ISO-Besonderheiten:** Vollständige native Unterstützung aller deutschen Umlaute (`Ä`, `Ö`, `Ü`, `ß`), Akzente (`´ \``) und Sonderzeichen.
 * **Unterschied zu ANSI-US:** Die internationale ANSI-US Version der CIY X79 besitzt nur 67 oder 68 Tasten (flache einzeilige Enter-Taste, keine `< > |`-Taste). Das USB-HID-Protokoll ist identisch; der interaktive Canvas der GUI und die Diagnose-Tools bilden jedoch das authentische deutsche ISO-Layout ab.
 
+### Kompatibilitätsmatrix & Taxonomie
+
+Um klare Erwartungen zu setzen und ungetestete Hardware-Behauptungen zu vermeiden, nutzt dieses Projekt eine verbindliche 4-Stufen-Taxonomie:
+
+* **Maintainer-verified:** Modell, Revision und alle Kernfunktionen wurden physisch vom Maintainer auf echter Hardware unter macOS verifiziert.
+* **Community-verified:** Ein nachvollziehbarer Hardware-Testbericht eines Besitzers liegt vor (inkl. macOS-Version, CPU-Architektur und Protokollnachweis); der physische Maintainer-Test steht noch aus.
+* **Experimental / unverified:** Unbestätigte Unterstützung (z. B. auf Basis von Firmware-/MCU-Ähnlichkeiten oder theoretischen Mappings); keine Funktionsgarantie.
+* **Unsupported:** Ausdrücklich reserviert für nachweislich inkompatible Geräte oder Revisionen (z. B. inkompatible MCU, abweichende USB-Paketformate oder fehlgeschlagene Hardware-Tests) – nicht für bloß ungetestete Modelle.
+
+| Modell | Layout | VID:PID | Interface | Status | Getesteter Umfang | Belege / Referenz |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **CIY X79** | ISO-DE (69 Tasten) | `0x258A:0x0049` | 1 | **Maintainer-verified** | Status, Modi 0..20, Custom Planar RGB, Hotplug Re-Sync, macOS 12..15 (arm64 & x86_64) | Baseline v1.0 / v1.1 |
+| **CIY X79** | ANSI-US (68 Tasten) | `0x258A:0x0049` | 1 | **Experimental / unverified** | Protokoll identisch vermutet; physische Tastenmatrix & LED-Mapping ausstehend | [Issue-Vorlage](.github/ISSUE_TEMPLATE/device_layout_request.md) |
+| **Generische Sinowealth Tastaturen** | Diverse | Diverse | * | **Unsupported** | Firmware-Protokolle weichen ab; Fail-Closed-Schutz verhindert Fehlzugriffe | Protokoll-Spec |
+
 ### Sofortige Nutzung:
 
 * **Grafische Benutzeroberfläche:**
@@ -325,6 +340,16 @@ Für automatisierte Shell-Skripte, Menüleisten-Widgets (BitBar, SketchyBar), Ra
 ./ciy_ctl load meinkeyboard.json 2 -b 3                 # 2. Profil der Datei laden (1-basierter Index)
 ./ciy_ctl load meinkeyboard.json "Büro" --json          # JSON-Status für Skripte
 
+# Profil hardwarefrei validieren (ohne USB-Zugriff):
+# Syntax: ./ciy_ctl validate-profile <profile.json> [--json]
+./ciy_ctl validate-profile meinkeyboard.json            # Syntax, Slots (0..124) und Farben (#RGB) prüfen
+./ciy_ctl validate-profile meinkeyboard.json --json     # Maschinenlesbares Ergebnis für CI/CD
+
+# Profilübertragung simulieren (--dry-run ohne USB-I/O):
+# Syntax: ./ciy_ctl --dry-run load <profile.json> [Profilname|Index] [-b 0..5] [--json]
+./ciy_ctl --dry-run load meinkeyboard.json              # Zeigt geplanten Ablauf (0x0B -> 50ms -> 0x0A)
+./ciy_ctl --dry-run load meinkeyboard.json --json       # Detaillierter Übertragungsplan als JSON
+
 # Standard-Gaming-Profile:
 ./ciy_ctl wasd          # WASD Rot, Basis Blau
 ./ciy_ctl wasd-arrows   # WASD Rot, Pfeile Gelb, Basis Blau
@@ -363,6 +388,9 @@ CIY_X79_macOS/
 │   ├── core/                    # Reine C-USB-Treiber-Schicht (IOKit & HID)
 │   │   ├── ciy_hid.h            # USB HID Header, Planar-RGB- und JSON-Parser
 │   │   └── ciy_hid.c            # USB Control Requests, Low-Level Protocol, Mock-Device
+│   ├── layouts/                 # Entkoppelte Layout-Definitionen & Tasten-Modell
+│   │   ├── ciy_layout.h         # Model für CIYLogicalKey, CIYKeySurface, CIYKeyboardLayout
+│   │   └── ciy_x79_iso_de.c     # 69 logische Tasten & 70 Zeichenflächen der CIY X79 ISO-DE
 │   ├── app/                     # Native Cocoa-Applikation (Objective-C)
 │   │   ├── main.m
 │   │   ├── AppDelegate.h / .m   # UI Lifecycle, Menüs, Export/Import, Farbauswahl
@@ -380,6 +408,7 @@ CIY_X79_macOS/
 │   └── completions/             # Shell Autovervollständigung
 │       └── _ciy_ctl             # Zsh Completion Definition
 ├── tests/                       # Automatisierte Test-Suiten
+│   ├── fixtures/                # Valide & ungültige Profil-JSON-Testdateien
 │   ├── test_ciy_hid.c           # C-Protokoll-, Hex-, Unicode- & Lockfile-Tests
 │   ├── test_profile_logic.m     # Canvas-, P3-Clamp- & Profil-Speicherlogik Tests
 │   └── test_ciy_ctl.sh          # End-to-End CLI-Tests (Syntax, -b, Error-Handling)

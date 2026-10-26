@@ -1,0 +1,7 @@
+{
+  "name": "Bad Brightness Profile",
+  "brightness": 9,
+  "slots": {
+    "14": "#FF0000"
+  }
+}

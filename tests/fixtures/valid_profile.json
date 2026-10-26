@@ -1,0 +1,8 @@
+{
+  "name": "Valid Test Profile",
+  "slots": {
+    "1": "#FF0000",
+    "14": "#00FF00",
+    "81": "#0000FF"
+  }
+}

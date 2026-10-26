@@ -15,6 +15,14 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 CIY_CTL = os.path.join(PROJECT_ROOT, "dist", "ciy_ctl")
 
+def require_ciy_ctl():
+    """Stellt sicher, dass das CLI gebaut und ausführbar ist."""
+    if not os.path.isfile(CIY_CTL) or not os.access(CIY_CTL, os.X_OK):
+        print(f"FEHLER: {CIY_CTL} fehlt oder ist nicht ausführbar.")
+        print("Bitte zuerst './scripts/build_app.sh' ausführen.")
+        return False
+    return True
+
 # Alle 69 Tasten der deutschen CIY X79 ISO-DE Matrix mit Reihen- und Zonen-Zuordnung
 KEY_MATRIX = [
     # Reihe 0
@@ -95,6 +103,8 @@ KEY_MATRIX = [
 
 def apply_slots(slots_dict, name="Diagnostics"):
     """Schreibt ein temporäres Profil und wendet es via ciy_ctl an."""
+    if not require_ciy_ctl():
+        return False
     tmp_path = f"/tmp/ciy_diag_{os.getpid()}.json"
     data = [{"name": name, "slots": slots_dict}]
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -129,7 +139,7 @@ def run_rows_test():
     slots = {}
     for k in KEY_MATRIX:
         slots[str(k["slot"])] = row_colors[k["row"]]
-    apply_slots(slots, "Reihen-Diagnose")
+    return apply_slots(slots, "Reihen-Diagnose")
 
 def run_zones_test():
     """Färbt logische Zonen (Schreibblock, Modifikatoren, Pfeile, Navigation, Akzente)."""
@@ -153,7 +163,7 @@ def run_zones_test():
     slots = {}
     for k in KEY_MATRIX:
         slots[str(k["slot"])] = zone_colors.get(k["zone"], "#FFFFFF")
-    apply_slots(slots, "Zonen-Diagnose")
+    return apply_slots(slots, "Zonen-Diagnose")
 
 def run_single_key(key_query):
     """Schaltet genau eine Taste in Weiß ein (alle anderen Tasten aus)."""
@@ -168,59 +178,69 @@ def run_single_key(key_query):
     print(f"▶ Einzeltasten-Test: '{matched['label']}' (Matrix-Slot {matched['slot']}) leuchtet WEISS, alle anderen AUS.")
     slots = {str(k["slot"]): "#000000" for k in KEY_MATRIX}
     slots[str(matched["slot"])] = "#FFFFFF"
-    apply_slots(slots, f"Single-{matched['label']}")
-    return True
+    return apply_slots(slots, f"Single-{matched['label']}")
 
 def run_sweep():
     """Führt einen sichtbaren Lichttest über alle 69 Tasten von links oben nach rechts unten durch."""
     total = len(KEY_MATRIX)
     print(f"▶ Test 3: Tastatur-Sweep (Jede der {total} Tasten leuchtet nacheinander kurz auf)")
+    failed = 0
     for i, k in enumerate(KEY_MATRIX, 1):
         print(f"\r  [{i:2d}/{total}] Taste: {k['label']:<12} (Slot {k['slot']:2d})", end="", flush=True)
         slots = {str(item["slot"]): "#000000" for item in KEY_MATRIX}
         slots[str(k["slot"])] = "#00FF88"
-        apply_slots(slots, f"Sweep-{k['label']}")
+        if not apply_slots(slots, f"Sweep-{k['label']}"):
+            failed += 1
         time.sleep(0.06)
-    print("\n✓ Sweep abgeschlossen.")
+    print("\n✓ Sweep abgeschlossen." if failed == 0 else f"\n✗ Sweep mit {failed} Fehlern abgeschlossen.")
+    return failed == 0
+
+def _process_baseline_ms(runs=5):
+    """Misst die reine Prozessstart-Latenz von ciy_ctl (ohne USB-Transfer)."""
+    times = []
+    for _ in range(runs):
+        t0 = time.perf_counter()
+        subprocess.run([CIY_CTL, "list-modes", "--json"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        times.append((time.perf_counter() - t0) * 1000.0)
+    times.sort()
+    return times[len(times) // 2]
 
 def run_benchmark():
-    """Prüft das exakte Ansprechverhalten und die USB-Latenz für alle 69 Tasten."""
+    """Misst Gesamtlatenz inkl. Prozessstart und schätzt den USB-/Transferanteil.
+
+    Statt 69 separater ciy_ctl-Prozessstarte (eine pro Taste) wird ein einzelner
+    batched apply_slots-Aufruf mit allen 69 Slots ausgeführt. Der USB-/Transfer-
+    Anteil pro Taste ergibt sich als (Gesamtlatenz - Prozessstart-Baseline) / 69,
+    ohne pro Iteration neu zu spawnen.
+    """
+    if not require_ciy_ctl():
+        return False
     total = len(KEY_MATRIX)
     print(f"▶ Test: Latenz- & Ansprechverhaltens-Benchmark aller {total} Tasten")
-    latencies = []
-    failed_keys = []
-    
-    for i, k in enumerate(KEY_MATRIX, 1):
-        slots = {str(item["slot"]): "#000000" for item in KEY_MATRIX}
-        slots[str(k["slot"])] = "#00FF88"
-        
-        t0 = time.perf_counter()
-        success = apply_slots(slots, f"Bench-{k['slot']}")
-        t1 = time.perf_counter()
-        
-        elapsed_ms = (t1 - t0) * 1000.0
-        latencies.append(elapsed_ms)
-        
-        if success:
-            status_str = f"✓ {elapsed_ms:5.1f} ms"
-        else:
-            status_str = "✗ FEHLER"
-            failed_keys.append(k["label"])
-            
-        print(f"\r  [{i:2d}/{total}] Taste: {k['label']:<12} (Slot {k['slot']:2d}) -> {status_str}", end="", flush=True)
-    
+    baseline_ms = _process_baseline_ms()
+    print(f"  • Prozessstart-Baseline (Median): {baseline_ms:.1f} ms")
+
+    # Ein einziger Batched-Aufruf mit allen 69 Slots ersetzt 69 subprocess-Starte.
+    slots = {str(k["slot"]): "#00FF88" for k in KEY_MATRIX}
+    t0 = time.perf_counter()
+    success = apply_slots(slots, "Bench-All-69")
+    t1 = time.perf_counter()
+
+    elapsed_ms = (t1 - t0) * 1000.0
+    transfer_total_ms = max(0.0, elapsed_ms - baseline_ms)
+    per_key_usb_ms = transfer_total_ms / total if total else 0.0
+
     print("\n\n=== Benchmark-Ergebnis ===")
-    if failed_keys:
-        print(f"  Status:         ✗ {len(failed_keys)} FEHLER (Tasten: {', '.join(failed_keys)})")
+    if success:
+        print(f"  Status:         ✓ Alle {total} Tasten im Batched-Aufruf gesendet (0 Paketverluste)")
     else:
-        print(f"  Status:         ✓ Alle {total} Tasten antworten fehlerfrei (0 Paketverluste)")
-    
-    avg_lat = sum(latencies) / len(latencies) if latencies else 0
-    min_lat = min(latencies) if latencies else 0
-    max_lat = max(latencies) if latencies else 0
-    print(f"  USB-Durchsatz:  Min: {min_lat:.1f} ms | Avg: {avg_lat:.1f} ms | Max: {max_lat:.1f} ms")
+        print(f"  Status:         ✗ Batched-Aufruf fehlgeschlagen")
+
+    print(f"  Gesamtlatenz (inkl. Prozessstart): {elapsed_ms:.1f} ms")
+    print(f"  Geschätzter USB-/Transferanteil:   Gesamt: {transfer_total_ms:.1f} ms | pro Taste: {per_key_usb_ms:.2f} ms")
     print("==========================\n")
-    return len(failed_keys) == 0
+    return success
 
 def run_clusters_test():
     """Prüft das dynamische Ansprechverhalten nach Funktionsblöcken."""
@@ -232,6 +252,7 @@ def run_clusters_test():
         ("Modifikatoren", ["ShiftL", "ShiftR", "StrgL", "StrgR", "AltL", "AltGr", "Win", "Fn", "Caps", "Tab"], "#00FFFF"),
         ("Leertaste", ["Space"], "#FF00FF"),
     ]
+    failures = 0
     for name, labels, color in clusters:
         print(f"  • Teste {name:<16} ({len(labels)} Tasten) in {color}...")
         slots = {str(item["slot"]): "#000000" for item in KEY_MATRIX}
@@ -240,72 +261,107 @@ def run_clusters_test():
                 if k["label"].lower() == lbl.lower():
                     slots[str(k["slot"])] = color
                     break
-        apply_slots(slots, f"Cluster-{name}")
+        if not apply_slots(slots, f"Cluster-{name}"):
+            failures += 1
         time.sleep(0.4)
-    print("✓ Cluster-Dynamiktest abgeschlossen.")
+    print("✓ Cluster-Dynamiktest abgeschlossen." if failures == 0
+          else f"✗ Cluster-Dynamiktest mit {failures} Fehlern beendet.")
+    return failures == 0
 
 def run_isolation_test():
-    """Beweist, dass CIY_TESTING=1 automatisierte Tests sicher vom physischen USB isoliert."""
+    """Prüft, dass die Testsuite die reale Hardware nicht verändert.
+
+    Voraussetzung: Die Tastatur ist verbunden; ohne echte Statuswerte wäre der
+    Vorher-/Nachher-Vergleich nicht aussagekräftig.
+    """
     print("▶ Test: Hardware-Isolationscheck für künftige Tests (Regression Guard)")
-    # 1. Status vor Testlauf lesen
-    st_before = subprocess.run([CIY_CTL, "status", "--json"], stdout=subprocess.PIPE, text=True).stdout
+    if not require_ciy_ctl():
+        return False
+
+    before = subprocess.run([CIY_CTL, "status", "--json"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        j_before = json.loads(before.stdout)
+    except json.JSONDecodeError as exc:
+        print(f"  ✗ Status vor der Testsuite nicht lesbar: {exc}")
+        return False
+    if not j_before.get("connected"):
+        print("  ✗ Tastatur nicht verbunden – Isolationstest nicht aussagekräftig.")
+        return False
     print("  • Aktuellen Hardware-Status vor Testsuite gesichert.")
-    
-    # 2. Testsuite mit CIY_TESTING=1 ausführen
+
     test_env = os.environ.copy()
     test_env["CIY_TESTING"] = "1"
     run_script = os.path.join(PROJECT_ROOT, "scripts", "run_tests.sh")
     res = subprocess.run([run_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=test_env)
-    
+
     if res.returncode != 0:
         print(f"  ✗ Testsuite mit Fehler beendet:\n{res.stderr}")
         return False
-        
+
     print("  • Automatisierte Test-Suiten (HID, Profil-Logik, CLI) erfolgreich durchlaufen.")
-    
-    # 3. Status nach Testlauf lesen
-    st_after = subprocess.run([CIY_CTL, "status", "--json"], stdout=subprocess.PIPE, text=True).stdout
-    
-    # 4. Prüfen, dass Hardware unberührt blieb
+
+    after = subprocess.run([CIY_CTL, "status", "--json"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        j_before = json.loads(st_before)
-        j_after = json.loads(st_after)
-        if j_before == j_after:
-            print("  ✓ Verifikation erfolgreich: Hardware-Zustand blieb zu 100% unverändert!")
-            print("    Kein automatisierter Test hat versehentlich die physische Tastatur überschrieben.")
-            return True
-        else:
-            print("  ✗ WARNUNG: Hardware-Zustand hat sich während der Tests verändert!")
-            print(f"    Vorher: {j_before}\n    Nachher: {j_after}")
-            return False
-    except json.JSONDecodeError as e:
-        print(f"  ✗ JSON-Parsefehler beim Statusvergleich: {e}")
+        j_after = json.loads(after.stdout)
+    except json.JSONDecodeError as exc:
+        print(f"  ✗ Status nach der Testsuite nicht lesbar: {exc}")
         return False
+    if not j_after.get("connected"):
+        print("  ✗ Tastatur nach der Testsuite nicht mehr verbunden – Test nicht aussagekräftig.")
+        return False
+
+    if j_before == j_after:
+        print("  ✓ Verifikation erfolgreich: Hardware-Zustand blieb zu 100% unverändert!")
+        print("    Kein automatisierter Test hat versehentlich die physische Tastatur überschrieben.")
+        return True
+
+    print("  ✗ WARNUNG: Hardware-Zustand hat sich während der Tests verändert!")
+    print(f"    Vorher: {j_before}\n    Nachher: {j_after}")
+    return False
 
 def run_all_tests():
     """Führt die komplette Test- und Diagnose-Batterie aus."""
     print("=================================================================")
     print("  CIY X79 Hardware-Diagnose- und Ansprechverhaltens-Prüfung")
     print("=================================================================\n")
-    ok1 = run_isolation_test()
+    results = {}
+    results["isolation"] = run_isolation_test()
     print()
-    ok2 = run_benchmark()
-    run_clusters_test()
+    results["benchmark"] = run_benchmark()
     print()
-    run_rows_test()
+    results["clusters"] = run_clusters_test()
     print()
-    run_sweep()
+    results["rows"] = run_rows_test()
     print()
-    run_restore()
+    results["zones"] = run_zones_test()
+    print()
+    results["sweep"] = run_sweep()
+    print()
+    results["restore"] = run_restore()
     print("\n=================================================================")
+    failed = [name for name, ok in results.items() if not ok]
+    if failed:
+        print(f"  ✗ Fehlgeschlagene Diagnosen: {', '.join(failed)}")
+        print("=================================================================")
+        return False
     print("  Alle Hardware- und Isolationstests erfolgreich abgeschlossen!  ")
     print("=================================================================")
-    return ok1 and ok2
+    return True
 
 def run_restore():
     """Stellt das WASD Gaming-Profil wieder her."""
     print("▶ Stelle Standard WASD Gaming-Profil wieder her...")
-    subprocess.run([CIY_CTL, "wasd"])
+    if not require_ciy_ctl():
+        return False
+    res = subprocess.run([CIY_CTL, "wasd"],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        print(f"  ✗ Wiederherstellen fehlgeschlagen: {res.stderr.strip()}")
+        return False
+    print("  ✓ Standardprofil (WASD) wiederhergestellt.")
+    return True
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -313,24 +369,26 @@ if __name__ == "__main__":
         sys.exit(1)
 
     cmd = sys.argv[1].lower()
+    success = False
     if cmd == "all":
-        run_all_tests()
+        success = run_all_tests()
     elif cmd == "benchmark":
-        run_benchmark()
+        success = run_benchmark()
     elif cmd == "clusters":
-        run_clusters_test()
+        success = run_clusters_test()
     elif cmd == "isolation":
-        run_isolation_test()
+        success = run_isolation_test()
     elif cmd == "rows":
-        run_rows_test()
+        success = run_rows_test()
     elif cmd == "zones":
-        run_zones_test()
+        success = run_zones_test()
     elif cmd == "sweep":
-        run_sweep()
+        success = run_sweep()
     elif cmd == "key" and len(sys.argv) >= 3:
-        run_single_key(sys.argv[2])
+        success = run_single_key(sys.argv[2])
     elif cmd == "restore":
-        run_restore()
+        success = run_restore()
     else:
-        print(f"Unbekannter Befehl: {cmd}")
+        print(f"Unbekannter Befehl: {sys.argv[1]}")
         sys.exit(1)
+    sys.exit(0 if success else 1)

@@ -4,7 +4,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 APP_NAME="CIYX79Control"
-VERSION="${1:-${VERSION:-1.0.2}}"
+VERSION="${1:-${VERSION:-1.1.0}}"
 VERSION="${VERSION#v}"
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
@@ -19,6 +19,7 @@ mkdir -p "${RESOURCES_DIR}"
 
 echo "1. Kompiliere Universal Binary (arm64 & x86_64) mit Clang..."
 clang -arch arm64 -arch x86_64 \
+    -mmacosx-version-min=12.0 \
     -O2 \
     -Wall -Wextra \
     -fobjc-arc \
@@ -27,6 +28,7 @@ clang -arch arm64 -arch x86_64 \
     -framework CoreFoundation \
     -framework UniformTypeIdentifiers \
     src/core/ciy_hid.c \
+    src/layouts/ciy_x79_iso_de.c \
     src/app/KeyboardBackend.m \
     src/app/CIYKeyboardView.m \
     src/app/AppDelegate.m \
@@ -35,6 +37,7 @@ clang -arch arm64 -arch x86_64 \
 
 echo "2. Kompiliere CLI-Tool ciy_ctl (Universal Binary)..."
 clang -arch arm64 -arch x86_64 \
+    -mmacosx-version-min=12.0 \
     -O2 \
     -Wall -Wextra \
     -framework IOKit \

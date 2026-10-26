@@ -35,6 +35,7 @@
     NSString *_currentActiveProfileId;
     BOOL _hasUnsavedEdits;
     BOOL _isWakingUp;
+    BOOL _wakeSyncScheduled;
     NSStatusItem *_statusItem;
 }
 @end
@@ -73,6 +74,18 @@ static NSColor *ColorFromHex(NSString *hex) {
                                alpha:1.0];
 }
 
+static NSString *TruncateProfileName(NSString *name, NSUInteger maxUnits) {
+    if (name.length <= maxUnits) return name;
+    NSRange r = [name rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, maxUnits)];
+    NSString *s = [name substringWithRange:r];
+    while (s.length > maxUnits) {
+        NSRange last = [s rangeOfComposedCharacterSequenceAtIndex:s.length - 1];
+        if (last.location == 0) break; // würde die einzige Sequenz entfernen – leer vermeiden
+        s = [s substringToIndex:last.location];
+    }
+    return s;
+}
+
 @implementation AppDelegate
 
 /// Gemeinsame Farbpalette für Tastenbuttons (Reihenfolge = Button-Tag).
@@ -104,7 +117,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self setupMainMenu];
 
     // Hauptfenster einrichten
-    NSRect frame = NSMakeRect(100, 100, 920, 660);
+    NSRect frame = NSMakeRect(100, 100, 940, 660);
     self.window = [[NSWindow alloc] initWithContentRect:frame
                                               styleMask:(NSWindowStyleMaskTitled |
                                                          NSWindowStyleMaskClosable |
@@ -114,7 +127,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                                   defer:NO];
 
     self.window.title = @"CIY X79 RGB Tastatur-Steuerung (macOS)";
-    self.window.minSize = NSMakeSize(880, 600);
+    self.window.minSize = NSMakeSize(940, 600);
     self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.window.releasedWhenClosed = NO;
     [self.window center];
@@ -396,6 +409,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         }
     } else {
         _profiles = [NSMutableArray array];
+        [self addDefaultProfiles];
+        [self saveProfilesToDefaults];
+    }
+
+    if (_profiles.count == 0) {
+        // Defekte/leere gespeicherte Liste: auf die eingebauten Profile zurückfallen.
         [self addDefaultProfiles];
         [self saveProfilesToDefaults];
     }
@@ -877,7 +896,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             if (name.length == 0) {
                 name = [NSString stringWithFormat:@"Profil %lu", (unsigned long)(self->_profiles.count + 1)];
             } else if (name.length > 40) {
-                name = [name substringToIndex:40];
+                name = TruncateProfileName(name, 40);
             }
 
             NSDictionary<NSNumber *, NSColor *> *allColors = [self->_keyboardView allKeyColors];
@@ -929,7 +948,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         if (returnCode == NSAlertFirstButtonReturn) {
             NSString *name = [input.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (name.length > 0) {
-                if (name.length > 40) name = [name substringToIndex:40];
+                if (name.length > 40) name = TruncateProfileName(name, 40);
                 prof[@"name"] = name;
                 [self saveProfilesToDefaults];
                 [self refreshProfilesPopUp];
@@ -1097,26 +1116,42 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Profil „%@“ aktiv auf Tastatur", profName];
             self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
         } else {
-            self->_statusLabel.stringValue = @"● Senden fehlgeschlagen (USB prüfen)";
-            self->_statusLabel.textColor = [NSColor systemRedColor];
+            [self updateConnectionStatus];
+            if ([KeyboardBackend shared].isConnected &&
+                ![KeyboardBackend shared].lastOperationWasCancelled) {
+                self->_statusLabel.stringValue = @"● Senden fehlgeschlagen (USB prüfen)";
+                self->_statusLabel.textColor = [NSColor systemRedColor];
+            }
         }
     }];
+}
+
+- (void)cancelHardwareSync {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(performHardwareSync)
+                                               object:nil];
+    _wakeSyncScheduled = NO;
 }
 
 - (void)onHotplug:(NSNotification *)note {
     BOOL connected = [note.userInfo[@"connected"] boolValue];
     if (!connected) {
-        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
+        [self cancelHardwareSync];
+        _isWakingUp = NO;
         [[KeyboardBackend shared] disconnect];
         [self updateConnectionStatus];
         return;
     }
     if (_isWakingUp) {
-        // Während des Aufwachvorgangs übernimmt der verzögerte Timer in onSystemDidWake: die Synchronisation
-        return;
+        if (_wakeSyncScheduled) {
+            // Während des Aufwachvorgangs übernimmt der verzögerte Timer die Synchronisation.
+            return;
+        }
+        // Kein Timer mehr ausstehend (z. B. durch Disconnect abgebrochen): normal weiter.
+        _isWakingUp = NO;
     }
     // Normaler Hotplug im laufenden Betrieb: 100 ms Debouncing gegen Kontaktprellen
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
+    [self cancelHardwareSync];
     [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:0.1];
 }
 
@@ -1125,7 +1160,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _isWakingUp = YES;
     // Anstehende Auto-Switches und Hardware-Syncs stornieren, damit während des Suspend-Vorgangs keine Transfers laufen
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
+    [self cancelHardwareSync];
     // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
     [[KeyboardBackend shared] disconnect];
     [self updateConnectionStatus];
@@ -1135,12 +1170,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     (void)note;
     // 500 ms Verzögerung, damit macOS USB-Root-Hub und MCU nach dem Aufwachen vollständig initialisiert sind.
     // Konsolidiert Aufwach- und Hotplug-Events zu einem einzigen Reconnect.
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performHardwareSync) object:nil];
+    [self cancelHardwareSync];
+    _wakeSyncScheduled = YES;
     [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:0.5];
 }
 
 - (void)performHardwareSync {
     _isWakingUp = NO;
+    _wakeSyncScheduled = NO;
     [self runHardware:^BOOL{
         [[KeyboardBackend shared] disconnect];
         return [[KeyboardBackend shared] connect];
@@ -1249,7 +1286,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                     if ([dict[@"name"] isKindOfClass:[NSString class]]) {
                         NSString *trimmed = [dict[@"name"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                         if (trimmed.length > 0) {
-                            if (trimmed.length > 40) trimmed = [trimmed substringToIndex:40];
+                            if (trimmed.length > 40) trimmed = TruncateProfileName(trimmed, 40);
                             name = trimmed;
                         }
                     }
@@ -1566,7 +1603,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (void)reportResult:(BOOL)ok {
-    if (!ok) {
+    if (!ok && ![KeyboardBackend shared].lastOperationWasCancelled) {
         NSLog(@"CIY X79: Hardware-Übertragung fehlgeschlagen");
     }
     [self updateConnectionStatus];

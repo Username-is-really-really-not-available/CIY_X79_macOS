@@ -141,3 +141,13 @@ reports/
 *.swp
 *.bak
 /*.plist
+
+# ------------------------------------------------------------------------------
+# 8. Lokale Agenten- & Tooling-Konfigurationen
+# ------------------------------------------------------------------------------
+.kilo/
+.kilocoderules
+.kiloignore
+AGENTS.md
+docs/agent/
+

@@ -1,10 +1,5 @@
 #import "CIYKeyboardView.h"
-
-typedef struct {
-    char label[32];
-    int slot;
-    float width; // Key width in U
-} KeyItem;
+#import "../layouts/ciy_layout.h"
 
 @interface CIYKeyboardView () {
     NSMutableDictionary<NSNumber *, NSColor *> *_keyColors;
@@ -14,37 +9,6 @@ typedef struct {
 @end
 
 @implementation CIYKeyboardView
-
-static const KeyItem ROW_0[] = {
-    {"Esc", 1, 1.0f}, {"1", 7, 1.0f}, {"2", 13, 1.0f}, {"3", 19, 1.0f}, {"4", 25, 1.0f},
-    {"5", 31, 1.0f}, {"6", 37, 1.0f}, {"7", 43, 1.0f}, {"8", 49, 1.0f}, {"9", 55, 1.0f},
-    {"0", 61, 1.0f}, {"ß", 67, 1.0f}, {"´", 73, 1.0f}, {"⌫ Back", 79, 2.0f}, {"Entf", 86, 1.0f}
-};
-
-static const KeyItem ROW_1[] = {
-    {"⇥ Tab", 2, 1.5f}, {"Q", 8, 1.0f}, {"W", 14, 1.0f}, {"E", 20, 1.0f}, {"R", 26, 1.0f},
-    {"T", 32, 1.0f}, {"Z", 38, 1.0f}, {"U", 44, 1.0f}, {"I", 50, 1.0f}, {"O", 56, 1.0f},
-    {"P", 62, 1.0f}, {"Ü", 68, 1.0f}, {"+ *", 74, 1.0f}, {"↵ Enter", 81, 1.5f}, {"Bild ⇡", 87, 1.0f}
-};
-
-static const KeyItem ROW_2[] = {
-    {"⇪ Caps", 3, 1.75f}, {"A", 9, 1.0f}, {"S", 15, 1.0f}, {"D", 21, 1.0f}, {"F", 27, 1.0f},
-    {"G", 33, 1.0f}, {"H", 39, 1.0f}, {"J", 45, 1.0f}, {"K", 51, 1.0f}, {"L", 57, 1.0f},
-    {"Ö", 63, 1.0f}, {"Ä", 69, 1.0f}, {"# '", 75, 1.0f}, {"↵", 81, 1.25f}, {"Bild ⇣", 94, 1.0f}
-};
-
-static const KeyItem ROW_3[] = {
-    {"⇧ Shift", 4, 1.25f}, {"< >", 76, 1.0f}, {"Y", 10, 1.0f}, {"X", 16, 1.0f}, {"C", 22, 1.0f},
-    {"V", 28, 1.0f}, {"B", 34, 1.0f}, {"N", 40, 1.0f}, {"M", 46, 1.0f}, {", ;", 52, 1.0f},
-    {". :", 58, 1.0f}, {"- _", 64, 1.0f}, {"⇧ Shift", 82, 1.75f}, {"▲", 88, 1.0f}, {"Ende", 91, 1.0f}
-};
-
-static const KeyItem ROW_4[] = {
-    {"Strg", 5, 1.25f}, {"Win", 11, 1.25f}, {"Alt", 17, 1.25f},
-    {"Leertaste (Space)", 35, 6.25f},
-    {"AltGr", 53, 1.25f}, {"Fn", 77, 1.0f}, {"Strg", 80, 1.0f},
-    {"◄", 83, 1.0f}, {"▼", 89, 1.0f}, {"►", 95, 1.0f}
-};
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
@@ -116,35 +80,32 @@ static const KeyItem ROW_4[] = {
     CGFloat keyH  = (usableH - 4 * 4.0) / 5.0;
     CGFloat gap = 4.0;
 
-    const KeyItem *rows[] = {ROW_0, ROW_1, ROW_2, ROW_3, ROW_4};
-    const size_t rowCounts[] = {
-        sizeof(ROW_0)/sizeof(ROW_0[0]),
-        sizeof(ROW_1)/sizeof(ROW_1[0]),
-        sizeof(ROW_2)/sizeof(ROW_2[0]),
-        sizeof(ROW_3)/sizeof(ROW_3[0]),
-        sizeof(ROW_4)/sizeof(ROW_4[0])
-    };
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    int currentRow = -1;
+    CGFloat x = margin;
+    CGFloat y = 0.0;
 
-    for (int r = 0; r < 5; r++) {
-        CGFloat y = bounds.size.height - margin - (r + 1) * keyH - r * gap;
-        CGFloat x = margin;
-        for (size_t c = 0; c < rowCounts[r]; c++) {
-            KeyItem item = rows[r][c];
-            CGFloat kw = item.width * unitW + (item.width - 1.0f) * gap;
-            NSRect keyRect = NSMakeRect(x, y, kw, keyH);
-
-            [self drawKey:item inRect:keyRect];
-            x += kw + gap;
+    for (size_t i = 0; i < layout->surface_count; i++) {
+        const CIYKeySurface *surf = &layout->surfaces[i];
+        if (surf->row != currentRow) {
+            currentRow = surf->row;
+            x = margin;
+            y = bounds.size.height - margin - (currentRow + 1) * keyH - currentRow * gap;
         }
+        CGFloat kw = surf->width_u * unitW + (surf->width_u - 1.0f) * gap;
+        NSRect keyRect = NSMakeRect(x, y, kw, keyH);
+
+        [self drawSurface:surf inRect:keyRect];
+        x += kw + gap;
     }
 }
 
-- (void)drawKey:(KeyItem)item inRect:(NSRect)rect {
+- (void)drawSurface:(const CIYKeySurface *)surface inRect:(NSRect)rect {
     NSBezierPath *keyPath = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:5 yRadius:5];
 
     // Base key cap body
     NSColor *defaultColor = [NSColor colorWithCalibratedRed:0.2 green:0.2 blue:0.2 alpha:1.0];
-    NSColor *rawGlow = _keyColors[@(item.slot)];
+    NSColor *rawGlow = _keyColors[@(surface->matrix_slot)];
     if (!rawGlow) rawGlow = defaultColor;
     NSColor *glowColor = [rawGlow colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
     if (!glowColor) glowColor = defaultColor;
@@ -161,11 +122,11 @@ static const KeyItem ROW_4[] = {
     [keyPath fill];
 
     // Key border / glow highlight
-    if (item.slot == _selectedSlot) {
+    if (surface->matrix_slot == _selectedSlot) {
         [[NSColor whiteColor] setStroke];
         [keyPath setLineWidth:2.5];
         [keyPath stroke];
-    } else if (item.slot == _hoveredSlot) {
+    } else if (surface->matrix_slot == _hoveredSlot) {
         [[NSColor colorWithCalibratedWhite:0.7 alpha:1.0] setStroke];
         [keyPath setLineWidth:1.5];
         [keyPath stroke];
@@ -183,7 +144,7 @@ static const KeyItem ROW_4[] = {
     [innerPath fill];
 
     // Key label
-    NSString *text = [NSString stringWithUTF8String:item.label];
+    NSString *text = [NSString stringWithUTF8String:surface->label];
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.alignment = NSTextAlignmentCenter;
 
@@ -280,33 +241,22 @@ static const KeyItem ROW_4[] = {
         NSString *chars = [event.charactersIgnoringModifiers uppercaseString];
         if (chars.length > 0) {
             NSString *ch = [chars substringToIndex:1];
-            const KeyItem *rows[] = {ROW_0, ROW_1, ROW_2, ROW_3, ROW_4};
-            const size_t rowCounts[] = {
-                sizeof(ROW_0)/sizeof(ROW_0[0]),
-                sizeof(ROW_1)/sizeof(ROW_1[0]),
-                sizeof(ROW_2)/sizeof(ROW_2[0]),
-                sizeof(ROW_3)/sizeof(ROW_3[0]),
-                sizeof(ROW_4)/sizeof(ROW_4[0])
-            };
+            const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
             // 1. Pass: Exakte Übereinstimmung (z. B. "B", "E", "A", "S", "1", ...)
-            for (int r = 0; r < 5 && targetSlot < 0; r++) {
-                for (size_t c = 0; c < rowCounts[r]; c++) {
-                    NSString *itemLabel = [NSString stringWithUTF8String:rows[r][c].label];
-                    if ([itemLabel isEqualToString:ch]) {
-                        targetSlot = rows[r][c].slot;
-                        break;
-                    }
+            for (size_t i = 0; i < layout->surface_count; i++) {
+                NSString *itemLabel = [NSString stringWithUTF8String:layout->surfaces[i].label];
+                if ([itemLabel isEqualToString:ch]) {
+                    targetSlot = layout->surfaces[i].matrix_slot;
+                    break;
                 }
             }
             // 2. Pass: Falls kein exakter Match, Mehrfach-Labels prüfen (z. B. "+ *", ", ;", "- _")
             if (targetSlot < 0) {
-                for (int r = 0; r < 5 && targetSlot < 0; r++) {
-                    for (size_t c = 0; c < rowCounts[r]; c++) {
-                        NSString *itemLabel = [NSString stringWithUTF8String:rows[r][c].label];
-                        if ([itemLabel hasPrefix:ch]) {
-                            targetSlot = rows[r][c].slot;
-                            break;
-                        }
+                for (size_t i = 0; i < layout->surface_count; i++) {
+                    NSString *itemLabel = [NSString stringWithUTF8String:layout->surfaces[i].label];
+                    if ([itemLabel hasPrefix:ch]) {
+                        targetSlot = layout->surfaces[i].matrix_slot;
+                        break;
                     }
                 }
             }
@@ -351,46 +301,33 @@ static const KeyItem ROW_4[] = {
     CGFloat keyH  = (usableH - 4 * 4.0) / 5.0;
     CGFloat gap = 4.0;
 
-    const KeyItem *rows[] = {ROW_0, ROW_1, ROW_2, ROW_3, ROW_4};
-    const size_t rowCounts[] = {
-        sizeof(ROW_0)/sizeof(ROW_0[0]),
-        sizeof(ROW_1)/sizeof(ROW_1[0]),
-        sizeof(ROW_2)/sizeof(ROW_2[0]),
-        sizeof(ROW_3)/sizeof(ROW_3[0]),
-        sizeof(ROW_4)/sizeof(ROW_4[0])
-    };
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    int currentRow = -1;
+    CGFloat x = margin;
+    CGFloat y = 0.0;
 
-    for (int r = 0; r < 5; r++) {
-        CGFloat y = bounds.size.height - margin - (r + 1) * keyH - r * gap;
-        CGFloat x = margin;
-        for (size_t c = 0; c < rowCounts[r]; c++) {
-            KeyItem item = rows[r][c];
-            CGFloat kw = item.width * unitW + (item.width - 1.0f) * gap;
-            NSRect keyRect = NSMakeRect(x, y, kw, keyH);
-            if (NSPointInRect(pt, keyRect)) {
-                return item.slot;
-            }
-            x += kw + gap;
+    for (size_t i = 0; i < layout->surface_count; i++) {
+        const CIYKeySurface *surf = &layout->surfaces[i];
+        if (surf->row != currentRow) {
+            currentRow = surf->row;
+            x = margin;
+            y = bounds.size.height - margin - (currentRow + 1) * keyH - currentRow * gap;
         }
+        CGFloat kw = surf->width_u * unitW + (surf->width_u - 1.0f) * gap;
+        NSRect keyRect = NSMakeRect(x, y, kw, keyH);
+        if (NSPointInRect(pt, keyRect)) {
+            return surf->matrix_slot;
+        }
+        x += kw + gap;
     }
     return -1;
 }
 
 - (NSString *)labelForSlot:(int)slot {
-    const KeyItem *rows[] = {ROW_0, ROW_1, ROW_2, ROW_3, ROW_4};
-    const size_t rowCounts[] = {
-        sizeof(ROW_0)/sizeof(ROW_0[0]),
-        sizeof(ROW_1)/sizeof(ROW_1[0]),
-        sizeof(ROW_2)/sizeof(ROW_2[0]),
-        sizeof(ROW_3)/sizeof(ROW_3[0]),
-        sizeof(ROW_4)/sizeof(ROW_4[0])
-    };
-    for (int r = 0; r < 5; r++) {
-        for (size_t c = 0; c < rowCounts[r]; c++) {
-            if (rows[r][c].slot == slot) {
-                return [NSString stringWithUTF8String:rows[r][c].label];
-            }
-        }
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    const CIYLogicalKey *key = ciy_layout_find_key_by_slot(layout, slot);
+    if (key && key->name) {
+        return [NSString stringWithUTF8String:key->name];
     }
     return [NSString stringWithFormat:@"Slot %d", slot];
 }

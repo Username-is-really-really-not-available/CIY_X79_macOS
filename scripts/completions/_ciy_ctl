@@ -14,6 +14,7 @@ _ciy_ctl() {
         'all-red:Aktiviert statisches Vollrot für alle Tasten'
         'list-modes:Listet alle 20 Beleuchtungsmodi und 11 Farbpaletten auf'
         'set:Setzt Beleuchtungsmodus, Farbe, Tempo und Helligkeit'
+        'validate-profile:Validiert eine JSON-Profildatei ohne Hardwarezugriff'
         'help:Zeigt Hilfe und Befehlsübersicht an'
     )
 
@@ -78,6 +79,7 @@ _ciy_ctl() {
 
     _arguments -C \
         '(-h --help)'{-h,--help}'[Hilfe und Verwendung anzeigen]' \
+        '--dry-run[Simuliert Profilübertragung ohne Öffnen von USB-Geräten]' \
         '--json[Maschinenlesbare JSON-Ausgabe für Skripte und Widgets]' \
         '1:Befehl:->command' \
         '*::Optionen:->args'
@@ -101,6 +103,7 @@ _ciy_ctl() {
                     ;;
                 load)
                     _arguments \
+                        '--dry-run[Simuliert Profilübertragung ohne Hardwarezugriff]' \
                         '(-b --brightness)'{-b,--brightness}'[Helligkeit (0..5)]:Helligkeit:_describe "Helligkeit" brightness_levels' \
                         '1:JSON-Profildatei:_files -g "*.json"' \
                         '2:Profilname oder Index: ' \
@@ -118,6 +121,11 @@ _ciy_ctl() {
                         '3:Tempo:_describe "Tempo (0..4)" speed_levels' \
                         '4:Helligkeit:_describe "Helligkeit (0..5)" brightness_levels' \
                         '--json[Ergebnis als JSON zurückgeben]'
+                    ;;
+                validate-profile)
+                    _arguments \
+                        '1:JSON-Profildatei:_files -g "*.json"' \
+                        '--json[Validierungsergebnis als JSON ausgeben]'
                     ;;
             esac
             ;;

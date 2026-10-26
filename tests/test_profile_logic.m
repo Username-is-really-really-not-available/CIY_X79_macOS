@@ -1,6 +1,9 @@
 #import <Cocoa/Cocoa.h>
 #import <assert.h>
+#import <stdlib.h>
+#import <unistd.h>
 #import "../src/core/ciy_hid.h"
+#import "../src/layouts/ciy_layout.h"
 #import "../src/app/KeyboardBackend.h"
 #import "../src/app/CIYKeyboardView.h"
 
@@ -14,7 +17,7 @@ static NSString *HexFromColor(NSColor *color) {
     int ig = (int)(g * 255.0 + 0.5);
     int ib = (int)(b * 255.0 + 0.5);
     if (ir < 0) ir = 0; else if (ir > 255) ir = 255;
-    if (ig < 0) ig = 0; else if (ig > 255) ir = 255;
+    if (ig < 0) ig = 0; else if (ig > 255) ig = 255;
     if (ib < 0) ib = 0; else if (ib > 255) ib = 255;
     return [NSString stringWithFormat:@"#%02X%02X%02X", ir, ig, ib];
 }
@@ -345,6 +348,54 @@ static void test_fallback_profile_validation(void) {
     assert([resolvedFallbackId isEqualToString:@"p1"]);
 }
 
+static void test_cancel_blocks_apply(void) {
+    KeyboardBackend *kb = [KeyboardBackend shared];
+    NSDictionary *cols = @{@(14): [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0]};
+
+    assert([kb connect]);
+    assert([kb sendKeyColors:cols brightness:5 defaultColor:nil]);
+    assert(![kb lastOperationWasCancelled]);
+
+    [kb disconnect];
+    assert(![kb isConnected]);
+    assert(![kb sendKeyColors:cols brightness:5 defaultColor:nil]);
+    assert([kb lastOperationWasCancelled]);
+
+    assert([kb connect]);
+    assert([kb sendKeyColors:cols brightness:5 defaultColor:nil]);
+    assert(![kb lastOperationWasCancelled]);
+}
+
+static void test_disconnect_during_apply(void) {
+    KeyboardBackend *kb = [KeyboardBackend shared];
+    NSDictionary *cols = @{@(14): [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0]};
+
+    assert([kb connect]);
+    setenv("CIY_TESTING_APPLY_DELAY_MS", "1000", 1);
+
+    __block BOOL applyOk = YES;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        // Exakt der Produktionspfad; die Delay-Schleife liegt in applyProfile:.
+        applyOk = [kb sendKeyColors:cols brightness:5 defaultColor:nil];
+        dispatch_semaphore_signal(done);
+    });
+
+    usleep(50000); // sicherstellen, dass applyProfile: in der Delay-Schleife ist
+    NSDate *start = [NSDate date];
+    [kb disconnect];
+    NSTimeInterval elapsed = -[start timeIntervalSinceNow];
+    long waitResult = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+    unsetenv("CIY_TESTING_APPLY_DELAY_MS");
+
+    assert(waitResult == 0);
+    assert(elapsed < 0.2);
+    assert(!applyOk);
+    assert([kb lastOperationWasCancelled]);
+
+    assert([kb connect]);
+}
+
 static void test_malformed_json_slots_ignored(void) {
     NSDictionary *malformedSlots = @{
         @"-1": @"#FF0000",
@@ -360,7 +411,7 @@ static void test_malformed_json_slots_ignored(void) {
         NSString *keyStr = [NSString stringWithFormat:@"%@", key];
         NSScanner *scanner = [NSScanner scannerWithString:keyStr];
         int slot = -1;
-        if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && (slot + 1) < CIY_LED_COUNT) {
+        if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
             NSString *hex = [NSString stringWithFormat:@"%@", malformedSlots[key]];
             if ([hex hasPrefix:@"#"] && hex.length == 7) {
                 sanitized[@(slot).stringValue] = hex;
@@ -398,9 +449,75 @@ static void test_malformed_json_slots_ignored(void) {
     }
 }
 
+static void test_layout_x79_iso_de(void) {
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    assert(layout != NULL);
+    assert(strcmp(layout->layout_id, "ciy_x79_iso_de") == 0);
+    assert(layout->key_count == 69);
+    assert(layout->surface_count == 70);
+
+    // 1. Prüfe Eindeutigkeit und Wertebereich aller 69 logischen Tasten
+    NSMutableSet<NSNumber *> *seenSlots = [NSMutableSet set];
+    for (size_t i = 0; i < layout->key_count; i++) {
+        const CIYLogicalKey *k = &layout->keys[i];
+        assert(k->matrix_slot >= 0 && k->matrix_slot <= 124);
+        assert(k->led_index == k->matrix_slot + 1);
+        assert(k->name != NULL && strlen(k->name) > 0);
+
+        NSNumber *slotNum = @(k->matrix_slot);
+        assert(![seenSlots containsObject:slotNum]); // Keine doppelten logischen Tasten
+        [seenSlots addObject:slotNum];
+    }
+    assert(seenSlots.count == 69);
+
+    // 2. Prüfe alle 70 grafischen Flächen und die Verknüpfung zu den logischen Tasten
+    int enterSurfaceCount = 0;
+    for (size_t i = 0; i < layout->surface_count; i++) {
+        const CIYKeySurface *s = &layout->surfaces[i];
+        assert(s->matrix_slot >= 0 && s->matrix_slot <= 124);
+        assert(s->row >= 0 && s->row <= 4);
+        assert(s->width_u >= 1.0f && s->width_u <= 6.5f);
+        assert(s->label != NULL && strlen(s->label) > 0);
+
+        // Jede Fläche muss auf eine gültige logische Taste zeigen
+        const CIYLogicalKey *matchedKey = ciy_layout_find_key_by_slot(layout, s->matrix_slot);
+        assert(matchedKey != NULL);
+        assert(matchedKey->matrix_slot == s->matrix_slot);
+
+        if (s->matrix_slot == 81) {
+            enterSurfaceCount++;
+            // Die beiden Enter-Flächen müssen in Row 1 und Row 2 liegen
+            assert(s->row == 1 || s->row == 2);
+            if (s->row == 1) {
+                assert(strcmp(s->label, "↵ Enter") == 0);
+                assert(fabs(s->width_u - 1.5f) < 0.01);
+            } else if (s->row == 2) {
+                assert(strcmp(s->label, "↵") == 0);
+                assert(fabs(s->width_u - 1.25f) < 0.01);
+            }
+        }
+    }
+    assert(enterSurfaceCount == 2); // Exakt 2 Flächen für Enter
+
+    // 3. Lookup-Funktionen testen
+    const CIYLogicalKey *esc = ciy_layout_find_key_by_slot(layout, 1);
+    assert(esc != NULL && strcmp(esc->name, "Esc") == 0);
+
+    const CIYLogicalKey *ret = ciy_layout_find_key_by_slot(layout, 81);
+    assert(ret != NULL && strcmp(ret->name, "↵ Enter") == 0);
+
+    const CIYLogicalKey *w = ciy_layout_find_key_by_name(layout, "W");
+    assert(w != NULL && w->matrix_slot == 14 && w->led_index == 15);
+
+    assert(ciy_layout_find_key_by_slot(layout, -1) == NULL);
+    assert(ciy_layout_find_key_by_slot(layout, 125) == NULL);
+    assert(ciy_layout_find_key_by_name(layout, "NONEXISTENT") == NULL);
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
+        test_layout_x79_iso_de();
         test_hex_conversion();
         test_profile_creation_and_update();
         test_keyboard_view_colors();
@@ -412,6 +529,8 @@ int main(void) {
         test_menu_item_titles();
         test_app_binding_deduplication();
         test_fallback_profile_validation();
+        test_cancel_blocks_apply();
+        test_disconnect_during_apply();
         test_malformed_json_slots_ignored();
         puts("Profil-Logik Tests bestanden.");
     }

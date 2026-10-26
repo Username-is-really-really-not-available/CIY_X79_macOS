@@ -11,6 +11,9 @@ typedef CIYLightingState KeyboardLightingState;
 @property (atomic, readonly) BOOL isConnected;
 @property (atomic, readonly) KeyboardLightingState currentState;
 
+/// YES, wenn der letzte Apply-Vorgang durch disconnect/Sleep abgebrochen wurde.
+@property (atomic, readonly) BOOL lastOperationWasCancelled;
+
 /// Wird auf dem Main-Thread gepostet, wenn die Tastatur an- oder abgesteckt wurde.
 /// userInfo[@"connected"] ist ein NSNumber (BOOL).
 extern NSNotificationName const KeyboardBackendHotplugNotification;

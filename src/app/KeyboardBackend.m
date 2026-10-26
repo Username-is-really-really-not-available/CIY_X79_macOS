@@ -1,6 +1,8 @@
 #import "KeyboardBackend.h"
 #include <stdlib.h>
 #include <math.h>
+#include <unistd.h>
+#include <stdatomic.h>
 
 NSNotificationName const KeyboardBackendHotplugNotification = @"KeyboardBackendHotplugNotification";
 
@@ -12,10 +14,16 @@ static NSData *sLastSentPlanarPayload = nil;
     IONotificationPortRef _notifyPort;
     io_iterator_t _matchedIter;
     io_iterator_t _terminatedIter;
+    _Atomic bool _cancelRequested;
+    _Atomic bool _lastApplyCancelled;
 }
 @property (atomic, readwrite) BOOL isConnected;
 @property (atomic, readwrite) KeyboardLightingState currentState;
 @end
+
+static bool KeyboardBackendCancelCheck(void *ctx) {
+    return atomic_load_explicit((_Atomic bool *)ctx, memory_order_acquire);
+}
 
 @implementation KeyboardBackend
 
@@ -63,6 +71,8 @@ static NSData *sLastSentPlanarPayload = nil;
         _device.dev = NULL;
         _isConnected = NO;
         _currentState = (KeyboardLightingState){19, 0, 1, 5}; // Default: Mode 19 (Customize), Farbe Rot
+        atomic_init(&_cancelRequested, false);
+        atomic_init(&_lastApplyCancelled, false);
     }
     return self;
 }
@@ -99,15 +109,20 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 - (void)startMonitoring {
     @synchronized (self) {
         if (_notifyPort) return;
-        _notifyPort = IONotificationPortCreate(kIOMainPortDefault);
-        if (!_notifyPort) return;
-        IONotificationPortSetDispatchQueue(_notifyPort, dispatch_get_main_queue());
+
+        IONotificationPortRef port = IONotificationPortCreate(kIOMainPortDefault);
+        if (!port) return;
+        IONotificationPortSetDispatchQueue(port, dispatch_get_main_queue());
+
+        io_iterator_t matchedIter = 0;
+        io_iterator_t terminatedIter = 0;
+        BOOL ok = YES;
 
         for (int i = 0; i < 2; i++) {
             BOOL matched = (i == 0);
             // Jede Registrierung verbraucht ihr eigenes matchingDict.
             CFMutableDictionaryRef dict = IOServiceMatching(kIOUSBDeviceClassName);
-            if (!dict) continue;
+            if (!dict) { ok = NO; break; }
             int vid = CIY_VENDOR_ID, pid = CIY_PRODUCT_ID;
             CFNumberRef vidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
             CFNumberRef pidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
@@ -117,20 +132,32 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             CFRelease(pidRef);
 
             io_iterator_t iter = 0;
-            kern_return_t kr = IOServiceAddMatchingNotification(_notifyPort,
+            kern_return_t kr = IOServiceAddMatchingNotification(port,
                 matched ? kIOFirstMatchNotification : kIOTerminatedNotification,
                 dict, HotplugCallback, matched ? (void *)1 : NULL, &iter);
-            if (kr == KERN_SUCCESS && iter) {
-                // Vorhandene Geräte durchlaufen, um die Benachrichtigung zu "armen".
-                io_object_t obj;
-                while ((obj = IOIteratorNext(iter))) IOObjectRelease(obj);
-                if (matched) {
-                    _matchedIter = iter;
-                } else {
-                    _terminatedIter = iter;
-                }
+            if (kr != KERN_SUCCESS || !iter) { ok = NO; break; }
+
+            // Vorhandene Geräte durchlaufen, um die Benachrichtigung zu "armen".
+            io_object_t obj;
+            while ((obj = IOIteratorNext(iter))) IOObjectRelease(obj);
+            if (matched) {
+                matchedIter = iter;
+            } else {
+                terminatedIter = iter;
             }
         }
+
+        if (!ok) {
+            if (matchedIter) IOObjectRelease(matchedIter);
+            if (terminatedIter) IOObjectRelease(terminatedIter);
+            IONotificationPortSetDispatchQueue(port, NULL);
+            IONotificationPortDestroy(port);
+            return;
+        }
+
+        _matchedIter = matchedIter;
+        _terminatedIter = terminatedIter;
+        _notifyPort = port;
     }
 }
 
@@ -157,6 +184,8 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 
 - (BOOL)connect {
     @synchronized (self) {
+        atomic_store(&_cancelRequested, false);
+        atomic_store(&_lastApplyCancelled, false);
         if ([KeyboardBackend isTestingMode]) {
             self.isConnected = YES;
             return YES;
@@ -175,6 +204,9 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 }
 
 - (void)disconnect {
+    // Vor dem Lock setzen: ein laufendes applyProfile: bricht zwischen den Schritten ab,
+    // damit dieser Aufruf nicht auf die volle 50-ms-Sequenz warten muss.
+    atomic_store(&_cancelRequested, true);
     @synchronized (self) {
         if ([KeyboardBackend isTestingMode]) {
             self.isConnected = NO;
@@ -187,6 +219,7 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 
 - (BOOL)readCurrentState {
     @synchronized (self) {
+        if (atomic_load(&_cancelRequested)) return NO;
         if ([KeyboardBackend isTestingMode]) {
             return YES;
         }
@@ -203,7 +236,30 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
 /// Report 0x0B, 50 ms Pause, danach Modus 19 (siehe README 2.B).
 - (BOOL)applyProfile:(const uint8_t *)rgb brightness:(uint8_t)brightness {
     @synchronized (self) {
+        atomic_store(&_lastApplyCancelled, false);
+        if (!rgb) return NO;
+        if (atomic_load_explicit(&_cancelRequested, memory_order_acquire)) {
+            atomic_store(&_lastApplyCancelled, true);
+            return NO;
+        }
+
         if ([KeyboardBackend isTestingMode]) {
+            // Test-Hook: simuliert die 50-ms-Phase, damit In-Flight-Cancel testbar ist.
+            const char *delayEnv = getenv("CIY_TESTING_APPLY_DELAY_MS");
+            if (delayEnv) {
+                int total = atoi(delayEnv);
+                for (int waited = 0; waited < total; waited += 5) {
+                    if (atomic_load_explicit(&_cancelRequested, memory_order_acquire)) {
+                        atomic_store(&_lastApplyCancelled, true);
+                        return NO;
+                    }
+                    usleep(5000);
+                }
+                if (atomic_load_explicit(&_cancelRequested, memory_order_acquire)) {
+                    atomic_store(&_lastApplyCancelled, true);
+                    return NO;
+                }
+            }
             @synchronized ([KeyboardBackend class]) {
                 sLastSentPlanarPayload = [NSData dataWithBytes:rgb length:CIY_PLANAR_RGB_SIZE];
             }
@@ -216,8 +272,15 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             return YES;
         }
 
-        if (!_device.dev && ![self connect]) return NO;
-        if (!ciy_apply_custom_profile_with_brightness(&_device, rgb, CIY_PLANAR_RGB_SIZE, brightness)) {
+        if (_device.dev == NULL) return NO;
+        BOOL ok = ciy_apply_custom_profile_with_brightness_cancelable(
+            &_device, rgb, CIY_PLANAR_RGB_SIZE, brightness,
+            KeyboardBackendCancelCheck, &_cancelRequested);
+        if (!ok) {
+            if (atomic_load_explicit(&_cancelRequested, memory_order_acquire)) {
+                atomic_store(&_lastApplyCancelled, true);
+                return NO;
+            }
             [self disconnect];
             return NO;
         }
@@ -226,6 +289,10 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
         self.currentState = st;
         return YES;
     }
+}
+
+- (BOOL)lastOperationWasCancelled {
+    return atomic_load_explicit(&_lastApplyCancelled, memory_order_acquire) ? YES : NO;
 }
 
 static inline uint8_t ClampColorChannel(CGFloat val) {
