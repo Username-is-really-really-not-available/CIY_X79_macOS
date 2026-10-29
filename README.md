@@ -58,7 +58,7 @@ Um klare Erwartungen zu setzen und ungetestete Hardware-Behauptungen zu vermeide
 ### Sofortige Nutzung:
 
 * **Grafische Benutzeroberfläche:**
-  Doppelklick auf [CIYX79Control.app](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/CIYX79Control.app) im Finder. Die App startet direkt im macOS Dock mit interaktiver Tastatur-Vektoransicht und Profilverwaltung.
+  Doppelklick auf `CIYX79Control.app` im Finder. Die App startet direkt im macOS Dock mit interaktiver Tastatur-Vektoransicht und Profilverwaltung.
 * **Terminal-Tool (CLI):**
   ```bash
   # Status abfragen (mit Verbindungsprüfung)
@@ -134,7 +134,7 @@ Die Sinowealth MCU besitzt für Per-Key-Matrizen keinen persistenten Flash-ROM, 
 Um gleichzeitige Zugriffe auf den USB-Endpunkt zwischen Cocoa-Hintergrund-Queue (`_hwQueue`) und CLI-Befehlen (`ciy_ctl`) abzusichern, nutzt der Treiber dateibasierte Mutexe. Anstelle eines unsicheren globalen Lockfiles verwendet das System benutzerspezifische Lockfiles mit der User-ID (`/tmp/ciy_x79_bus_<UID>.lock`) und striktem Modus `0600` (nur der aktuelle Benutzer hat Zugriffsrechte). Ein konfigurierter 2,0-Sekunden-Timeout verhindert blockierende Endlosschleifen.
 
 ### F. Robuste JSON Unicode-Escape-Dekodierung (`\uXXXX`)
-Standard-JSON-Serialisierer (z. B. Pythons `json.dump` oder Web-Generatoren) kodieren Umlaute und Sonderzeichen standardmäßig als ASCII-Fluchtsequenzen (`\u00df` für `ß`, `\u00e4` für `ä`, `\u00fc` für `ü`). Der integrierte C-Parser in [`ciy_hid.c`](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/src/core/ciy_hid.c) dekodiert alle `\uXXXX`-Sequenzen automatisch nach standardkonformem UTF-8. Profilnamen mit deutschen Sonderzeichen werden damit systemweit einheitlich verarbeitet.
+Standard-JSON-Serialisierer (z. B. Pythons `json.dump` oder Web-Generatoren) kodieren Umlaute und Sonderzeichen standardmäßig als ASCII-Fluchtsequenzen (`\u00df` für `ß`, `\u00e4` für `ä`, `\u00fc` für `ü`). Der integrierte C-Parser in [`ciy_hid.c`](src/core/ciy_hid.c) dekodiert alle `\uXXXX`-Sequenzen automatisch nach standardkonformem UTF-8. Profilnamen mit deutschen Sonderzeichen werden damit systemweit einheitlich verarbeitet.
 
 ### G. Wide-Gamut (Display P3) Farbklemmung
 Auf modernen Macs mit Apple Liquid Retina / Display P3 Bildschirmen können native Farbwähler (`NSColorPanel`) Farbkoordinaten außerhalb des Standard-sRGB-Gamuts liefern (Kanalwerte `< 0.0` oder `> 1.0`). Die Farb-Engine klemmt alle Farbkanäle mathematisch strikt auf `[0, 255]`, bevor der planare USB-Puffer generiert wird. Dies schließt Integer-Überläufe und unvorhersehbare LED-Farben kategorisch aus.

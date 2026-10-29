@@ -133,7 +133,7 @@ Custom Per-Key RGB is held in volatile **XRAM** rather than persistent flash ROM
 To serialize USB transfers between the Cocoa background queue (`_hwQueue`) and CLI commands (`ciy_ctl`), the driver uses user-specific lockfiles (`/tmp/ciy_x79_bus_<UID>.lock`) with permissions `0600` (readable and writable strictly by the current user) and a non-blocking 2.0-second timeout, avoiding world-readable file security issues and lock freezes.
 
 ### F. RFC 8259 Unicode Escape Decoding (`\uXXXX`)
-Standard JSON encoders (such as Python's `json.dump` or browser tools) escape non-ASCII characters to `\uXXXX` sequences (`\u00df` for `ß`, `\u00e4` for `ä`, etc.). The built-in C JSON parser in [`ciy_hid.c`](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/src/core/ciy_hid.c) decodes these sequences directly into valid UTF-8, ensuring profiles containing German special characters load seamlessly.
+Standard JSON encoders (such as Python's `json.dump` or browser tools) escape non-ASCII characters to `\uXXXX` sequences (`\u00df` for `ß`, `\u00e4` for `ä`, etc.). The built-in C JSON parser in [`ciy_hid.c`](src/core/ciy_hid.c) decodes these sequences directly into valid UTF-8, ensuring profiles containing German special characters load seamlessly.
 
 ### G. Wide-Gamut (Display P3) Color Clamping
 On macOS systems with wide-gamut displays (P3 ColorSpace), native color pickers may yield coordinates outside `[0.0, 1.0]` in standard sRGB. The Cocoa backend strictly clamps color channels mathematically into `[0, 255]` before transmitting RGB planes, preventing integer overflow and undefined LED colors.

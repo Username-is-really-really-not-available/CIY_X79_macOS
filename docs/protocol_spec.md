@@ -257,4 +257,4 @@ Zur eindeutigen Nachvollziehbarkeit für Treiberentwickler unterscheidet diese S
 
 > [!TIP]
 > **Hinweis für Applikationsentwickler:**  
-> Host-spezifische Implementierungsdetails der vorliegenden macOS-Referenzapp (z. B. der Multi-User Bus-Lock `/tmp/ciy_x79_bus_<UID>.lock`, die Display-P3 Farbraumklemmung gegen Floating-Point-Überläufe oder der Mock-Treiber für automatisierte CI/CD-Tests) sind in der internen Dokumentation ([`docs/agent/hardware-protocol.md`](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/docs/agent/hardware-protocol.md) und [`docs/agent/data-formats.md`](file:///Users/juliengenau/Agentic%20Sandbox/CIY_X79_macOS/docs/agent/data-formats.md)) dokumentiert. Sie sind nicht Bestandteil des USB-Drahtprotokolls.
+> Host-spezifische Implementierungsdetails der vorliegenden macOS-Referenzapp (z. B. der Multi-User Bus-Lock `/tmp/ciy_x79_bus_<UID>.lock`, die Display-P3 Farbraumklemmung gegen Floating-Point-Überläufe oder der Mock-Treiber für automatisierte CI/CD-Tests) sind Teil der internen Treiberarchitektur und nicht Bestandteil des USB-Drahtprotokolls.
