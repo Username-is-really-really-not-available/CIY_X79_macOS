@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include "../src/core/ciy_hid.h"
 #include "../src/layouts/ciy_layout.h"
 
@@ -379,9 +382,34 @@ static void test_load_profile_file(void) {
     remove(tmp_path);
 }
 
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
+static void test_fifo_profile_rejection(void) {
+    char fifo_path[128];
+    snprintf(fifo_path, sizeof(fifo_path), "/tmp/ciy_test_fifo_%d.fifo", (int)getpid());
+    unlink(fifo_path);
+
+    int rc = mkfifo(fifo_path, 0600);
+    assert(rc == 0);
+
+    // 1. ciy_validate_profile_file auf FIFO muss sofort ohne Blockieren fehlschlagen
+    CIYValidationResult res;
+    bool valid = ciy_validate_profile_file(fifo_path, &res);
+    assert(!valid);
+    assert(strcmp(res.error_field, "file") == 0);
+    assert(strstr(res.error_message, "keine reguläre Datei") != NULL);
+
+    // Auch ohne out_res muss es sofort false zurückgeben
+    assert(!ciy_validate_profile_file(fifo_path, NULL));
+
+    // 2. ciy_load_profile_file auf FIFO muss sofort ohne Blockieren fehlschlagen
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char name[64] = {0};
+    int count = 0;
+    bool loaded = ciy_load_profile_file(fifo_path, NULL, rgb, name, sizeof(name), &count);
+    assert(!loaded);
+
+    // Aufräumen
+    assert(unlink(fifo_path) == 0);
+}
 
 static void test_bus_lock_reentrancy(void) {
     // 1. Erstes Locken
@@ -403,13 +431,20 @@ static void test_lockfile_security(void) {
     assert(fd >= 0);
     struct stat st;
     assert(fstat(fd, &st) == 0);
-    // Prüfen, dass das Lockfile existiert und Modus 0600 hat (nur Besitzer darf zugreifen)
+    // Prüfen, dass das Lockfile existiert, dem aktuellen Benutzer gehört und Modus 0600 hat
     assert((st.st_mode & 0777) == 0600);
+    assert(st.st_uid == getuid());
+    assert(S_ISREG(st.st_mode));
     close(fd);
 
     ciy_bus_unlock();
     assert(unlink(user_path) == 0);
     assert(access(user_path, F_OK) != 0);
+
+    // Nicht-reguläre Datei als Lockfile abweisen
+    assert(mkfifo(user_path, 0600) == 0);
+    assert(!ciy_bus_lock());
+    assert(unlink(user_path) == 0);
 }
 
 static void test_truncated_unicode_escapes(void) {
@@ -802,6 +837,7 @@ int main(void) {
     test_corrupt_strings_in_unknown_fields();
     test_cancelable_apply();
     test_load_profile_file();
+    test_fifo_profile_rejection();
     test_bus_lock_reentrancy();
     test_lockfile_security();
     puts("Alle Tests bestanden.");

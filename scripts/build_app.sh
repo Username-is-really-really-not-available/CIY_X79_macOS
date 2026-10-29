@@ -4,7 +4,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 APP_NAME="CIYX79Control"
-VERSION="${1:-${VERSION:-1.1.0}}"
+VERSION="${1:-${VERSION:-1.2.0}}"
 VERSION="${VERSION#v}"
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
@@ -43,6 +43,7 @@ clang -arch arm64 -arch x86_64 \
     -framework IOKit \
     -framework CoreFoundation \
     src/core/ciy_hid.c \
+    src/layouts/ciy_x79_iso_de.c \
     src/cli/ciy_ctl.c \
     -o "${DIST_DIR}/ciy_ctl"
 

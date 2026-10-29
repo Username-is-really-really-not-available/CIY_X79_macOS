@@ -28,6 +28,8 @@ extern NSNotificationName const KeyboardBackendHotplugNotification;
 
 - (BOOL)connect;
 - (void)disconnect;
+- (void)requestCancel;
+- (void)invalidateDevice;
 - (BOOL)readCurrentState;
 - (BOOL)sendKeyColors:(NSDictionary<NSNumber *, NSColor *> *)keyColors defaultColor:(nullable NSColor *)defaultColor;
 - (BOOL)sendKeyColors:(NSDictionary<NSNumber *, NSColor *> *)keyColors brightness:(uint8_t)brightness defaultColor:(nullable NSColor *)defaultColor;

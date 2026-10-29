@@ -51,7 +51,7 @@ Um klare Erwartungen zu setzen und ungetestete Hardware-Behauptungen zu vermeide
 
 | Modell | Layout | VID:PID | Interface | Status | Getesteter Umfang | Belege / Referenz |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **CIY X79** | ISO-DE (69 Tasten) | `0x258A:0x0049` | 1 | **Maintainer-verified** | Status, Modi 0..20, Custom Planar RGB, Hotplug Re-Sync, macOS 12..15 (arm64 & x86_64) | Baseline v1.0 / v1.1 |
+| **CIY X79** | ISO-DE (69 Tasten) | `0x258A:0x0049` | 1 | **Maintainer-verified** | Status, Modi 0..20, Custom Planar RGB, Hotplug Re-Sync, macOS 12..15 (arm64 & x86_64) | Baseline v1.0 / v1.1 / v1.2 |
 | **CIY X79** | ANSI-US (68 Tasten) | `0x258A:0x0049` | 1 | **Experimental / unverified** | Protokoll identisch vermutet; physische Tastenmatrix & LED-Mapping ausstehend | [Issue-Vorlage](.github/ISSUE_TEMPLATE/device_layout_request.md) |
 | **Generische Sinowealth Tastaturen** | Diverse | Diverse | * | **Unsupported** | Firmware-Protokolle weichen ab; Fail-Closed-Schutz verhindert Fehlzugriffe | Protokoll-Spec |
 
@@ -345,10 +345,18 @@ Für automatisierte Shell-Skripte, Menüleisten-Widgets (BitBar, SketchyBar), Ra
 ./ciy_ctl validate-profile meinkeyboard.json            # Syntax, Slots (0..124) und Farben (#RGB) prüfen
 ./ciy_ctl validate-profile meinkeyboard.json --json     # Maschinenlesbares Ergebnis für CI/CD
 
-# Profilübertragung simulieren (--dry-run ohne USB-I/O):
-# Syntax: ./ciy_ctl --dry-run load <profile.json> [Profilname|Index] [-b 0..5] [--json]
+# Layout-Matrix & Wire-Offsets exportieren (OpenRGB / Drittprojekte):
+# Syntax: ./ciy_ctl export-layout [--json]
+./ciy_ctl export-layout                                 # Tabelle aller 69 Tasten, 70 Flächen & Report 0x0B Offsets
+./ciy_ctl export-layout --json                          # Strukturierte JSON-Matrix für OpenRGB & Treiber-Entwickler
+
+# Übertragung hardwarefrei simulieren (--dry-run für alle Schreibbefehle):
+# Syntax: ./ciy_ctl --dry-run <Befehl> [Optionen] [--dump-bytes] [--json]
 ./ciy_ctl --dry-run load meinkeyboard.json              # Zeigt geplanten Ablauf (0x0B -> 50ms -> 0x0A)
-./ciy_ctl --dry-run load meinkeyboard.json --json       # Detaillierter Übertragungsplan als JSON
+./ciy_ctl --dry-run fill "#FF5500" -b 3                 # Simuliert Vollfarbe ohne Hardwarezugriff
+./ciy_ctl --dry-run set 15 0 2 4                        # Simuliert Modus-Wechsel (Report 0x0A)
+./ciy_ctl --dry-run load meinkeyboard.json --dump-bytes # Gibt Roh-Wire-Bytes (Hex) der Reports aus
+./ciy_ctl --dry-run load meinkeyboard.json --dump-bytes --json # Übertragungsplan mit Hex-Payloads
 
 # Standard-Gaming-Profile:
 ./ciy_ctl wasd          # WASD Rot, Basis Blau
@@ -386,6 +394,7 @@ Für automatisierte Shell-Skripte, Menüleisten-Widgets (BitBar, SketchyBar), Ra
 CIY_X79_macOS/
 ├── src/
 │   ├── core/                    # Reine C-USB-Treiber-Schicht (IOKit & HID)
+│   │   ├── ciy_protocol.h       # Plattformunabhängige Pure-C11/C++ Engine (Zero-OS-Lock-in)
 │   │   ├── ciy_hid.h            # USB HID Header, Planar-RGB- und JSON-Parser
 │   │   └── ciy_hid.c            # USB Control Requests, Low-Level Protocol, Mock-Device
 │   ├── layouts/                 # Entkoppelte Layout-Definitionen & Tasten-Modell
@@ -397,7 +406,7 @@ CIY_X79_macOS/
 │   │   ├── CIYKeyboardView.h / .m # Canvas-View (69 Tasten ISO-DE Vektoren)
 │   │   └── KeyboardBackend.h / .m # Thread-sicherer Treiber, P3-Clamp & Hotplug
 │   └── cli/                     # Kommandozeilen-Werkzeug
-│       └── ciy_ctl.c            # CLI ciy_ctl (Status, JSON, Fill, Load, -b Flag)
+│       └── ciy_ctl.c            # CLI ciy_ctl (Status, JSON, Fill, Load, Export, -b Flag)
 ├── resources/                   # App-Grafiken & Assets
 │   └── AppIcon.icns
 ├── scripts/                     # Build-, Test- und Packaging-Skripte
@@ -409,13 +418,15 @@ CIY_X79_macOS/
 │       └── _ciy_ctl             # Zsh Completion Definition
 ├── tests/                       # Automatisierte Test-Suiten
 │   ├── fixtures/                # Valide & ungültige Profil-JSON-Testdateien
+│   ├── test_ciy_protocol.c      # Standalone C11/C++ Tests (ohne IOKit / CoreFoundation)
 │   ├── test_ciy_hid.c           # C-Protokoll-, Hex-, Unicode- & Lockfile-Tests
 │   ├── test_profile_logic.m     # Canvas-, P3-Clamp- & Profil-Speicherlogik Tests
 │   └── test_ciy_ctl.sh          # End-to-End CLI-Tests (Syntax, -b, Error-Handling)
 ├── dist/                        # Kompilierte Universal Binaries & DMG
 │   ├── CIYX79Control.app
 │   ├── ciy_ctl
-│   └── CIYX79Control-1.1.0.dmg
+│   └── CIYX79Control-1.2.0.dmg
+├── ROADMAP.md                   # Meilensteine & OpenRGB Upstream-Planung
 ├── README.md                    # Umfassende Dokumentation & Anleitung
 ├── LICENSE                      # MIT-Lizenz
 └── .gitignore                   # Git-Ausschlussregeln
@@ -488,6 +499,10 @@ Das Projekt beinhaltet eine vollständig hardware-isolierte automatisierte Test-
 ```
 
 **Enthaltene Test-Suiten:**
+0. **`tests/test_ciy_protocol.c` (Standalone Protocol & Zero-OS-Lock-in Schicht):**
+   * Reine C11- und C++17-Tests, die strikt **ohne** `-framework IOKit` und **ohne** `-framework CoreFoundation` kompilieren.
+   * Prüft Byte-Offsets im Report 0x0B (`report_0b_r_offset`, `g_offset`, `b_offset`), Range-Validierung, Clamping und Transferpläne.
+   * Garantiert C++17-Kompatibilität für Drittprojekte (OpenRGB).
 1. **`tests/test_ciy_hid.c` (HID- & Protokoll-Schicht):**
    * Planarer RGB-Pufferaufbau für WASD, Pfeiltasten und Vollfarben.
    * Grenzwerte, Out-of-Bounds-Slots (< 0 oder $\ge$ 126) und Integer-Overflow-Schutz.
@@ -500,8 +515,9 @@ Das Projekt beinhaltet eine vollständig hardware-isolierte automatisierte Test-
    * Vollständige Abdeckung aller Farbslots im Canvas-View.
    * App-Verknüpfungs-Deduplizierung und Resilienz gegen verwaiste Fallback-Profile.
 3. **`tests/test_ciy_ctl.sh` (CLI Integrationstests):**
-   * Hilfe- und Optionsprüfung (`--help`, `-h`).
-   * Text- und JSON-Ausgabe bei `list-modes`.
+   * Hilfe- und Optionsprüfung (`--help`, `-h`, `--dump-bytes`).
+   * Text- und JSON-Ausgabe bei `list-modes` und `export-layout`.
+   * Universeller `--dry-run` über alle Schreibbefehle (`load`, `fill`, `set`, `wasd`) und Wire-Hex-Dumps.
    * Fehlerbehandlung bei ungültigen Optionen und Bereichsverletzungen von `-b 0..5`.
    * Eindeutige Auflösung von `load <datei> [Profil|Index] [-b 0..5]` (Finding 5).
 
@@ -548,11 +564,11 @@ Das Skript:
 ```bash
 ./scripts/create_dmg.sh
 ```
-Erzeugt die distributionsfertige Datei `CIYX79Control-1.1.0.dmg` mit Drag-and-Drop-Verknüpfung zum `/Applications`-Ordner, eingebettetem CLI-Tool `ciy_ctl`, Lizenz und Dokumentation.
+Erzeugt die distributionsfertige Datei `CIYX79Control-1.2.0.dmg` mit Drag-and-Drop-Verknüpfung zum `/Applications`-Ordner, eingebettetem CLI-Tool `ciy_ctl`, Lizenz und Dokumentation.
 
 ### 3. CLI-Tool manuell kompilieren:
 ```bash
-clang -O2 -arch arm64 -arch x86_64 -Wall -Wextra -framework IOKit -framework CoreFoundation src/core/ciy_hid.c src/cli/ciy_ctl.c -o dist/ciy_ctl
+clang -O2 -arch arm64 -arch x86_64 -Wall -Wextra -framework IOKit -framework CoreFoundation src/core/ciy_hid.c src/layouts/ciy_x79_iso_de.c src/cli/ciy_ctl.c -o dist/ciy_ctl
 ```
 
 ---

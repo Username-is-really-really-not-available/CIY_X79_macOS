@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include "../core/ciy_hid.h"
+#include "../layouts/ciy_layout.h"
 
 // Sw_mode to effect names (from our verified ROM dump)
 static const char *EFFECT_NAMES[] = {
@@ -186,6 +187,172 @@ static bool extract_brightness_option(int *argc, char **argv, uint8_t *out_brigh
     return true;
 }
 
+static void print_export_layout_json(const CIYKeyboardLayout *layout) {
+    if (!layout) return;
+    printf("{\n");
+    printf("  \"layout_id\": \"%s\",\n", layout->layout_id);
+    printf("  \"display_name\": \"%s\",\n", layout->display_name);
+    printf("  \"key_count\": %zu,\n", layout->key_count);
+    printf("  \"surface_count\": %zu,\n", layout->surface_count);
+    printf("  \"keys\": [\n");
+    for (size_t i = 0; i < layout->key_count; i++) {
+        const CIYLogicalKey *k = &layout->keys[i];
+        int r_off = ciy_protocol_report_0b_r_offset(k->led_index);
+        int g_off = ciy_protocol_report_0b_g_offset(k->led_index);
+        int b_off = ciy_protocol_report_0b_b_offset(k->led_index);
+        printf("    {\n");
+        printf("      \"matrix_slot\": %d,\n", k->matrix_slot);
+        printf("      \"led_index\": %d,\n", k->led_index);
+        printf("      \"name\": \"");
+        print_escaped_json_string(stdout, k->name);
+        printf("\",\n");
+        printf("      \"report_0b_r_offset\": %d,\n", r_off);
+        printf("      \"report_0b_g_offset\": %d,\n", g_off);
+        printf("      \"report_0b_b_offset\": %d\n", b_off);
+        printf("    }%s\n", (i + 1 < layout->key_count) ? "," : "");
+    }
+    printf("  ],\n  \"surfaces\": [\n");
+    for (size_t i = 0; i < layout->surface_count; i++) {
+        const CIYKeySurface *s = &layout->surfaces[i];
+        printf("    {\n");
+        printf("      \"matrix_slot\": %d,\n", s->matrix_slot);
+        printf("      \"label\": \"");
+        print_escaped_json_string(stdout, s->label);
+        printf("\",\n");
+        printf("      \"row\": %d,\n", s->row);
+        printf("      \"width_u\": %.2f\n", s->width_u);
+        printf("    }%s\n", (i + 1 < layout->surface_count) ? "," : "");
+    }
+    printf("  ]\n}\n");
+}
+
+static void print_export_layout_text(const CIYKeyboardLayout *layout) {
+    if (!layout) return;
+    printf("\n=== CIY X79 (ISO-DE) Tastaturlayout & Report 0x0B Offsets ===\n");
+    printf("Layout: %s [%s] (%zu Tasten, %zu Flächen)\n\n", layout->display_name, layout->layout_id, layout->key_count, layout->surface_count);
+    printf("Logische Tasten (Matrix & Farb-Offsets im 379-Byte Report 0x0B):\n");
+    printf("  Slot | LED | Name                 | R-Byte | G-Byte | B-Byte\n");
+    printf("  -----+-----+----------------------+--------+--------+-------\n");
+    for (size_t i = 0; i < layout->key_count; i++) {
+        const CIYLogicalKey *k = &layout->keys[i];
+        int r_off = ciy_protocol_report_0b_r_offset(k->led_index);
+        int g_off = ciy_protocol_report_0b_g_offset(k->led_index);
+        int b_off = ciy_protocol_report_0b_b_offset(k->led_index);
+        printf("  %4d | %3d | %-20s | %6d | %6d | %6d\n",
+               k->matrix_slot, k->led_index, k->name, r_off, g_off, b_off);
+    }
+    printf("\nGrafische Tastenflächen (UI-Geometrie):\n");
+    printf("  Slot | Zeile | Breite   | Label\n");
+    printf("  -----+-------+----------+----------------------\n");
+    for (size_t i = 0; i < layout->surface_count; i++) {
+        const CIYKeySurface *s = &layout->surfaces[i];
+        printf("  %4d | %5d | %6.2f U | %s\n",
+               s->matrix_slot, s->row, s->width_u, s->label);
+    }
+    printf("\n");
+}
+
+static void print_dry_run_plan(const CIYTransferPlan *plan, bool json_mode, bool dump_bytes) {
+    if (json_mode) {
+        printf("{\n");
+        printf("  \"dry_run\": true,\n");
+        printf("  \"hardware_opened\": false,\n");
+        printf("  \"device\": {\n");
+        printf("    \"name\": \"CIY X79\",\n");
+        printf("    \"vid\": \"0x%04X\",\n", CIY_VENDOR_ID);
+        printf("    \"pid\": \"0x%04X\",\n", CIY_PRODUCT_ID);
+        printf("    \"interface\": %d\n", CIY_INTERFACE_NUM);
+        printf("  },\n");
+        printf("  \"profile\": \"");
+        print_escaped_json_string(stdout, plan->profile_name[0] ? plan->profile_name : "Custom");
+        printf("\",\n");
+        printf("  \"keys\": %d,\n", plan->keys_count);
+        printf("  \"brightness\": %u,\n", plan->brightness);
+        printf("  \"plan\": [\n");
+        for (size_t i = 0; i < plan->step_count; i++) {
+            const CIYPlanStep *s = &plan->steps[i];
+            printf("    {\n");
+            printf("      \"step\": %zu,\n", i + 1);
+            if (s->type == CIY_PLAN_STEP_REPORT) {
+                printf("      \"type\": \"report\",\n");
+                printf("      \"report_id\": \"0x%02X\",\n", s->report_id);
+                printf("      \"bytes\": %u,\n", s->length);
+                if (s->report_id == CIY_REPORT_0A_ID) {
+                    printf("      \"mode\": %u,\n", s->mode);
+                    if (s->mode != CIY_CUSTOM_MODE) {
+                        printf("      \"color\": %u,\n", s->color);
+                        printf("      \"speed\": %u,\n", s->speed);
+                    }
+                    printf("      \"brightness\": %u,\n", s->brightness);
+                }
+                if (dump_bytes) {
+                    printf("      \"hex\": \"");
+                    for (uint16_t b = 0; b < s->length; b++) {
+                        printf("%02x", s->data[b]);
+                    }
+                    printf("\",\n");
+                }
+            } else if (s->type == CIY_PLAN_STEP_DELAY) {
+                printf("      \"type\": \"delay\",\n");
+                printf("      \"delay_ms\": %u,\n", s->delay_ms);
+            }
+            printf("      \"description\": \"%s\"\n", s->description);
+            printf("    }%s\n", (i + 1 < plan->step_count) ? "," : "");
+        }
+        printf("  ],\n");
+        printf("  \"result\": \"valid; hardware unchanged\"\n");
+        printf("}\n");
+    } else {
+        printf("DRY RUN — no USB device opened; no HID transfers sent\n");
+        printf("Device profile: CIY X79 (VID 0x%04X, PID 0x%04X, interface %d)\n",
+               CIY_VENDOR_ID, CIY_PRODUCT_ID, CIY_INTERFACE_NUM);
+        printf("Profile: %s\n", plan->profile_name[0] ? plan->profile_name : "Custom");
+        printf("Plan: ");
+        for (size_t i = 0; i < plan->step_count; i++) {
+            const CIYPlanStep *s = &plan->steps[i];
+            if (s->type == CIY_PLAN_STEP_REPORT) {
+                if (s->report_id == CIY_REPORT_0A_ID) {
+                    if (s->mode == CIY_CUSTOM_MODE) {
+                        printf("Report 0x0A (%u bytes, mode %u, brightness %u)",
+                               s->length, s->mode, s->brightness);
+                    } else {
+                        printf("Report 0x0A (%u bytes, mode %u, color %u, speed %u, brightness %u)",
+                               s->length, s->mode, s->color, s->speed, s->brightness);
+                    }
+                } else {
+                    printf("Report 0x%02X (%u bytes)", s->report_id, s->length);
+                }
+            } else {
+                printf("wait %u ms", s->delay_ms);
+            }
+            if (i + 1 < plan->step_count) {
+                printf(" -> ");
+            }
+        }
+        printf("\n");
+        if (dump_bytes) {
+            printf("\nRaw Wire Bytes (Hex):\n");
+            for (size_t i = 0; i < plan->step_count; i++) {
+                const CIYPlanStep *s = &plan->steps[i];
+                if (s->type == CIY_PLAN_STEP_REPORT) {
+                    printf("  Schritt %zu (Report 0x%02X, %u Bytes):\n    ", i + 1, s->report_id, s->length);
+                    for (uint16_t b = 0; b < s->length; b++) {
+                        printf("%02x", s->data[b]);
+                        if ((b + 1) % 32 == 0 && (b + 1) < s->length) {
+                            printf("\n    ");
+                        } else if ((b + 1) % 4 == 0 && (b + 1) < s->length) {
+                            printf(" ");
+                        }
+                    }
+                    printf("\n");
+                }
+            }
+            printf("\n");
+        }
+        printf("Result: valid; hardware unchanged\n");
+    }
+}
+
 static void print_help(const char *prog_name) {
     printf("\nVerwendung: %s [Befehl] [Optionen]\n\n", prog_name);
     printf("Verfügbare Befehle:\n");
@@ -197,20 +364,23 @@ static void print_help(const char *prog_name) {
     printf("  all-red                             Aktiviert statisches Vollrot für alle Tasten\n");
     printf("  list-modes                          Listet alle 20 Modi und 11 Farbpaletten auf\n");
     printf("  set <Modus> [F] [T] [H]             Setzt Modus (0..20), Farbe (0..10), Tempo (0..4), Helligkeit (0..5)\n");
+    printf("  export-layout                       Exportiert Tastenmatrix und Report 0x0B Offsets (JSON oder Tabelle)\n");
     printf("  validate-profile <Datei.json>       Validiert eine JSON-Profildatei ohne Hardwarezugriff\n");
     printf("  help, --help, -h                    Zeigt diese Hilfe an\n\n");
     printf("Optionen:\n");
     printf("  -b, --brightness <0..5>             Helligkeit für Befehle wie fill und load (Standard: 5)\n");
-    printf("  --dry-run                           Simuliert Profilübertragung ohne Öffnen von USB-Geräten (für load)\n");
+    printf("  --dry-run                           Simuliert Übertragung ohne Öffnen von USB-Geräten (für alle Schreibbefehle)\n");
+    printf("  --dump-bytes                        Gibt Roh-Wire-Bytes (Hex) der generierten USB-Reports aus\n");
     printf("  --json                              Ausgabe im maschinenlesbaren JSON-Format\n\n");
 }
 
 int main(int argc, char **argv) {
     bool json_mode = false;
     bool dry_run = false;
+    bool dump_bytes = false;
     const char *cmd = NULL;
 
-    // 1. Zuerst prüfen, ob Hilfe angefordert wurde oder --json/--dry-run gesetzt ist
+    // 1. Zuerst prüfen, ob Hilfe angefordert wurde oder Optionen gesetzt sind
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0 || (i == 1 && strcmp(argv[i], "help") == 0)) {
             print_help(argv[0]);
@@ -221,6 +391,9 @@ int main(int argc, char **argv) {
         }
         if (strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
+        }
+        if (strcmp(argv[i], "--dump-bytes") == 0) {
+            dump_bytes = true;
         }
     }
 
@@ -253,7 +426,7 @@ int main(int argc, char **argv) {
     // 4. Auf unbekannte Optionen prüfen
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
-            if (strcmp(argv[i], "--json") != 0 && strcmp(argv[i], "--dry-run") != 0) {
+            if (strcmp(argv[i], "--json") != 0 && strcmp(argv[i], "--dry-run") != 0 && strcmp(argv[i], "--dump-bytes") != 0) {
                 // Wenn es eine Zahl ist (z. B. negatives Argument bei set -1), übernimmt der Befehl die Prüfung
                 if (argv[i][1] >= '0' && argv[i][1] <= '9') {
                     continue;
@@ -271,7 +444,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (dry_run && strcmp(cmd, "load") != 0) {
+    if (dry_run && strcmp(cmd, "load") != 0 && strcmp(cmd, "fill") != 0 &&
+        strcmp(cmd, "wasd") != 0 && strcmp(cmd, "wasd-arrows") != 0 &&
+        strcmp(cmd, "all-red") != 0 && strcmp(cmd, "set") != 0) {
         if (json_mode) {
             printf("{\n  \"success\": false,\n  \"error\": \"--dry-run wird derzeit nur für den Befehl 'load' unterstützt\"\n}\n");
         } else {
@@ -285,6 +460,16 @@ int main(int argc, char **argv) {
             print_modes_json();
         } else {
             print_modes_text();
+        }
+        return 0;
+    }
+
+    if (strcmp(cmd, "export-layout") == 0) {
+        const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+        if (json_mode) {
+            print_export_layout_json(layout);
+        } else {
+            print_export_layout_text(layout);
         }
         return 0;
     }
@@ -341,139 +526,228 @@ int main(int argc, char **argv) {
     }
 
     if (dry_run) {
-        const char *file_arg = NULL;
-        const char *target_profile = NULL;
-        uint8_t brightness = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+        if (strcmp(cmd, "load") == 0) {
+            const char *file_arg = NULL;
+            const char *target_profile = NULL;
+            uint8_t brightness = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
 
-        const char *extra_args[2] = {NULL, NULL};
-        int num_extras = 0;
+            const char *extra_args[2] = {NULL, NULL};
+            int num_extras = 0;
 
-        for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "load") == 0 || strcmp(argv[i], "--json") == 0 || strcmp(argv[i], "--dry-run") == 0) continue;
-            if (argv[i][0] == '-') continue;
+            for (int i = 1; i < argc; i++) {
+                if (strcmp(argv[i], "load") == 0 || strcmp(argv[i], "--json") == 0 ||
+                    strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+                if (argv[i][0] == '-' && (argv[i][1] < '0' || argv[i][1] > '9')) continue;
+                if (!file_arg) {
+                    file_arg = argv[i];
+                } else if (num_extras < 2) {
+                    extra_args[num_extras++] = argv[i];
+                }
+            }
+
             if (!file_arg) {
-                file_arg = argv[i];
-            } else if (num_extras < 2) {
-                extra_args[num_extras++] = argv[i];
-            }
-        }
-
-        if (!file_arg) {
-            if (json_mode) {
-                printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Datei. Verwendung: ciy_ctl --dry-run load <profile.json> [Profilname|Index] [-b 0..5]\"\n}\n");
-            } else {
-                fprintf(stderr, "Verwendung: %s --dry-run load <profile.json> [Profilname|Index] [-b 0..5]\n", argv[0]);
-            }
-            return 1;
-        }
-
-        if (num_extras == 1) {
-            target_profile = extra_args[0];
-        } else if (num_extras >= 2) {
-            target_profile = extra_args[0];
-            if (!has_flag_brightness && !parse_range(extra_args[1], 0, CIY_MAX_BRIGHTNESS, &brightness)) {
                 if (json_mode) {
-                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '");
-                    print_escaped_json_string(stdout, extra_args[1]);
-                    printf("' (erlaubt: 0..5)\"\n}\n");
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Datei. Verwendung: ciy_ctl --dry-run load <profile.json> [Profilname|Index] [-b 0..5]\"\n}\n");
                 } else {
-                    fprintf(stderr, "Fehler: Ungültige Helligkeit '%s'. Erlaubter Bereich: 0..5.\n", extra_args[1]);
+                    fprintf(stderr, "Verwendung: %s --dry-run load <profile.json> [Profilname|Index] [-b 0..5]\n", argv[0]);
                 }
                 return 1;
             }
-        }
 
-        // Strikte Profilvalidierung ZUERST
-        CIYValidationResult val_res;
-        if (!ciy_validate_profile_file(file_arg, &val_res)) {
-            if (json_mode) {
-                printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"");
-                print_escaped_json_string(stdout, val_res.error_message);
-                printf("\",\n  \"field\": \"");
-                print_escaped_json_string(stdout, val_res.error_field);
-                printf("\"\n}\n");
-            } else {
-                if (val_res.error_field[0] != '\0') {
-                    fprintf(stderr, "Fehler: Ungültiges Profil in '%s' (Feld '%s'): %s\n", file_arg, val_res.error_field, val_res.error_message);
-                } else {
-                    fprintf(stderr, "Fehler: Ungültiges Profil in '%s': %s\n", file_arg, val_res.error_message);
+            if (num_extras == 1) {
+                target_profile = extra_args[0];
+            } else if (num_extras >= 2) {
+                target_profile = extra_args[0];
+                if (!has_flag_brightness && !parse_range(extra_args[1], 0, CIY_MAX_BRIGHTNESS, &brightness)) {
+                    if (json_mode) {
+                        printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '");
+                        print_escaped_json_string(stdout, extra_args[1]);
+                        printf("' (erlaubt: 0..5)\"\n}\n");
+                    } else {
+                        fprintf(stderr, "Fehler: Ungültige Helligkeit '%s'. Erlaubter Bereich: 0..5.\n", extra_args[1]);
+                    }
+                    return 1;
                 }
             }
-            return 1;
-        }
 
-        uint8_t rgb[CIY_PLANAR_RGB_SIZE];
-        char profile_name[64] = {0};
-        int slots_count = 0;
-        if (!ciy_load_profile_file(file_arg, target_profile, rgb, profile_name, sizeof(profile_name), &slots_count)) {
-            if (json_mode) {
-                if (target_profile) {
-                    printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"Profil '");
-                    print_escaped_json_string(stdout, target_profile);
-                    printf("' konnte in '");
-                    print_escaped_json_string(stdout, file_arg);
-                    printf("' nicht gefunden werden\"\n}\n");
+            // Strikte Profilvalidierung ZUERST
+            CIYValidationResult val_res;
+            if (!ciy_validate_profile_file(file_arg, &val_res)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"");
+                    print_escaped_json_string(stdout, val_res.error_message);
+                    printf("\",\n  \"field\": \"");
+                    print_escaped_json_string(stdout, val_res.error_field);
+                    printf("\"\n}\n");
                 } else {
-                    printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"Profil aus '");
-                    print_escaped_json_string(stdout, file_arg);
-                    printf("' konnte nicht geladen werden\"\n}\n");
+                    if (val_res.error_field[0] != '\0') {
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s' (Feld '%s'): %s\n", file_arg, val_res.error_field, val_res.error_message);
+                    } else {
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s': %s\n", file_arg, val_res.error_message);
+                    }
                 }
-            } else {
-                if (target_profile) {
-                    fprintf(stderr, "Fehler: Profil '%s' konnte in '%s' nicht gefunden werden.\n", target_profile, file_arg);
+                return 1;
+            }
+
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            char profile_name[64] = {0};
+            int slots_count = 0;
+            if (!ciy_load_profile_file(file_arg, target_profile, rgb, profile_name, sizeof(profile_name), &slots_count)) {
+                if (json_mode) {
+                    if (target_profile) {
+                        printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"Profil '");
+                        print_escaped_json_string(stdout, target_profile);
+                        printf("' konnte in '");
+                        print_escaped_json_string(stdout, file_arg);
+                        printf("' nicht gefunden werden\"\n}\n");
+                    } else {
+                        printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"Profil aus '");
+                        print_escaped_json_string(stdout, file_arg);
+                        printf("' konnte nicht geladen werden\"\n}\n");
+                    }
                 } else {
-                    fprintf(stderr, "Fehler: Profil aus '%s' konnte nicht geladen werden.\n", file_arg);
+                    if (target_profile) {
+                        fprintf(stderr, "Fehler: Profil '%s' konnte in '%s' nicht gefunden werden.\n", target_profile, file_arg);
+                    } else {
+                        fprintf(stderr, "Fehler: Profil aus '%s' konnte nicht geladen werden.\n", file_arg);
+                    }
+                }
+                return 1;
+            }
+
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), brightness, profile_name, slots_count)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"Fehler beim Erstellen des Übertragungsplans\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler beim Erstellen des Übertragungsplans.\n");
+                }
+                return 1;
+            }
+
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        } else if (strcmp(cmd, "fill") == 0) {
+            const char *color_arg = NULL;
+            const char *bright_arg = NULL;
+            for (int i = 1; i < argc; i++) {
+                if (strcmp(argv[i], "fill") == 0 || strcmp(argv[i], "--json") == 0 ||
+                    strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+                if (argv[i][0] == '-' && (argv[i][1] < '0' || argv[i][1] > '9')) continue;
+                if (!color_arg) color_arg = argv[i];
+                else if (!bright_arg) bright_arg = argv[i];
+            }
+            if (!color_arg) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Hex-Farbe. Verwendung: ciy_ctl fill <#RRGGBB> [-b 0..5]\"\n}\n");
+                } else {
+                    fprintf(stderr, "Verwendung: %s fill <#RRGGBB> [-b 0..5]\n", argv[0]);
+                }
+                return 1;
+            }
+            uint8_t r = 0, g = 0, b = 0;
+            if (!ciy_parse_hex_color(color_arg, &r, &g, &b)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Hex-Farbe '");
+                    print_escaped_json_string(stdout, color_arg);
+                    printf("' (erwartet #RRGGBB oder RRGGBB)\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: Ungültige Hex-Farbe '%s'. Erwartet: #RRGGBB oder RRGGBB (z. B. #FF5500).\n", color_arg);
+                }
+                return 1;
+            }
+            uint8_t brightness = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            if (!has_flag_brightness && bright_arg && !parse_range(bright_arg, 0, CIY_MAX_BRIGHTNESS, &brightness)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Helligkeit '");
+                    print_escaped_json_string(stdout, bright_arg);
+                    printf("' (erlaubt: 0..5)\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: Ungültige Helligkeit '%s'. Erlaubter Bereich: 0..5.\n", bright_arg);
+                }
+                return 1;
+            }
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            ciy_build_solid_color_profile(rgb, r, g, b);
+            char prof_name[64];
+            snprintf(prof_name, sizeof(prof_name), "Vollfarbe #%02X%02X%02X", r, g, b);
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), brightness, prof_name, 69)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        } else if (strcmp(cmd, "wasd") == 0) {
+            const int wasd_idx[] = {15, 10, 16, 22};
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            ciy_build_profile(rgb, wasd_idx, 4, true, false, true);
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "WASD Gaming (Rot / Basis Blau)", 4)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        } else if (strcmp(cmd, "wasd-arrows") == 0) {
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            ciy_build_wasd_and_arrows_profile(rgb, true);
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "WASD + Pfeiltasten (Rot & Gelb / Basis Blau)", 8)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        } else if (strcmp(cmd, "all-red") == 0) {
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            ciy_build_all_red_profile(rgb);
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "Alles Rot", 69)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        } else if (strcmp(cmd, "set") == 0) {
+            const char *set_args[4] = {NULL, NULL, NULL, NULL};
+            int num_set_args = 0;
+            for (int i = 1; i < argc; i++) {
+                if (strcmp(argv[i], "set") == 0 || strcmp(argv[i], "--json") == 0 ||
+                    strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+                if (argv[i][0] == '-' && (argv[i][1] < '0' || argv[i][1] > '9')) continue;
+                if (num_set_args < 4) {
+                    set_args[num_set_args++] = argv[i];
                 }
             }
-            return 1;
-        }
-
-        CIYTransferPlan plan;
-        if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), brightness, profile_name, slots_count)) {
-            if (json_mode) {
-                printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"Fehler beim Erstellen des Übertragungsplans\"\n}\n");
-            } else {
-                fprintf(stderr, "Fehler beim Erstellen des Übertragungsplans.\n");
+            if (num_set_args < 1) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Argumente. Verwendung: ciy_ctl set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\"\n}\n");
+                } else {
+                    fprintf(stderr, "Verwendung: %s set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\n", argv[0]);
+                }
+                return 1;
             }
-            return 1;
+            CIYLightingState st = {
+                .mode = 0,
+                .color = 0,
+                .speed = 2,
+                .brightness = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS
+            };
+            if (!parse_range(set_args[0], 0, CIY_MAX_MODE, &st.mode) ||
+                (num_set_args > 1 && !parse_range(set_args[1], 0, CIY_MAX_COLOR, &st.color)) ||
+                (num_set_args > 2 && !parse_range(set_args[2], 0, CIY_MAX_SPEED, &st.speed)) ||
+                (num_set_args > 3 && !parse_range(set_args[3], 0, CIY_MAX_BRIGHTNESS, &st.brightness))) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültiger Wert. Bereiche: Modus 0..20, Farbe 0..10, Tempo 0..4, Helligkeit 0..5\"\n}\n");
+                } else {
+                    fprintf(stderr, "Ungültiger Wert. Bereiche: Modus 0..20, Farbe 0..10, Tempo 0..4, Helligkeit 0..5\n");
+                }
+                return 1;
+            }
+            CIYTransferPlan plan;
+            if (!ciy_build_state_transfer_plan(&plan, st)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
         }
-
-        if (json_mode) {
-            printf("{\n");
-            printf("  \"dry_run\": true,\n");
-            printf("  \"hardware_opened\": false,\n");
-            printf("  \"device\": {\n");
-            printf("    \"name\": \"CIY X79\",\n");
-            printf("    \"vid\": \"0x%04X\",\n", CIY_VENDOR_ID);
-            printf("    \"pid\": \"0x%04X\",\n", CIY_PRODUCT_ID);
-            printf("    \"interface\": %d\n", CIY_INTERFACE_NUM);
-            printf("  },\n");
-            printf("  \"profile\": \"");
-            print_escaped_json_string(stdout, profile_name[0] ? profile_name : "Custom");
-            printf("\",\n");
-            printf("  \"keys\": %d,\n", slots_count);
-            printf("  \"brightness\": %u,\n", brightness);
-            printf("  \"plan\": [\n");
-            printf("    {\n      \"step\": 1,\n      \"type\": \"report\",\n      \"report_id\": \"0x0B\",\n      \"bytes\": %u,\n      \"description\": \"%s\"\n    },\n",
-                   plan.steps[0].length, plan.steps[0].description);
-            printf("    {\n      \"step\": 2,\n      \"type\": \"delay\",\n      \"delay_ms\": %u,\n      \"description\": \"%s\"\n    },\n",
-                   plan.steps[1].delay_ms, plan.steps[1].description);
-            printf("    {\n      \"step\": 3,\n      \"type\": \"report\",\n      \"report_id\": \"0x0A\",\n      \"bytes\": %u,\n      \"mode\": %u,\n      \"brightness\": %u,\n      \"description\": \"%s\"\n    }\n",
-                   plan.steps[2].length, plan.steps[2].mode, plan.steps[2].brightness, plan.steps[2].description);
-            printf("  ],\n");
-            printf("  \"result\": \"valid; hardware unchanged\"\n");
-            printf("}\n");
-        } else {
-            printf("DRY RUN — no USB device opened; no HID transfers sent\n");
-            printf("Device profile: CIY X79 (VID 0x%04X, PID 0x%04X, interface %d)\n",
-                   CIY_VENDOR_ID, CIY_PRODUCT_ID, CIY_INTERFACE_NUM);
-            printf("Profile: %s\n", profile_name[0] ? profile_name : "Custom");
-            printf("Plan: Report 0x0B (%u bytes) -> wait %u ms -> Report 0x0A (%u bytes, mode %u, brightness %u)\n",
-                   plan.steps[0].length, plan.steps[1].delay_ms, plan.steps[2].length,
-                   plan.steps[2].mode, plan.steps[2].brightness);
-            printf("Result: valid; hardware unchanged\n");
-        }
-        return 0;
     }
 
     CIYDevice dev;
@@ -745,7 +1019,9 @@ int main(int argc, char **argv) {
         const char *set_args[4] = {NULL, NULL, NULL, NULL};
         int num_set_args = 0;
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "set") == 0 || strcmp(argv[i], "--json") == 0) continue;
+            if (strcmp(argv[i], "set") == 0 || strcmp(argv[i], "--json") == 0 ||
+                strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+            if (argv[i][0] == '-' && (argv[i][1] < '0' || argv[i][1] > '9')) continue;
             if (num_set_args < 4) {
                 set_args[num_set_args++] = argv[i];
             }
@@ -760,7 +1036,7 @@ int main(int argc, char **argv) {
             rc = 1;
         } else {
             CIYLightingState current = {19, 0, 1, 5};
-            if (!ciy_get_state(&dev, &current)) {
+            if (num_set_args < 4 && !ciy_get_state(&dev, &current)) {
                 if (json_mode) {
                     printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Auslesen des aktuellen Status\"\n}\n");
                 } else {
@@ -804,7 +1080,7 @@ int main(int argc, char **argv) {
             printf("'\"\n}\n");
         } else {
             fprintf(stderr, "Unbekannter Befehl: %s\n", cmd);
-            fprintf(stderr, "Verfügbare Befehle: status, fill, load, wasd, wasd-arrows, all-red, list-modes, set, validate-profile\n");
+            fprintf(stderr, "Verfügbare Befehle: status, fill, load, wasd, wasd-arrows, all-red, list-modes, set, export-layout, validate-profile\n");
             fprintf(stderr, "Rufen Sie '%s --help' für weitere Informationen auf.\n", argv[0]);
         }
         rc = 1;

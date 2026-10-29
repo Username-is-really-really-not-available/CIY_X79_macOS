@@ -8,6 +8,7 @@
 #include <sys/file.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <time.h>
 #include <errno.h>
 
@@ -73,7 +74,9 @@ void ciy_close(CIYDevice *d) {
 
 static pthread_mutex_t s_bus_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 static int s_bus_lock_fd = -1;
-static int s_bus_lock_depth = 0;
+static _Atomic int s_bus_lock_depth = 0;
+static pthread_t s_bus_lock_owner;
+static _Atomic bool s_bus_has_owner = false;
 
 const char *ciy_bus_lock_path(char *buf, size_t bufsize) {
     if (getenv("CIY_TESTING") != NULL) {
@@ -87,10 +90,16 @@ const char *ciy_bus_lock_path(char *buf, size_t bufsize) {
 static int ciy_open_lock_file(void) {
     char user_path[128];
     ciy_bus_lock_path(user_path, sizeof(user_path));
-    int fd = open(user_path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
-    if (fd >= 0) {
-        fchmod(fd, 0600);
+    int fd = open(user_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600);
+    if (fd < 0) {
+        return -1;
     }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_uid != getuid() || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return -1;
+    }
+    fchmod(fd, 0600);
     return fd;
 }
 
@@ -100,7 +109,7 @@ bool ciy_bus_lock(void) {
         abort();
     }
     pthread_mutex_lock(&s_bus_mutex);
-    if (s_bus_lock_depth == 0) {
+    if (atomic_load_explicit(&s_bus_lock_depth, memory_order_acquire) == 0) {
         s_bus_lock_fd = ciy_open_lock_file();
         if (s_bus_lock_fd < 0) {
             pthread_mutex_unlock(&s_bus_mutex);
@@ -124,23 +133,45 @@ bool ciy_bus_lock(void) {
                 // Timeout erreicht: Keinen blockierenden Fallback erzwingen, sondern sauber mit false abbrechen
                 close(s_bus_lock_fd);
                 s_bus_lock_fd = -1;
-                s_bus_lock_depth = 0;
+                atomic_store_explicit(&s_bus_lock_depth, 0, memory_order_release);
                 pthread_mutex_unlock(&s_bus_mutex);
                 return false;
             }
             struct timespec req = {0, 5000000}, rem;
             nanosleep(&req, &rem); // 5 ms Pause, handles EINTR via rem
         }
+        if (getenv("CIY_TESTING") == NULL) {
+            struct timespec last_ts = {0, 0}, now_ts = {0, 0};
+            if (pread(s_bus_lock_fd, &last_ts, sizeof(last_ts), 0) == (ssize_t)sizeof(last_ts)) {
+                clock_gettime(CLOCK_MONOTONIC, &now_ts);
+                if (now_ts.tv_sec >= last_ts.tv_sec && (now_ts.tv_sec - last_ts.tv_sec) <= 1) {
+                    long diff_ns = (now_ts.tv_sec - last_ts.tv_sec) * 1000000000L + (now_ts.tv_nsec - last_ts.tv_nsec);
+                    if (diff_ns > 0 && diff_ns < 50000000L) {
+                        struct timespec sleep_req = {0, 50000000L - diff_ns}, sleep_rem;
+                        nanosleep(&sleep_req, &sleep_rem);
+                    }
+                }
+            }
+        }
+        s_bus_lock_owner = pthread_self();
+        atomic_store_explicit(&s_bus_has_owner, true, memory_order_release);
     }
-    s_bus_lock_depth++;
+    atomic_fetch_add_explicit(&s_bus_lock_depth, 1, memory_order_acq_rel);
     return true;
 }
 
 void ciy_bus_unlock(void) {
-    if (s_bus_lock_depth <= 0) return; // unbalancierter Aufruf: Mutex nicht über-entsperren
-    s_bus_lock_depth--;
-    if (s_bus_lock_depth == 0) {
+    if (!atomic_load_explicit(&s_bus_has_owner, memory_order_acquire) ||
+        !pthread_equal(s_bus_lock_owner, pthread_self()) ||
+        atomic_load_explicit(&s_bus_lock_depth, memory_order_acquire) <= 0) {
+        return; // unbalancierter Aufruf oder fremder Thread: Mutex nicht über-entsperren
+    }
+    if (atomic_fetch_sub_explicit(&s_bus_lock_depth, 1, memory_order_acq_rel) == 1) {
+        atomic_store_explicit(&s_bus_has_owner, false, memory_order_release);
         if (s_bus_lock_fd >= 0) {
+            struct timespec end_ts = {0, 0};
+            clock_gettime(CLOCK_MONOTONIC, &end_ts);
+            (void)pwrite(s_bus_lock_fd, &end_ts, sizeof(end_ts), 0);
             flock(s_bus_lock_fd, LOCK_UN);
             close(s_bus_lock_fd);
             s_bus_lock_fd = -1;
@@ -185,94 +216,37 @@ static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t report
 
 bool ciy_get_state(CIYDevice *d, CIYLightingState *out) {
     if (!d) return false;
-    uint8_t buf[42] = {0x0A};
+    uint8_t buf[CIY_REPORT_0A_SIZE] = {CIY_REPORT_0A_ID};
     UInt32 done = 0;
     if (!ciy_bus_lock()) return false;
-    bool ok = ciy_request(d, false, 0x01 /* GET_REPORT */, 0x0A, buf, sizeof(buf), &done);
+    bool ok = ciy_request(d, false, 0x01 /* GET_REPORT */, CIY_REPORT_0A_ID, buf, sizeof(buf), &done);
     ciy_bus_unlock();
-    if (!ok || done < 5 || buf[0] != 0x0A) return false;
-    if (out) {
-        out->mode = buf[1];
-        out->color = buf[2];
-        out->speed = (buf[3] <= CIY_MAX_SPEED) ? (CIY_MAX_SPEED - buf[3]) : 0;
-        out->brightness = (buf[4] <= CIY_MAX_BRIGHTNESS) ? buf[4] : CIY_MAX_BRIGHTNESS;
-    }
-    return true;
+    if (!ok) return false;
+    return ciy_protocol_decode_0a(buf, (size_t)done, out);
 }
 
 bool ciy_set_state(CIYDevice *d, CIYLightingState st) {
     if (!d) return false;
-    if (st.mode > CIY_MAX_MODE || st.color > CIY_MAX_COLOR ||
-        st.speed > CIY_MAX_SPEED || st.brightness > CIY_MAX_BRIGHTNESS) {
+    uint8_t buf[CIY_REPORT_0A_SIZE];
+    if (!ciy_protocol_encode_0a(st, buf)) {
         return false;
     }
-    uint8_t buf[42] = {0};
-    buf[0] = 0x0A;
-    buf[1] = st.mode;
-    buf[2] = st.color;
-    buf[3] = CIY_MAX_SPEED - st.speed;
-    buf[4] = st.brightness;
     if (!ciy_bus_lock()) return false;
-    bool ok = ciy_request(d, true, 0x09 /* SET_REPORT */, 0x0A, buf, sizeof(buf), NULL);
+    bool ok = ciy_request(d, true, 0x09 /* SET_REPORT */, CIY_REPORT_0A_ID, buf, sizeof(buf), NULL);
     ciy_bus_unlock();
     return ok;
 }
 
 bool ciy_send_planar_rgb(CIYDevice *d, const uint8_t *rgb, size_t length) {
-    if (!d || !rgb || length != CIY_PLANAR_RGB_SIZE) return false;
-    uint8_t buf[1 + CIY_PLANAR_RGB_SIZE];
-    buf[0] = 0x0B;
-    memcpy(&buf[1], rgb, CIY_PLANAR_RGB_SIZE);
+    if (!d) return false;
+    uint8_t buf[CIY_REPORT_0B_SIZE];
+    if (!ciy_protocol_encode_0b(rgb, length, buf)) {
+        return false;
+    }
     if (!ciy_bus_lock()) return false;
-    bool ok = ciy_request(d, true, 0x09, 0x0B, buf, sizeof(buf), NULL);
+    bool ok = ciy_request(d, true, 0x09, CIY_REPORT_0B_ID, buf, sizeof(buf), NULL);
     ciy_bus_unlock();
     return ok;
-}
-
-bool ciy_build_transfer_plan(CIYTransferPlan *out_plan,
-                             const uint8_t *rgb, size_t length,
-                             uint8_t brightness,
-                             const char *profile_name, int keys_count) {
-    if (!out_plan || !rgb || length != CIY_PLANAR_RGB_SIZE) return false;
-    memset(out_plan, 0, sizeof(*out_plan));
-
-    if (profile_name && profile_name[0] != '\0') {
-        strncpy(out_plan->profile_name, profile_name, sizeof(out_plan->profile_name) - 1);
-    }
-    out_plan->keys_count = keys_count;
-    out_plan->brightness = (brightness <= CIY_MAX_BRIGHTNESS) ? brightness : CIY_MAX_BRIGHTNESS;
-    out_plan->step_count = 3;
-
-    // Schritt 1: Report 0x0B (379 Bytes planar RGB: 1 Byte 0x0B + 378 Bytes R/G/B)
-    out_plan->steps[0].type = CIY_PLAN_STEP_REPORT;
-    out_plan->steps[0].report_id = 0x0B;
-    out_plan->steps[0].length = 1 + CIY_PLANAR_RGB_SIZE; // 379
-    out_plan->steps[0].data[0] = 0x0B;
-    memcpy(&out_plan->steps[0].data[1], rgb, CIY_PLANAR_RGB_SIZE);
-    snprintf(out_plan->steps[0].description, sizeof(out_plan->steps[0].description),
-             "Report 0x0B (379 bytes)");
-
-    // Schritt 2: 50 ms Pause
-    out_plan->steps[1].type = CIY_PLAN_STEP_DELAY;
-    out_plan->steps[1].delay_ms = 50;
-    snprintf(out_plan->steps[1].description, sizeof(out_plan->steps[1].description),
-             "wait 50 ms");
-
-    // Schritt 3: Report 0x0A (42 Bytes, Modus 19, gewählte Helligkeit)
-    out_plan->steps[2].type = CIY_PLAN_STEP_REPORT;
-    out_plan->steps[2].report_id = 0x0A;
-    out_plan->steps[2].length = 42;
-    out_plan->steps[2].mode = 19;
-    out_plan->steps[2].brightness = out_plan->brightness;
-    out_plan->steps[2].data[0] = 0x0A;
-    out_plan->steps[2].data[1] = 19; // Modus 19 (Customize)
-    out_plan->steps[2].data[2] = 0;  // Farbe 0
-    out_plan->steps[2].data[3] = CIY_MAX_SPEED - 0; // Speed default
-    out_plan->steps[2].data[4] = out_plan->brightness;
-    snprintf(out_plan->steps[2].description, sizeof(out_plan->steps[2].description),
-             "Report 0x0A (42 bytes, mode 19)");
-
-    return true;
 }
 
 bool ciy_execute_transfer_plan(CIYDevice *d, const CIYTransferPlan *plan,
@@ -449,6 +423,7 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
                 int h3 = hex_digit(p[4]);
                 if (h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0) return NULL;
                 uint32_t cp = (uint32_t)((h0 << 12) | (h1 << 8) | (h2 << 4) | h3);
+                if (cp == 0) return NULL;
 
                 if (cp >= 0xD800 && cp <= 0xDBFF) {
                     // High surrogate: must be followed by \u and a valid low surrogate
@@ -700,7 +675,9 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
             } else if (strcmp(key, "brightness") == 0) {
                 char *endptr = NULL;
                 long b = strtol(p, &endptr, 10);
-                if (endptr == p || b < 0 || b > CIY_MAX_BRIGHTNESS) {
+                if (endptr == p ||
+                    !(*endptr == ',' || *endptr == '}' || *endptr == ' ' || *endptr == '\t' || *endptr == '\r' || *endptr == '\n' || *endptr == '\0') ||
+                    b < 0 || b > CIY_MAX_BRIGHTNESS) {
                     if (out_res) {
                         snprintf(out_res->error_field, sizeof(out_res->error_field), "brightness");
                         snprintf(out_res->error_message, sizeof(out_res->error_message), "Ungültige Helligkeit (erlaubt: 0..%d)", CIY_MAX_BRIGHTNESS);
@@ -924,7 +901,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
         return false;
     }
 
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         if (out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
@@ -981,6 +958,14 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
 
     size_t read_bytes = fread(buf, 1, (size_t)st.st_size, f);
     fclose(f);
+    if (read_bytes != (size_t)st.st_size || memchr(buf, '\0', read_bytes) != NULL) {
+        free(buf);
+        if (out_res) {
+            snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
+            snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei enthält ungültige Null-Bytes oder Lesefehler");
+        }
+        return false;
+    }
     buf[read_bytes] = '\0';
 
     bool ok = ciy_validate_profile_json(buf, out_res);
@@ -1164,7 +1149,7 @@ bool ciy_load_profile_file(const char *path, const char *target_profile,
                            int *out_slots_count) {
     if (!path || !rgb) return false;
 
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return false;
 
     struct stat st;
@@ -1191,6 +1176,10 @@ bool ciy_load_profile_file(const char *path, const char *target_profile,
 
     size_t read_bytes = fread(buf, 1, (size_t)st.st_size, f);
     fclose(f);
+    if (read_bytes != (size_t)st.st_size || memchr(buf, '\0', read_bytes) != NULL) {
+        free(buf);
+        return false;
+    }
     buf[read_bytes] = '\0';
 
     bool ok = ciy_parse_profile_json(buf, target_profile, rgb, out_name, max_name_len, out_slots_count);

@@ -24,13 +24,46 @@
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
     if (_trackingArea) [self removeTrackingArea:_trackingArea];
-    _trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+    _trackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
                                                  options:(NSTrackingMouseMoved |
                                                           NSTrackingMouseEnteredAndExited |
-                                                          NSTrackingActiveInKeyWindow)
+                                                          NSTrackingActiveInKeyWindow |
+                                                          NSTrackingInVisibleRect)
                                                    owner:self
                                                 userInfo:nil];
     [self addTrackingArea:_trackingArea];
+}
+
+- (void)invalidateSlot:(int)slot {
+    if (slot < 0) return;
+
+    NSRect bounds = self.bounds;
+    CGFloat margin = 12.0;
+    CGFloat usableW = bounds.size.width - (margin * 2);
+    CGFloat usableH = bounds.size.height - (margin * 2);
+    CGFloat unitW = (usableW - 14 * 4.0) / 16.0;
+    CGFloat keyH  = (usableH - 4 * 4.0) / 5.0;
+    CGFloat gap = 4.0;
+
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    int currentRow = -1;
+    CGFloat x = margin;
+    CGFloat y = 0.0;
+
+    for (size_t i = 0; i < layout->surface_count; i++) {
+        const CIYKeySurface *surf = &layout->surfaces[i];
+        if (surf->row != currentRow) {
+            currentRow = surf->row;
+            x = margin;
+            y = bounds.size.height - margin - (currentRow + 1) * keyH - currentRow * gap;
+        }
+        CGFloat kw = surf->width_u * unitW + (surf->width_u - 1.0f) * gap;
+        NSRect keyRect = NSMakeRect(x, y, kw, keyH);
+        if (surf->matrix_slot == slot) {
+            [self setNeedsDisplayInRect:NSInsetRect(keyRect, -4.0, -4.0)];
+        }
+        x += kw + gap;
+    }
 }
 
 - (void)resetAllKeysToColor:(NSColor *)color {
@@ -53,7 +86,7 @@
 
 - (void)setColor:(NSColor *)color forSlot:(int)slot {
     _keyColors[@(slot)] = color;
-    [self setNeedsDisplay:YES];
+    [self invalidateSlot:slot];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -95,7 +128,9 @@
         CGFloat kw = surf->width_u * unitW + (surf->width_u - 1.0f) * gap;
         NSRect keyRect = NSMakeRect(x, y, kw, keyH);
 
-        [self drawSurface:surf inRect:keyRect];
+        if (NSIntersectsRect(NSInsetRect(keyRect, -3.0, -3.0), dirtyRect)) {
+            [self drawSurface:surf inRect:keyRect];
+        }
         x += kw + gap;
     }
 }
@@ -145,12 +180,20 @@
 
     // Key label
     NSString *text = [NSString stringWithUTF8String:surface->label];
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.alignment = NSTextAlignmentCenter;
+    static NSParagraphStyle *cachedStyle = nil;
+    static NSFont *cachedSmallFont = nil;
+    static NSFont *cachedRegularFont = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+        style.alignment = NSTextAlignmentCenter;
+        cachedStyle = [style copy];
+        cachedSmallFont = [NSFont systemFontOfSize:9.5 weight:NSFontWeightMedium];
+        cachedRegularFont = [NSFont systemFontOfSize:12.0 weight:NSFontWeightMedium];
+    });
 
     // Font size depends on label length
-    CGFloat fontSize = (text.length > 3) ? 9.5 : 12.0;
-    NSFont *font = [NSFont systemFontOfSize:fontSize weight:NSFontWeightMedium];
+    NSFont *font = (text.length > 3) ? cachedSmallFont : cachedRegularFont;
 
     // Text color is lit up by key's color
     NSColor *textColor = [NSColor colorWithCalibratedRed:0.7 + r * 0.3
@@ -161,7 +204,7 @@
     NSDictionary *attrs = @{
         NSFontAttributeName: font,
         NSForegroundColorAttributeName: textColor,
-        NSParagraphStyleAttributeName: style
+        NSParagraphStyleAttributeName: cachedStyle
     };
 
     NSSize textSize = [text sizeWithAttributes:attrs];
@@ -181,8 +224,12 @@
     NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
     int hitSlot = [self slotAtPoint:loc];
     if (hitSlot >= 0) {
+        int oldSlot = _selectedSlot;
         _selectedSlot = hitSlot;
-        [self setNeedsDisplay:YES];
+        if (oldSlot != _selectedSlot) {
+            [self invalidateSlot:oldSlot];
+        }
+        [self invalidateSlot:_selectedSlot];
         if ([self.delegate respondsToSelector:@selector(keyboardViewDidSelectKey:label:)]) {
             NSString *lbl = [self labelForSlot:hitSlot];
             [self.delegate keyboardViewDidSelectKey:hitSlot label:lbl];
@@ -264,8 +311,12 @@
     }
 
     if (targetSlot >= 0) {
+        int oldSlot = _selectedSlot;
         _selectedSlot = targetSlot;
-        [self setNeedsDisplay:YES];
+        if (oldSlot != _selectedSlot) {
+            [self invalidateSlot:oldSlot];
+        }
+        [self invalidateSlot:_selectedSlot];
         if ([self.delegate respondsToSelector:@selector(keyboardViewDidSelectKey:label:)]) {
             NSString *lbl = [self labelForSlot:targetSlot];
             [self.delegate keyboardViewDidSelectKey:targetSlot label:lbl];
@@ -279,16 +330,19 @@
     NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
     int hitSlot = [self slotAtPoint:loc];
     if (hitSlot != _hoveredSlot) {
+        int oldSlot = _hoveredSlot;
         _hoveredSlot = hitSlot;
-        [self setNeedsDisplay:YES];
+        [self invalidateSlot:oldSlot];
+        [self invalidateSlot:_hoveredSlot];
     }
 }
 
 - (void)mouseExited:(NSEvent *)event {
     (void)event;
     if (_hoveredSlot != -1) {
+        int oldSlot = _hoveredSlot;
         _hoveredSlot = -1;
-        [self setNeedsDisplay:YES];
+        [self invalidateSlot:oldSlot];
     }
 }
 

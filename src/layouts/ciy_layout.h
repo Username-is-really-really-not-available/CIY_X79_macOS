@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include <string.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /// Repräsentiert eine eindeutige logische/physische Taste auf der Matrix.
 typedef struct {
     int matrix_slot;        // Matrix-Slot (0..124 bei CIY X79)
@@ -39,5 +43,9 @@ const CIYLogicalKey *ciy_layout_find_key_by_slot(const CIYKeyboardLayout *layout
 
 /// Sucht eine logische Taste anhand ihres Primärnamens. Gibt NULL zurück, falls nicht gefunden.
 const CIYLogicalKey *ciy_layout_find_key_by_name(const CIYKeyboardLayout *layout, const char *name);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // CIY_LAYOUT_H

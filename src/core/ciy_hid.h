@@ -3,37 +3,21 @@
 
 // Gemeinsames USB-Protokollmodul für CIY X79 (genutzt von ciy_ctl und KeyboardBackend).
 // Reine C-/IOKit-Schicht, kennt weder Cocoa noch UI.
+// Plattformunabhängige Paket-Enkodierung, Konstanten und Transferpläne liegen in ciy_protocol.h.
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stddef.h>
+#include "ciy_protocol.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOCFPlugIn.h>
 #include <IOKit/usb/IOUSBLib.h>
 
-#define CIY_VENDOR_ID       0x258A
-#define CIY_PRODUCT_ID      0x0049
-#define CIY_LED_COUNT       126                 // LEDs pro Farbebene in Report 0x0B
-#define CIY_PLANAR_RGB_SIZE (3 * CIY_LED_COUNT) // Planar R/G/B = 378 Bytes
-
-#define CIY_MAX_MODE        20
-#define CIY_MAX_COLOR       10
-#define CIY_MAX_SPEED       4
-#define CIY_MAX_BRIGHTNESS  5
-#define CIY_INTERFACE_NUM   1
-#define CIY_JSON_MAX_STRLEN 4096
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef struct {
     IOUSBDeviceInterface **dev;
 } CIYDevice;
-
-typedef struct {
-    uint8_t mode;       // 0..20
-    uint8_t color;      // 0..10
-    uint8_t speed;      // 0..4
-    uint8_t brightness; // 0..5
-} CIYLightingState;
 
 /// Öffnet die erste gefundene CIY X79. Bei Fehler false und dev == NULL.
 bool ciy_open(CIYDevice *d);
@@ -65,40 +49,6 @@ bool ciy_apply_custom_profile_with_brightness(CIYDevice *d, const uint8_t *rgb, 
 
 /// Cancelbarer Callback: true = Abbruch anfordern.
 typedef bool (*CIYCancelCheck)(void *ctx);
-
-typedef enum {
-    CIY_PLAN_STEP_REPORT,
-    CIY_PLAN_STEP_DELAY
-} CIYPlanStepType;
-
-typedef struct {
-    CIYPlanStepType type;
-    uint8_t report_id;                     // 0x0B oder 0x0A
-    uint16_t length;                       // z. B. 379 oder 42 Bytes
-    uint8_t data[1 + CIY_PLANAR_RGB_SIZE]; // Puffer für Report-Payload
-    uint32_t delay_ms;                     // z. B. 50 ms
-    uint8_t mode;                          // Für Report 0x0A: Modus (19)
-    uint8_t brightness;                    // Für Report 0x0A: Helligkeit (0..5)
-    char description[64];
-} CIYPlanStep;
-
-typedef struct {
-    char profile_name[64];
-    int keys_count;
-    uint8_t brightness;
-    size_t step_count;
-    CIYPlanStep steps[3];
-} CIYTransferPlan;
-
-/// Baut einen hardwarefreien Übertragungsplan für ein Custom-RGB-Profil auf.
-/// Enthaltene Schritte:
-/// 1. Report 0x0B (379 Bytes Planar RGB)
-/// 2. 50 ms Pause
-/// 3. Report 0x0A (42 Bytes, Modus 19, gewählte Helligkeit)
-bool ciy_build_transfer_plan(CIYTransferPlan *out_plan,
-                             const uint8_t *rgb, size_t length,
-                             uint8_t brightness,
-                             const char *profile_name, int keys_count);
 
 /// Führt einen vorbereiteten Übertragungsplan auf einem echten oder gemockten CIYDevice aus.
 bool ciy_execute_transfer_plan(CIYDevice *d, const CIYTransferPlan *plan,
@@ -158,5 +108,9 @@ bool ciy_load_profile_file(const char *path, const char *target_profile,
                            uint8_t rgb[CIY_PLANAR_RGB_SIZE],
                            char *out_name, size_t max_name_len,
                            int *out_slots_count);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

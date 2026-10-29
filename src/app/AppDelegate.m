@@ -36,6 +36,10 @@
     BOOL _hasUnsavedEdits;
     BOOL _isWakingUp;
     BOOL _wakeSyncScheduled;
+    BOOL _sendInFlight;
+    BOOL _sendDirty;
+    CFAbsoluteTime _lastSendTime;
+    NSUInteger _wakeRetryCount;
     NSStatusItem *_statusItem;
 }
 @end
@@ -402,10 +406,44 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:kCustomProfilesKey];
     if (saved && [saved isKindOfClass:[NSArray class]] && saved.count > 0) {
         _profiles = [NSMutableArray arrayWithCapacity:saved.count];
+        NSMutableSet<NSString *> *seenIds = [NSMutableSet set];
+        NSMutableSet<NSString *> *seenBundleIds = [NSMutableSet set];
         for (id item in saved) {
-            if ([item isKindOfClass:[NSDictionary class]]) {
-                [_profiles addObject:[item mutableCopy]];
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary *dict = (NSDictionary *)item;
+            if (![dict[@"slots"] isKindOfClass:[NSDictionary class]]) continue;
+
+            NSMutableDictionary *prof = [dict mutableCopy];
+            prof[@"slots"] = [dict[@"slots"] mutableCopy];
+
+            NSString *profId = prof[@"id"];
+            if (![profId isKindOfClass:[NSString class]] || profId.length == 0 || [seenIds containsObject:profId]) {
+                profId = [[NSUUID UUID] UUIDString];
+                prof[@"id"] = profId;
             }
+            [seenIds addObject:profId];
+
+            NSString *name = prof[@"name"];
+            if ([name isKindOfClass:[NSString class]]) {
+                NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                name = (trimmed.length > 0) ? TruncateProfileName(trimmed, 40) : @"Unbenannt";
+            } else {
+                name = @"Unbenannt";
+            }
+            prof[@"name"] = name;
+
+            id bundleId = prof[@"appBundleId"];
+            if ([bundleId isKindOfClass:[NSString class]] && [(NSString *)bundleId length] > 0 && ![seenBundleIds containsObject:bundleId]) {
+                [seenBundleIds addObject:bundleId];
+                if (![prof[@"appName"] isKindOfClass:[NSString class]] || [(NSString *)prof[@"appName"] length] == 0) {
+                    [prof removeObjectForKey:@"appName"];
+                }
+            } else {
+                [prof removeObjectForKey:@"appBundleId"];
+                [prof removeObjectForKey:@"appName"];
+            }
+
+            [_profiles addObject:prof];
         }
     } else {
         _profiles = [NSMutableArray array];
@@ -1102,28 +1140,43 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [self updateConnectionStatus];
         return;
     }
+    if (_sendInFlight) {
+        _sendDirty = YES;
+        return;
+    }
+    _sendInFlight = YES;
+    _sendDirty = NO;
 
     // Liest den aktuellen Zustand der Tasten aus der Canvas-Ansicht aus
     NSDictionary<NSNumber *, NSColor *> *allColors = [_keyboardView allKeyColors];
     NSDictionary<NSNumber *, NSColor *> *snapshot = [allColors copy];
     uint8_t br = (_currentBrightness >= 1 && _currentBrightness <= 5) ? _currentBrightness : 5;
+    CFAbsoluteTime delay = MAX(0.0, (_lastSendTime + 0.12) - CFAbsoluteTimeGetCurrent());
 
-    [self runHardware:^BOOL{
-        return [[KeyboardBackend shared] sendKeyColors:snapshot brightness:br defaultColor:nil];
-    } completion:^(BOOL ok) {
-        if (ok) {
-            NSString *profName = [self currentProfileName];
-            self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Profil „%@“ aktiv auf Tastatur", profName];
-            self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
-        } else {
-            [self updateConnectionStatus];
-            if ([KeyboardBackend shared].isConnected &&
-                ![KeyboardBackend shared].lastOperationWasCancelled) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), _hwQueue, ^{
+        BOOL ok = [[KeyboardBackend shared] sendKeyColors:snapshot brightness:br defaultColor:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_lastSendTime = CFAbsoluteTimeGetCurrent();
+            self->_sendInFlight = NO;
+            [self reportResult:ok];
+            if (ok) {
+                NSString *profName = [self currentProfileName];
+                if (self->_hasUnsavedEdits) {
+                    self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Vorschau „%@“ (ungespeichert) auf Tastatur", profName];
+                    self->_statusLabel.textColor = [NSColor systemOrangeColor];
+                } else {
+                    self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Profil „%@“ aktiv auf Tastatur", profName];
+                    self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
+                }
+            } else if (![KeyboardBackend shared].lastOperationWasCancelled) {
                 self->_statusLabel.stringValue = @"● Senden fehlgeschlagen (USB prüfen)";
                 self->_statusLabel.textColor = [NSColor systemRedColor];
             }
-        }
-    }];
+            if (self->_sendDirty && [KeyboardBackend shared].isConnected) {
+                [self sendCurrentProfileToHardware];
+            }
+        });
+    });
 }
 
 - (void)cancelHardwareSync {
@@ -1138,8 +1191,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (!connected) {
         [self cancelHardwareSync];
         _isWakingUp = NO;
-        [[KeyboardBackend shared] disconnect];
+        [[KeyboardBackend shared] requestCancel];
         [self updateConnectionStatus];
+        dispatch_async(_hwQueue, ^{
+            [[KeyboardBackend shared] disconnect];
+        });
         return;
     }
     if (_isWakingUp) {
@@ -1152,6 +1208,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     }
     // Normaler Hotplug im laufenden Betrieb: 100 ms Debouncing gegen Kontaktprellen
     [self cancelHardwareSync];
+    _wakeRetryCount = 0;
     [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:0.1];
 }
 
@@ -1162,8 +1219,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
     [self cancelHardwareSync];
     // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
-    [[KeyboardBackend shared] disconnect];
+    [[KeyboardBackend shared] requestCancel];
     [self updateConnectionStatus];
+    dispatch_async(_hwQueue, ^{
+        [[KeyboardBackend shared] disconnect];
+    });
 }
 
 - (void)onSystemDidWake:(NSNotification *)note {
@@ -1171,6 +1231,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // 500 ms Verzögerung, damit macOS USB-Root-Hub und MCU nach dem Aufwachen vollständig initialisiert sind.
     // Konsolidiert Aufwach- und Hotplug-Events zu einem einzigen Reconnect.
     [self cancelHardwareSync];
+    _wakeRetryCount = 0;
     _wakeSyncScheduled = YES;
     [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:0.5];
 }
@@ -1184,14 +1245,23 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     } completion:^(BOOL ok) {
         [self updateConnectionStatus];
         if (ok) {
+            self->_wakeRetryCount = 0;
             // Tastatur mit dem aktuell aktiven Profil synchronisieren
             [self sendCurrentProfileToHardware];
+        } else if (self->_wakeRetryCount < 3) {
+            self->_wakeRetryCount++;
+            NSTimeInterval delay = 0.5 * (1 << (self->_wakeRetryCount - 1));
+            [self cancelHardwareSync];
+            self->_wakeSyncScheduled = YES;
+            [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:delay];
         }
     }];
 }
 
 - (void)onReconnect:(id)sender {
     (void)sender;
+    [self cancelHardwareSync];
+    _wakeRetryCount = 0;
     [self performHardwareSync];
 }
 
@@ -1256,8 +1326,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK && panel.URL) {
             NSError *err = nil;
+            NSNumber *fileSize = nil;
+            if (![panel.URL getResourceValue:&fileSize forKey:NSURLFileSizeKey error:&err] ||
+                (fileSize && fileSize.unsignedLongLongValue > 512 * 1024)) {
+                [self showImportError:@"Datei ist zu groß (maximal 512 KB erlaubt) oder nicht lesbar."];
+                return;
+            }
             NSData *data = [NSData dataWithContentsOfURL:panel.URL options:0 error:&err];
-            if (!data || err) {
+            if (!data || err || data.length > 512 * 1024) {
                 [self showImportError:@"Datei konnte nicht gelesen werden."];
                 return;
             }
@@ -1296,18 +1372,25 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                         for (int s = 0; s < 126; s++) {
                             fullSlots[@(s).stringValue] = @"#000000";
                         }
+                        NSUInteger validSlotCount = 0;
                         for (id slotKey in slots) {
                             NSString *keyStr = [NSString stringWithFormat:@"%@", slotKey];
                             NSScanner *scanner = [NSScanner scannerWithString:keyStr];
                             int slot = -1;
                             // Strikte Validierung: Muss echte Zahl sein und im Bereich 0..124 liegen (überlaufsicher ohne vorzeitige Addition)
                             if ([scanner scanInt:&slot] && scanner.isAtEnd && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
-                                NSString *hex = [NSString stringWithFormat:@"%@", slots[slotKey]];
-                                uint8_t tr = 0, tg = 0, tb = 0;
-                                if (ciy_parse_hex_color([hex UTF8String], &tr, &tg, &tb)) {
-                                    fullSlots[@(slot).stringValue] = [NSString stringWithFormat:@"#%02X%02X%02X", tr, tg, tb];
+                                if ([slots[slotKey] isKindOfClass:[NSString class]]) {
+                                    NSString *hex = (NSString *)slots[slotKey];
+                                    uint8_t tr = 0, tg = 0, tb = 0;
+                                    if (ciy_parse_hex_color([hex UTF8String], &tr, &tg, &tb)) {
+                                        fullSlots[@(slot).stringValue] = [NSString stringWithFormat:@"#%02X%02X%02X", tr, tg, tb];
+                                        validSlotCount++;
+                                    }
                                 }
                             }
+                        }
+                        if (validSlotCount == 0) {
+                            continue;
                         }
                         NSMutableDictionary *newProf = [NSMutableDictionary dictionary];
                         NSString *newId = [[NSUUID UUID] UUIDString];
@@ -1645,7 +1728,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
     [[KeyboardBackend shared] stopMonitoring];
-    [[KeyboardBackend shared] disconnect];
+    [[KeyboardBackend shared] requestCancel];
+    if (_hwQueue) {
+        dispatch_sync(_hwQueue, ^{
+            [[KeyboardBackend shared] disconnect];
+        });
+    } else {
+        [[KeyboardBackend shared] disconnect];
+    }
 }
 
 @end

@@ -99,11 +99,12 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
     if (!any) return;
     // Die Callbacks unterscheiden sich über refCon: NULL = abgesteckt, nicht NULL = angesteckt.
     BOOL connected = (refCon != NULL);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:KeyboardBackendHotplugNotification
-                                                            object:[KeyboardBackend shared]
-                                                          userInfo:@{@"connected": @(connected)}];
-    });
+    if (!connected) {
+        [[KeyboardBackend shared] requestCancel];
+    }
+    [[NSNotificationCenter defaultCenter] postNotificationName:KeyboardBackendHotplugNotification
+                                                        object:[KeyboardBackend shared]
+                                                      userInfo:@{@"connected": @(connected)}];
 }
 
 - (void)startMonitoring {
@@ -192,14 +193,32 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
         }
         ciy_close(&_device);
         BOOL ok = ciy_open(&_device);
-        self.isConnected = ok;
         if (ok) {
             KeyboardLightingState st;
             if (ciy_get_state(&_device, &st)) {
                 self.currentState = st;
+            } else {
+                ciy_close(&_device);
+                self.isConnected = NO;
+                return NO;
             }
         }
+        self.isConnected = ok;
         return ok;
+    }
+}
+
+- (void)requestCancel {
+    atomic_store_explicit(&_cancelRequested, true, memory_order_release);
+    self.isConnected = NO;
+}
+
+- (void)invalidateDevice {
+    @synchronized (self) {
+        if (![KeyboardBackend isTestingMode]) {
+            ciy_close(&_device);
+        }
+        self.isConnected = NO;
     }
 }
 
@@ -248,6 +267,7 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             const char *delayEnv = getenv("CIY_TESTING_APPLY_DELAY_MS");
             if (delayEnv) {
                 int total = atoi(delayEnv);
+                if (total > 5000) total = 5000;
                 for (int waited = 0; waited < total; waited += 5) {
                     if (atomic_load_explicit(&_cancelRequested, memory_order_acquire)) {
                         atomic_store(&_lastApplyCancelled, true);
@@ -272,7 +292,7 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             return YES;
         }
 
-        if (_device.dev == NULL) return NO;
+        if (_device.dev == NULL && ![self connect]) return NO;
         BOOL ok = ciy_apply_custom_profile_with_brightness_cancelable(
             &_device, rgb, CIY_PLANAR_RGB_SIZE, brightness,
             KeyboardBackendCancelCheck, &_cancelRequested);
@@ -281,8 +301,20 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
                 atomic_store(&_lastApplyCancelled, true);
                 return NO;
             }
-            [self disconnect];
-            return NO;
+            [self invalidateDevice];
+            if ([self connect]) {
+                ok = ciy_apply_custom_profile_with_brightness_cancelable(
+                    &_device, rgb, CIY_PLANAR_RGB_SIZE, brightness,
+                    KeyboardBackendCancelCheck, &_cancelRequested);
+            }
+            if (!ok) {
+                if (atomic_load_explicit(&_cancelRequested, memory_order_acquire)) {
+                    atomic_store(&_lastApplyCancelled, true);
+                    return NO;
+                }
+                [self invalidateDevice];
+                return NO;
+            }
         }
         KeyboardLightingState st = self.currentState;
         st.mode = 19; st.color = 0; st.speed = 0; st.brightness = (brightness <= CIY_MAX_BRIGHTNESS) ? brightness : CIY_MAX_BRIGHTNESS;

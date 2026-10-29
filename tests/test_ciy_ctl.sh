@@ -25,7 +25,9 @@ else
     fi
     echo "Kompiliere ciy_ctl für Test..."
     clang "${CLANG_FLAGS[@]}" -framework IOKit -framework CoreFoundation \
-        "${PROJECT_ROOT}/src/core/ciy_hid.c" "${PROJECT_ROOT}/src/cli/ciy_ctl.c" \
+        "${PROJECT_ROOT}/src/core/ciy_hid.c" \
+        "${PROJECT_ROOT}/src/layouts/ciy_x79_iso_de.c" \
+        "${PROJECT_ROOT}/src/cli/ciy_ctl.c" \
         -o "${CIY_CTL}"
 fi
 
@@ -34,6 +36,8 @@ HELP_OUT="$("${CIY_CTL}" --help)"
 echo "${HELP_OUT}" | grep -q "Verwendung:"
 echo "${HELP_OUT}" | grep -q -- "-b, --brightness"
 echo "${HELP_OUT}" | grep -q -- "--json"
+echo "${HELP_OUT}" | grep -q -- "--dump-bytes"
+echo "${HELP_OUT}" | grep -q "export-layout"
 
 echo "=== Test CLI: 2. list-modes (Text & JSON) ==="
 MODES_TXT="$("${CIY_CTL}" list-modes)"
@@ -136,16 +140,49 @@ DRY_BAD_JSON="$("${CIY_CTL}" --dry-run load "${PROJECT_ROOT}/tests/fixtures/inva
 echo "${DRY_BAD_JSON}" | grep -q '"success": false'
 echo "${DRY_BAD_JSON}" | grep -q '"field": "130"'
 
-# 5. --dry-run mit nicht-unterstütztem Befehl muss fehlschlagen
-"${CIY_CTL}" --dry-run fill "#FF0000" 2>/dev/null
-if [ $? -eq 0 ]; then
-    echo "FEHLER: --dry-run fill wurde akzeptiert!"
-    exit 1
-fi
+# 5. --dump-bytes Inspektion (Text & JSON)
+DRY_HEX="$("${CIY_CTL}" --dry-run load "${PROJECT_ROOT}/tests/fixtures/valid_profile.json" --dump-bytes)"
+echo "${DRY_HEX}" | grep -q "Raw Wire Bytes (Hex):"
+echo "${DRY_HEX}" | grep -q "Report 0x0B"
+DRY_HEX_JSON="$("${CIY_CTL}" --dry-run load "${PROJECT_ROOT}/tests/fixtures/valid_profile.json" --dump-bytes --json)"
+echo "${DRY_HEX_JSON}" | grep -q '"hex": "0b'
 
+# 6. Universeller --dry-run für Schreibbefehle (fill, set, wasd)
+DRY_FILL="$("${CIY_CTL}" --dry-run fill "#FF0000" -b 3)"
+echo "${DRY_FILL}" | grep -q "Vollfarbe #FF0000"
+echo "${DRY_FILL}" | grep -q "brightness 3"
+CIY_FAIL_ON_HARDWARE_IO=1 "${CIY_CTL}" --dry-run fill "#00FF00" > /dev/null
+
+DRY_SET="$("${CIY_CTL}" --dry-run set 15 0 2 4)"
+echo "${DRY_SET}" | grep -q "mode 15, color 0, speed 2, brightness 4"
+CIY_FAIL_ON_HARDWARE_IO=1 "${CIY_CTL}" --dry-run set 1 0 1 5 > /dev/null
+
+DRY_WASD="$("${CIY_CTL}" --dry-run wasd)"
+echo "${DRY_WASD}" | grep -q "WASD Gaming"
+CIY_FAIL_ON_HARDWARE_IO=1 "${CIY_CTL}" --dry-run wasd > /dev/null
+
+# 7. --dry-run mit nicht-unterstütztem Befehl (z. B. validate-profile) muss fehlschlagen
 DRY_VAL_ERR="$("${CIY_CTL}" --dry-run validate-profile "${PROJECT_ROOT}/tests/fixtures/valid_profile.json" 2>&1 || true)"
-echo "${DRY_VAL_ERR}" | grep -q "nur für den Befehl 'load' unterstützt"
+echo "${DRY_VAL_ERR}" | grep -q "nur für Schreibbefehle"
 set -e
+
+echo "=== Test CLI: 2d. export-layout (Text & JSON) ==="
+LAYOUT_TXT="$("${CIY_CTL}" export-layout)"
+echo "${LAYOUT_TXT}" | grep -q "Esc"
+echo "${LAYOUT_TXT}" | grep -q "R-Byte"
+echo "${LAYOUT_TXT}" | grep -q "ciy_x79_iso_de"
+
+LAYOUT_JSON="$("${CIY_CTL}" export-layout --json)"
+echo "${LAYOUT_JSON}" | grep -q '"layout_id": "ciy_x79_iso_de"'
+echo "${LAYOUT_JSON}" | grep -q '"key_count": 69'
+echo "${LAYOUT_JSON}" | grep -q '"surface_count": 70'
+echo "${LAYOUT_JSON}" | grep -q '"report_0b_r_offset": 3'
+echo "${LAYOUT_JSON}" | grep -q '"report_0b_g_offset": 129'
+echo "${LAYOUT_JSON}" | grep -q '"report_0b_b_offset": 255'
+
+# Hardware-Freiheit garantieren
+CIY_FAIL_ON_HARDWARE_IO=1 "${CIY_CTL}" export-layout > /dev/null
+CIY_FAIL_ON_HARDWARE_IO=1 "${CIY_CTL}" export-layout --json > /dev/null
 
 echo "=== Test CLI: 3. Fehlerbehandlung ungültige Optionen & Helligkeit ==="
 set +e

@@ -7,7 +7,19 @@ cd "${PROJECT_ROOT}"
 
 SAN_FLAGS=(-g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
 
-trap 'rm -f /tmp/test_ciy_hid /tmp/test_profile_logic' EXIT
+trap 'rm -f /tmp/test_ciy_protocol /tmp/test_ciy_hid /tmp/test_profile_logic' EXIT
+
+echo "=== Test 0: Standalone Protocol & Zero-OS-Lock-in Tests (ASan/UBSan, C11 & C++) ==="
+clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    src/layouts/ciy_x79_iso_de.c \
+    tests/test_ciy_protocol.c \
+    -o /tmp/test_ciy_protocol
+/tmp/test_ciy_protocol
+
+clang++ -Wall -Wextra -Werror -std=c++17 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    -x c++ -c src/core/ciy_protocol.h -o /dev/null
+clang++ -Wall -Wextra -Werror -std=c++17 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    -x c++ -c src/layouts/ciy_layout.h -o /dev/null
 
 echo "=== Test 1: HID & Protokoll Tests (ASan/UBSan) ==="
 clang -Wall -Wextra -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
