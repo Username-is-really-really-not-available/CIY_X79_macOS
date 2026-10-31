@@ -6,6 +6,11 @@
 #import "../src/layouts/ciy_layout.h"
 #import "../src/app/KeyboardBackend.h"
 #import "../src/app/CIYKeyboardView.h"
+#import "../src/app/CIYBatteryMonitor.h"
+
+@interface CIYBatteryMonitor (Testing)
+- (void)scheduleDebouncedUpdate;
+@end
 
 static NSString *HexFromColor(NSColor *color) {
     if (!color) return @"#000000";
@@ -514,6 +519,79 @@ static void test_layout_x79_iso_de(void) {
     assert(ciy_layout_find_key_by_name(layout, "NONEXISTENT") == NULL);
 }
 
+static void test_overlay_layer_and_zones(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSColor *red = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0];
+    [view resetAllKeysToColor:red];
+
+    // Basis-Farbe für W (Slot 14) ist rot
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#FF0000"]);
+
+    // Zone färben: WASD auf Blau
+    NSColor *blue = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+    [view applyColor:blue toSlots:@[@14, @9, @15, @21]];
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+    assert([HexFromColor([view allKeyColors][@9]) isEqualToString:@"#0000FF"]);
+    assert([HexFromColor([view allKeyColors][@1]) isEqualToString:@"#FF0000"]); // Esc bleibt rot
+
+    // Zone färben: Nav-Block (Slots 86, 87, 94, 91) auf Gelb
+    NSColor *yellow = [NSColor colorWithSRGBRed:1.0 green:1.0 blue:0.0 alpha:1.0];
+    [view applyColor:yellow toSlots:@[@86, @87, @94, @91]];
+    assert([HexFromColor([view allKeyColors][@86]) isEqualToString:@"#FFFF00"]); // Entf
+    assert([HexFromColor([view allKeyColors][@87]) isEqualToString:@"#FFFF00"]); // Bild Auf
+    assert([HexFromColor([view allKeyColors][@94]) isEqualToString:@"#FFFF00"]); // Bild Ab
+    assert([HexFromColor([view allKeyColors][@91]) isEqualToString:@"#FFFF00"]); // Ende
+
+    // Ephemeres Overlay setzen (z. B. Akku-Grün auf Slot 14)
+    NSColor *green = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+    [view setOverlayColors:@{@14: green}];
+    assert(view.overlayColors != nil);
+    assert([HexFromColor(view.overlayColors[@14]) isEqualToString:@"#00FF00"]);
+
+    // KRITISCH: Basis-Profil allKeyColors darf durch Overlay NIEMALS verändert werden!
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+
+    // Overlay löschen
+    [view clearOverlayColors];
+    assert(view.overlayColors == nil);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+}
+
+static void test_battery_monitor_sleep_safety(void) {
+    // Fall A: Handler nach startMonitoring gesetzt (Debounced Update durch stopMonitoring abgewürgt)
+    CIYBatteryMonitor *monitor = [[CIYBatteryMonitor alloc] init];
+    [monitor startMonitoring];
+
+    __block int updateCount = 0;
+    monitor.updateHandler = ^(CIYBatteryInfo i) {
+        (void)i;
+        updateCount++;
+    };
+
+    [monitor scheduleDebouncedUpdate];
+    [monitor stopMonitoring];
+
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
+    assert(updateCount == 0);
+
+    // Fall B: Handler vor startMonitoring gesetzt (wie in AppDelegate):
+    // startMonitoring führt initialen Update aus (count=1), debounced update wird durch stopMonitoring storniert
+    CIYBatteryMonitor *monitorB = [[CIYBatteryMonitor alloc] init];
+    __block int updateCountB = 0;
+    monitorB.updateHandler = ^(CIYBatteryInfo i) {
+        (void)i;
+        updateCountB++;
+    };
+    [monitorB startMonitoring];
+    assert(updateCountB == 1);
+
+    [monitorB scheduleDebouncedUpdate];
+    [monitorB stopMonitoring];
+
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
+    assert(updateCountB == 1);
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -521,6 +599,7 @@ int main(void) {
         test_hex_conversion();
         test_profile_creation_and_update();
         test_keyboard_view_colors();
+        test_overlay_layer_and_zones();
         test_builtin_profiles_structure();
         test_json_export_import();
         test_brightness_and_backend();
@@ -532,6 +611,7 @@ int main(void) {
         test_cancel_blocks_apply();
         test_disconnect_during_apply();
         test_malformed_json_slots_ignored();
+        test_battery_monitor_sleep_safety();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

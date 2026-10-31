@@ -5,8 +5,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <errno.h>
+#include <signal.h>
+#include <termios.h>
+#include <time.h>
 #include "../core/ciy_hid.h"
 #include "../layouts/ciy_layout.h"
+#include "../core/ciy_battery.h"
+#include "../core/ciy_gradient.h"
 
 // Sw_mode to effect names (from our verified ROM dump)
 static const char *EFFECT_NAMES[] = {
@@ -77,6 +82,366 @@ static bool parse_range(const char *str, long min, long max, uint8_t *out) {
     long v = strtol(str, &end, 10);
     if (errno != 0 || end == str || *end != '\0' || v < min || v > max) return false;
     *out = (uint8_t)v;
+    return true;
+}
+
+static bool parse_int_range(const char *str, long min, long max, int *out) {
+    if (!str) return false;
+    char *end = NULL;
+    errno = 0;
+    long v = strtol(str, &end, 10);
+    if (errno != 0 || end == str || *end != '\0' || v < min || v > max) return false;
+    *out = (int)v;
+    return true;
+}
+
+static volatile sig_atomic_t s_sweep_interrupted = 0;
+static struct termios s_orig_termios;
+static volatile sig_atomic_t s_termios_saved = 0;
+
+static void sweep_sigint_handler(int sig) {
+    (void)sig;
+    s_sweep_interrupted = 1;
+    if (s_termios_saved) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &s_orig_termios);
+    }
+}
+
+static volatile sig_atomic_t s_watch_interrupted = 0;
+
+static void watch_sigint_handler(int sig) {
+    (void)sig;
+    s_watch_interrupted = 1;
+}
+
+static CIYBatterySourceType parse_battery_source_type(const char *source_str) {
+    if (!source_str) return CIY_BATTERY_SOURCE_INTERNAL;
+    if (strcasecmp(source_str, "internal") == 0 || strcasecmp(source_str, "laptop") == 0 || strcasecmp(source_str, "macbook") == 0) {
+        return CIY_BATTERY_SOURCE_INTERNAL;
+    }
+    if (strcasecmp(source_str, "peripheral") == 0 || strcasecmp(source_str, "mouse") == 0 || strcasecmp(source_str, "trackpad") == 0) {
+        return CIY_BATTERY_SOURCE_PERIPHERAL;
+    }
+    if (strcasecmp(source_str, "ups") == 0) {
+        return CIY_BATTERY_SOURCE_UPS;
+    }
+    if (strcasecmp(source_str, "all") == 0) {
+        return CIY_BATTERY_SOURCE_ALL;
+    }
+    return CIY_BATTERY_SOURCE_INTERNAL;
+}
+
+static bool parse_battery_options(int argc, char **argv,
+                                  bool *out_apply,
+                                  bool *out_watch,
+                                  bool *out_list_sources,
+                                  bool *out_segmented,
+                                  const char **out_target_str,
+                                  const char **out_source_str,
+                                  char *err_msg, size_t err_size) {
+    *out_apply = false;
+    *out_watch = false;
+    *out_list_sources = false;
+    *out_segmented = false;
+    *out_target_str = "1-0";
+    *out_source_str = "internal";
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "battery") == 0 || strcmp(argv[i], "--json") == 0 ||
+            strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+        if (strcmp(argv[i], "--apply") == 0) {
+            *out_apply = true;
+        } else if (strcmp(argv[i], "--watch") == 0) {
+            *out_watch = true;
+        } else if (strcmp(argv[i], "--list-sources") == 0) {
+            *out_list_sources = true;
+        } else if (strcmp(argv[i], "--segmented") == 0) {
+            *out_segmented = true;
+        } else if (strcmp(argv[i], "--target") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --target (z. B. 1-0, space, nav)");
+                return false;
+            }
+            *out_target_str = argv[++i];
+        } else if (strncmp(argv[i], "--target=", 9) == 0) {
+            *out_target_str = argv[i] + 9;
+        } else if (strcmp(argv[i], "--source") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --source (z. B. internal, peripheral, all)");
+                return false;
+            }
+            *out_source_str = argv[++i];
+        } else if (strncmp(argv[i], "--source=", 9) == 0) {
+            *out_source_str = argv[i] + 9;
+        }
+    }
+    return true;
+}
+
+static bool parse_gradient_options(int argc, char **argv,
+                                   const char **out_col1,
+                                   const char **out_col2,
+                                   CIYGradientDirection *out_dir,
+                                   char *err_msg, size_t err_size) {
+    *out_col1 = NULL;
+    *out_col2 = NULL;
+    *out_dir = CIY_GRADIENT_HORIZONTAL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "gradient") == 0 || strcmp(argv[i], "--json") == 0 ||
+            strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+        if (strcmp(argv[i], "--dir") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --dir (horizontal oder vertical)");
+                return false;
+            }
+            const char *d = argv[++i];
+            if (strcasecmp(d, "vertical") == 0 || strcasecmp(d, "vert") == 0 || strcasecmp(d, "v") == 0) {
+                *out_dir = CIY_GRADIENT_VERTICAL;
+            } else if (strcasecmp(d, "horizontal") == 0 || strcasecmp(d, "horiz") == 0 || strcasecmp(d, "h") == 0) {
+                *out_dir = CIY_GRADIENT_HORIZONTAL;
+            } else {
+                snprintf(err_msg, err_size, "Ungültige Richtung '%s' (erlaubt: horizontal, vertical)", d);
+                return false;
+            }
+        } else if (strncmp(argv[i], "--dir=", 6) == 0) {
+            const char *d = argv[i] + 6;
+            if (strcasecmp(d, "vertical") == 0 || strcasecmp(d, "vert") == 0 || strcasecmp(d, "v") == 0) {
+                *out_dir = CIY_GRADIENT_VERTICAL;
+            } else if (strcasecmp(d, "horizontal") == 0 || strcasecmp(d, "horiz") == 0 || strcasecmp(d, "h") == 0) {
+                *out_dir = CIY_GRADIENT_HORIZONTAL;
+            } else {
+                snprintf(err_msg, err_size, "Ungültige Richtung '%s' (erlaubt: horizontal, vertical)", d);
+                return false;
+            }
+        } else if (argv[i][0] != '-') {
+            if (!*out_col1) *out_col1 = argv[i];
+            else if (!*out_col2) *out_col2 = argv[i];
+        }
+    }
+
+    if (!*out_col1 || !*out_col2) {
+        snprintf(err_msg, err_size, "Fehlende Hex-Farben. Verwendung: ciy_ctl gradient <#Start> <#End> [--dir horizontal|vertical] [-b 0..5]");
+        return false;
+    }
+    return true;
+}
+
+static void print_battery_sources_json(const CIYBatteryInfo *sources, size_t count) {
+    printf("{\n  \"success\": true,\n  \"sources\": [\n");
+    for (size_t i = 0; i < count; i++) {
+        const char *t_str = "internal";
+        if (sources[i].type == CIY_BATTERY_SOURCE_PERIPHERAL) t_str = "peripheral";
+        else if (sources[i].type == CIY_BATTERY_SOURCE_UPS) t_str = "ups";
+
+        printf("    {\n      \"name\": \"");
+        print_escaped_json_string(stdout, sources[i].name);
+        printf("\",\n      \"type\": \"%s\",\n      \"percent\": %d,\n      \"charging\": %s,\n      \"present\": %s\n    }%s\n",
+               t_str, sources[i].percent,
+               sources[i].is_charging ? "true" : "false",
+               sources[i].is_present ? "true" : "false",
+               (i + 1 < count) ? "," : "");
+    }
+    printf("  ]\n}\n");
+}
+
+static void print_battery_sources_text(const CIYBatteryInfo *sources, size_t count) {
+    printf("Verfügbare Stromquellen (%zu):\n", count);
+    for (size_t i = 0; i < count; i++) {
+        const char *t_str = "intern";
+        if (sources[i].type == CIY_BATTERY_SOURCE_PERIPHERAL) t_str = "Peripherie / Bluetooth";
+        else if (sources[i].type == CIY_BATTERY_SOURCE_UPS) t_str = "USV (Notstrom)";
+
+        printf("  [%zu] Name: %s (%s)\n", i + 1, sources[i].name, t_str);
+        if (sources[i].percent >= 0) {
+            printf("      Ladestand: %d%% (%s)\n", sources[i].percent,
+                   sources[i].is_charging ? "Laden / Netzteil" : "Akku-Betrieb");
+        } else {
+            printf("      Ladestand: Unbekannt\n");
+        }
+    }
+}
+
+static void print_battery_status_json(const CIYBatteryInfo *info, const char *target_str,
+                                      const int *slots, size_t count, size_t active_count) {
+    const char *t_str = "internal";
+    if (info->type == CIY_BATTERY_SOURCE_PERIPHERAL) t_str = "peripheral";
+    else if (info->type == CIY_BATTERY_SOURCE_UPS) t_str = "ups";
+
+    uint8_t r = 0, g = 0, b = 0;
+    ciy_battery_get_color(info->percent, info->is_charging, &r, &g, &b);
+
+    printf("{\n  \"success\": true,\n  \"source\": \"");
+    print_escaped_json_string(stdout, info->name);
+    printf("\",\n  \"type\": \"%s\",\n  \"percent\": %d,\n  \"charging\": %s,\n  \"color\": \"#%02X%02X%02X\",\n  \"target\": \"",
+           t_str, info->percent, info->is_charging ? "true" : "false", r, g, b);
+    print_escaped_json_string(stdout, target_str);
+    printf("\",\n  \"active_keys\": %zu,\n  \"target_slots\": [", active_count);
+    for (size_t i = 0; i < count; i++) {
+        printf("%d%s", slots[i], (i + 1 < count) ? ", " : "");
+    }
+    printf("]\n}\n");
+}
+
+static void print_battery_status_text(const CIYBatteryInfo *info, const char *target_str,
+                                      const int *slots, size_t count, size_t active_count) {
+    const char *t_str = "intern";
+    if (info->type == CIY_BATTERY_SOURCE_PERIPHERAL) t_str = "Peripherie";
+    else if (info->type == CIY_BATTERY_SOURCE_UPS) t_str = "USV";
+
+    uint8_t r = 0, g = 0, b = 0;
+    ciy_battery_get_color(info->percent, info->is_charging, &r, &g, &b);
+
+    printf("=== CIY X79 Akku-Status ===\n");
+    printf("Stromquelle:  %s (%s)\n", info->name, t_str);
+    printf("Ladestand:    %d%%\n", info->percent);
+    printf("Ladezustand:  %s\n", info->is_charging ? "Am Netzteil (Laden)" : "Akku-Betrieb (Entladen)");
+    printf("Farbe:        #%02X%02X%02X (%s)\n", r, g, b,
+           info->is_charging ? "Electric Cyan" : (info->percent > 50 ? "Grün" : (info->percent >= 21 ? "Gelb" : "Warn-Rot")));
+    printf("Ziel-Zone:    %s (%zu Tasten: [", target_str, count);
+    for (size_t i = 0; i < count; i++) {
+        printf("%d%s", slots[i], (i + 1 < count) ? ", " : "");
+    }
+    printf("], %zu aktiv)\n", active_count);
+}
+
+static bool parse_probe_args(int argc, char **argv, int *out_led, int *out_slot,
+                             uint8_t *out_r, uint8_t *out_g, uint8_t *out_b,
+                             char *err_msg, size_t err_size) {
+    bool has_slot = false;
+    int slot_val = -1;
+    int led_val = -1;
+    const char *color_args[4] = {NULL, NULL, NULL, NULL};
+    int num_color_args = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "probe-led") == 0 || strcmp(argv[i], "--json") == 0 ||
+            strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+        if (strcmp(argv[i], "--slot") == 0) {
+            if (i + 1 >= argc) {
+                snprintf(err_msg, err_size, "Fehlender Wert für --slot (erlaubt: 0..124)");
+                return false;
+            }
+            i++;
+            if (!parse_int_range(argv[i], 0, 124, &slot_val)) {
+                snprintf(err_msg, err_size, "Ungültiger Matrix-Slot '%s'. Erlaubter Bereich: 0..124.", argv[i]);
+                return false;
+            }
+            has_slot = true;
+            continue;
+        }
+        if (strncmp(argv[i], "--slot=", 7) == 0) {
+            const char *val = argv[i] + 7;
+            if (!parse_int_range(val, 0, 124, &slot_val)) {
+                snprintf(err_msg, err_size, "Ungültiger Matrix-Slot '%s'. Erlaubter Bereich: 0..124.", val);
+                return false;
+            }
+            has_slot = true;
+            continue;
+        }
+        if (argv[i][0] == '-' && (argv[i][1] < '0' || argv[i][1] > '9')) {
+            continue;
+        }
+        if (!has_slot && led_val == -1 && num_color_args == 0) {
+            if (!parse_int_range(argv[i], 0, 125, &led_val)) {
+                snprintf(err_msg, err_size, "Ungültiger LED-Index '%s'. Erlaubter Bereich: 0..125.", argv[i]);
+                return false;
+            }
+            continue;
+        }
+        if (num_color_args < 3) {
+            color_args[num_color_args++] = argv[i];
+        } else {
+            snprintf(err_msg, err_size, "Zu viele Argumente für probe-led: '%s'", argv[i]);
+            return false;
+        }
+    }
+
+    if (!has_slot && led_val == -1) {
+        snprintf(err_msg, err_size, "Fehlendes Argument: LED-Index (0..125) oder --slot (0..124)");
+        return false;
+    }
+
+    if (has_slot) {
+        *out_slot = slot_val;
+        *out_led = slot_val + 1;
+    } else {
+        *out_led = led_val;
+        *out_slot = (led_val > 0) ? (led_val - 1) : -1;
+    }
+
+    uint8_t r = 255, g = 0, b = 0; // Standard: Rot
+    if (num_color_args == 1) {
+        if (!ciy_parse_hex_color(color_args[0], &r, &g, &b)) {
+            snprintf(err_msg, err_size, "Ungültiges Farbformat '%s' (erwartet: #RRGGBB, #RGB oder r g b)", color_args[0]);
+            return false;
+        }
+    } else if (num_color_args == 3) {
+        if (!parse_range(color_args[0], 0, 255, &r) ||
+            !parse_range(color_args[1], 0, 255, &g) ||
+            !parse_range(color_args[2], 0, 255, &b)) {
+            snprintf(err_msg, err_size, "Ungültige RGB-Farbwerte (jeweils 0..255)");
+            return false;
+        }
+    } else if (num_color_args > 0) {
+        snprintf(err_msg, err_size, "Ungültige Farbangabe: Bitte Hex (#RRGGBB) oder 3 Dezimalwerte (r g b) angeben");
+        return false;
+    }
+
+    *out_r = r;
+    *out_g = g;
+    *out_b = b;
+    return true;
+}
+
+static bool parse_sweep_args(int argc, char **argv, bool *out_auto, uint32_t *out_delay_ms,
+                             char *err_msg, size_t err_size) {
+    bool auto_mode = false;
+    uint32_t delay_ms = 500;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "sweep") == 0 || strcmp(argv[i], "--json") == 0 ||
+            strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
+        if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--interactive") == 0) {
+            auto_mode = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--auto") == 0) {
+            auto_mode = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--delay-ms") == 0) {
+            if (i + 1 >= argc) {
+                snprintf(err_msg, err_size, "Fehlender Wert für --delay-ms");
+                return false;
+            }
+            i++;
+            int d = 0;
+            if (!parse_int_range(argv[i], 100, 100000, &d)) {
+                snprintf(err_msg, err_size, "Ungültige Verzögerung '%s' für --delay-ms (Mindestwert: 100 ms)", argv[i]);
+                return false;
+            }
+            delay_ms = (uint32_t)d;
+            continue;
+        }
+        if (strncmp(argv[i], "--delay-ms=", 11) == 0) {
+            const char *val = argv[i] + 11;
+            int d = 0;
+            if (!parse_int_range(val, 100, 100000, &d)) {
+                snprintf(err_msg, err_size, "Ungültige Verzögerung '%s' für --delay-ms (Mindestwert: 100 ms)", val);
+                return false;
+            }
+            delay_ms = (uint32_t)d;
+            continue;
+        }
+        if (argv[i][0] != '-') {
+            snprintf(err_msg, err_size, "Unerwartetes Argument '%s'. 'sweep' akzeptiert keine Positionsargumente.", argv[i]);
+            return false;
+        }
+    }
+
+    *out_auto = auto_mode;
+    *out_delay_ms = delay_ms;
     return true;
 }
 
@@ -366,9 +731,24 @@ static void print_help(const char *prog_name) {
     printf("  set <Modus> [F] [T] [H]             Setzt Modus (0..20), Farbe (0..10), Tempo (0..4), Helligkeit (0..5)\n");
     printf("  export-layout                       Exportiert Tastenmatrix und Report 0x0B Offsets (JSON oder Tabelle)\n");
     printf("  validate-profile <Datei.json>       Validiert eine JSON-Profildatei ohne Hardwarezugriff\n");
+    printf("  probe-led <index> [r g b | #HEX] [-b 0..5] Aktiviert eine einzelne LED (0..125 oder --slot 0..124)\n");
+    printf("  sweep [--auto] [--delay-ms <ms>]    Schrittweiser Matrix-Durchlauf (Standard: interaktiv)\n");
+    printf("  battery [--apply] [Optionen]        Zeigt Akkustand an oder spiegelt ihn auf Tastatur-Slots\n");
+    printf("  gradient <#HEX1> <#HEX2> [Optionen] Erzeugt linearen sRGB-Farbverlauf (U-Coords / Zeilen)\n");
     printf("  help, --help, -h                    Zeigt diese Hilfe an\n\n");
     printf("Optionen:\n");
-    printf("  -b, --brightness <0..5>             Helligkeit für Befehle wie fill und load (Standard: 5)\n");
+    printf("  -b, --brightness <0..5>             Helligkeit für Schreibbefehle (fill, load, set, wasd, battery, gradient etc.; Standard: 5)\n");
+    printf("  --dir <horizontal|vertical>         Richtung für gradient (Standard: horizontal)\n");
+    printf("  --apply                             Wendet den Akku-Indikator direkt auf die Tastatur an\n");
+    printf("  --target <1-0|space|nav|<slots>>    Ziel-Tasten für den Akku-Indikator (Standard: 1-0)\n");
+    printf("  --source <internal|peripheral|all>  Bevorzugte Stromquelle (Standard: internal)\n");
+    printf("  --list-sources                      Listet alle erkannten Stromquellen auf\n");
+    printf("  --watch                             Überwacht Akkustandsänderungen kontinuierlich\n");
+    printf("  --segmented                         Segmentierte Ampelfarben pro Taste anstelle von Einzelfarbe\n");
+    printf("  --auto                              Automatischer Durchlauf für sweep (Standard: interaktiv)\n");
+    printf("  --delay-ms <ms>                     Verzögerung für --auto bei sweep (Standard: 500 ms, Min: 100 ms)\n");
+    printf("  --slot <0..124>                     Matrix-Slot anstelle von LED-Index für probe-led\n");
+    printf("  -i, --interactive                   Interaktiver Modus für sweep (Standardverhalten)\n");
     printf("  --dry-run                           Simuliert Übertragung ohne Öffnen von USB-Geräten (für alle Schreibbefehle)\n");
     printf("  --dump-bytes                        Gibt Roh-Wire-Bytes (Hex) der generierten USB-Reports aus\n");
     printf("  --json                              Ausgabe im maschinenlesbaren JSON-Format\n\n");
@@ -426,8 +806,25 @@ int main(int argc, char **argv) {
     // 4. Auf unbekannte Optionen prüfen
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
-            if (strcmp(argv[i], "--json") != 0 && strcmp(argv[i], "--dry-run") != 0 && strcmp(argv[i], "--dump-bytes") != 0) {
-                // Wenn es eine Zahl ist (z. B. negatives Argument bei set -1), übernimmt der Befehl die Prüfung
+            if (strcmp(argv[i], "--json") != 0 && strcmp(argv[i], "--dry-run") != 0 &&
+                strcmp(argv[i], "--dump-bytes") != 0 && strcmp(argv[i], "--auto") != 0 &&
+                strcmp(argv[i], "-i") != 0 && strcmp(argv[i], "--interactive") != 0 &&
+                strcmp(argv[i], "--apply") != 0 && strcmp(argv[i], "--watch") != 0 &&
+                strcmp(argv[i], "--list-sources") != 0 && strcmp(argv[i], "--segmented") != 0) {
+                if (strcmp(argv[i], "--slot") == 0 || strcmp(argv[i], "--delay-ms") == 0 ||
+                    strcmp(argv[i], "--target") == 0 || strcmp(argv[i], "--source") == 0 ||
+                    strcmp(argv[i], "--dir") == 0) {
+                    if (i + 1 < argc && argv[i + 1][0] != '-') {
+                        i++;
+                    }
+                    continue;
+                }
+                if (strncmp(argv[i], "--slot=", 7) == 0 || strncmp(argv[i], "--delay-ms=", 11) == 0 ||
+                    strncmp(argv[i], "--target=", 9) == 0 || strncmp(argv[i], "--source=", 9) == 0 ||
+                    strncmp(argv[i], "--dir=", 6) == 0) {
+                    continue;
+                }
+                // Wenn es eine Zahl ist (z. B. negatives Argument bei set -1 oder probe-led -1), übernimmt der Befehl die Prüfung
                 if (argv[i][1] >= '0' && argv[i][1] <= '9') {
                     continue;
                 }
@@ -446,11 +843,13 @@ int main(int argc, char **argv) {
 
     if (dry_run && strcmp(cmd, "load") != 0 && strcmp(cmd, "fill") != 0 &&
         strcmp(cmd, "wasd") != 0 && strcmp(cmd, "wasd-arrows") != 0 &&
-        strcmp(cmd, "all-red") != 0 && strcmp(cmd, "set") != 0) {
+        strcmp(cmd, "all-red") != 0 && strcmp(cmd, "set") != 0 &&
+        strcmp(cmd, "probe-led") != 0 && strcmp(cmd, "sweep") != 0 &&
+        strcmp(cmd, "battery") != 0 && strcmp(cmd, "gradient") != 0) {
         if (json_mode) {
-            printf("{\n  \"success\": false,\n  \"error\": \"--dry-run wird derzeit nur für den Befehl 'load' unterstützt\"\n}\n");
+            printf("{\n  \"success\": false,\n  \"error\": \"--dry-run wird derzeit nur für Schreibbefehle (load, fill, set, wasd, wasd-arrows, all-red, probe-led, sweep, battery, gradient) unterstützt\"\n}\n");
         } else {
-            fprintf(stderr, "Fehler: --dry-run wird derzeit nur für den Befehl 'load' unterstützt.\n");
+            fprintf(stderr, "Fehler: --dry-run wird derzeit nur für Schreibbefehle (load, fill, set, wasd, wasd-arrows, all-red, probe-led, sweep, battery, gradient) unterstützt.\n");
         }
         return 1;
     }
@@ -525,7 +924,127 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (strcmp(cmd, "battery") == 0) {
+        bool apply_mode = false;
+        bool watch_mode = false;
+        bool list_sources = false;
+        bool segmented = false;
+        const char *target_str = "1-0";
+        const char *source_str = "internal";
+        char err_msg[256] = {0};
+
+        if (!parse_battery_options(argc, argv, &apply_mode, &watch_mode, &list_sources, &segmented,
+                                  &target_str, &source_str, err_msg, sizeof(err_msg))) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"");
+                print_escaped_json_string(stdout, err_msg);
+                printf("\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: %s\n", err_msg);
+            }
+            return 1;
+        }
+
+        int target_slots[64];
+        size_t target_count = 0;
+        if (!ciy_battery_parse_target(target_str, target_slots, 64, &target_count)) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"Ungültiges Akku-Ziel '");
+                print_escaped_json_string(stdout, target_str);
+                printf("' (erlaubt: 1-0, space, nav oder Slot-Liste)\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: Ungültiges Akku-Ziel '%s'. Erlaubt: 1-0, space, nav oder Komma-getrennte Slot-Liste (z. B. 14,9,15,21).\n", target_str);
+            }
+            return 1;
+        }
+
+        if (list_sources) {
+            CIYBatteryInfo sources[8];
+            size_t count = ciy_battery_list_sources(sources, 8);
+            if (json_mode) {
+                print_battery_sources_json(sources, count);
+            } else {
+                print_battery_sources_text(sources, count);
+            }
+            return 0;
+        }
+
+        CIYBatterySourceType stype = parse_battery_source_type(source_str);
+        CIYBatteryInfo info;
+        ciy_battery_get_info(stype, &info);
+
+        size_t active_count = 0;
+        if (target_count == 1) {
+            active_count = 1;
+        } else if (info.percent > 0) {
+            active_count = (size_t)((info.percent * target_count + 99) / 100);
+            if (active_count > target_count) active_count = target_count;
+        }
+
+        if (dry_run) {
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            ciy_battery_calculate_overlay(NULL, info.percent, info.is_charging,
+                                         target_slots, target_count, segmented, rgb);
+            uint8_t r = 0, g = 0, b = 0;
+            ciy_battery_get_color(info.percent, info.is_charging, &r, &g, &b);
+            char prof_name[64];
+            snprintf(prof_name, sizeof(prof_name), "Akku-Status (%d%%, #%02X%02X%02X)",
+                     info.percent, r, g, b);
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, prof_name, (int)active_count)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        }
+
+        if (!apply_mode && !watch_mode) {
+            // Reiner Status-/Info-Modus (ohne Hardwarezugriff)
+            if (json_mode) {
+                print_battery_status_json(&info, target_str, target_slots, target_count, active_count);
+            } else {
+                print_battery_status_text(&info, target_str, target_slots, target_count, active_count);
+            }
+            return 0;
+        }
+    }
+
     if (dry_run) {
+        if (strcmp(cmd, "gradient") == 0) {
+            const char *col1_str = NULL, *col2_str = NULL;
+            CIYGradientDirection dir = CIY_GRADIENT_HORIZONTAL;
+            char err[256] = {0};
+            if (!parse_gradient_options(argc, argv, &col1_str, &col2_str, &dir, err, sizeof(err))) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"%s\"\n}\n", err);
+                } else {
+                    fprintf(stderr, "Fehler: %s\n", err);
+                }
+                return 1;
+            }
+            uint8_t r1 = 0, g1 = 0, b1 = 0, r2 = 0, g2 = 0, b2 = 0;
+            if (!ciy_parse_hex_color(col1_str, &r1, &g1, &b1) || !ciy_parse_hex_color(col2_str, &r2, &g2, &b2)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Hex-Farbe (erwartet #RRGGBB)\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: Ungültige Hex-Farbe. Erwartet: #RRGGBB (z. B. #00FFFF #FF00FF).\n");
+                }
+                return 1;
+            }
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            ciy_gradient_generate_planar(rgb, r1, g1, b1, r2, g2, b2, dir);
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            char prof_name[64];
+            snprintf(prof_name, sizeof(prof_name), "Verlauf (%s -> %s, %s)",
+                     col1_str, col2_str, dir == CIY_GRADIENT_VERTICAL ? "vertikal" : "horizontal");
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, prof_name, 69)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        }
         if (strcmp(cmd, "load") == 0) {
             const char *file_arg = NULL;
             const char *target_profile = NULL;
@@ -681,8 +1200,9 @@ int main(int argc, char **argv) {
             const int wasd_idx[] = {15, 10, 16, 22};
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_build_profile(rgb, wasd_idx, 4, true, false, true);
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             CIYTransferPlan plan;
-            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "WASD Gaming (Rot / Basis Blau)", 4)) {
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "WASD Gaming (Rot / Basis Blau)", 4)) {
                 return 1;
             }
             print_dry_run_plan(&plan, json_mode, dump_bytes);
@@ -690,8 +1210,9 @@ int main(int argc, char **argv) {
         } else if (strcmp(cmd, "wasd-arrows") == 0) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_build_wasd_and_arrows_profile(rgb, true);
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             CIYTransferPlan plan;
-            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "WASD + Pfeiltasten (Rot & Gelb / Basis Blau)", 8)) {
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "WASD + Pfeiltasten (Rot & Gelb / Basis Blau)", 8)) {
                 return 1;
             }
             print_dry_run_plan(&plan, json_mode, dump_bytes);
@@ -699,8 +1220,9 @@ int main(int argc, char **argv) {
         } else if (strcmp(cmd, "all-red") == 0) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_build_all_red_profile(rgb);
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             CIYTransferPlan plan;
-            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "Alles Rot", 69)) {
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "Alles Rot", 69)) {
                 return 1;
             }
             print_dry_run_plan(&plan, json_mode, dump_bytes);
@@ -743,6 +1265,61 @@ int main(int argc, char **argv) {
             }
             CIYTransferPlan plan;
             if (!ciy_build_state_transfer_plan(&plan, st)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        } else if (strcmp(cmd, "probe-led") == 0) {
+            int led = 0, slot = 0;
+            uint8_t r = 0, g = 0, b = 0;
+            char err[256];
+            if (!parse_probe_args(argc, argv, &led, &slot, &r, &g, &b, err, sizeof(err))) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"");
+                    print_escaped_json_string(stdout, err);
+                    printf("\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: %s\n", err);
+                }
+                return 1;
+            }
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+            if (led >= 0 && led <= 125) {
+                rgb[led] = r;
+                rgb[126 + led] = g;
+                rgb[252 + led] = b;
+            }
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+            const CIYLogicalKey *k = (slot >= 0) ? ciy_layout_find_key_by_slot(layout, slot) : NULL;
+            char prof_name[64];
+            snprintf(prof_name, sizeof(prof_name), "Probe LED %d (%s, #%02X%02X%02X)",
+                     led, k ? k->name : "Unbelegt", r, g, b);
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, prof_name, 1)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            return 0;
+        } else if (strcmp(cmd, "sweep") == 0) {
+            bool auto_mode = false;
+            uint32_t delay_ms = 500;
+            char err[256];
+            if (!parse_sweep_args(argc, argv, &auto_mode, &delay_ms, err, sizeof(err))) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"");
+                    print_escaped_json_string(stdout, err);
+                    printf("\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: %s\n", err);
+                }
+                return 1;
+            }
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+            rgb[1] = 255; // Sample: LED 1
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "Sweep Simulation", 1)) {
                 return 1;
             }
             print_dry_run_plan(&plan, json_mode, dump_bytes);
@@ -960,10 +1537,11 @@ int main(int argc, char **argv) {
         const int wasd_idx[] = {15, 10, 16, 22};
         uint8_t rgb[CIY_PLANAR_RGB_SIZE];
         ciy_build_profile(rgb, wasd_idx, 4, true, false, true);
+        const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
 
-        if (ciy_apply_custom_profile(&dev, rgb, sizeof(rgb))) {
+        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
-                printf("{\n  \"success\": true,\n  \"action\": \"wasd\",\n  \"name\": \"WASD Gaming (Rot / Basis Blau)\",\n  \"brightness\": 5\n}\n");
+                printf("{\n  \"success\": true,\n  \"action\": \"wasd\",\n  \"name\": \"WASD Gaming (Rot / Basis Blau)\",\n  \"brightness\": %u\n}\n", br);
             } else {
                 printf("WASD Gaming-Profil erfolgreich angewendet!\n");
             }
@@ -981,9 +1559,10 @@ int main(int argc, char **argv) {
         }
         uint8_t rgb[CIY_PLANAR_RGB_SIZE];
         ciy_build_wasd_and_arrows_profile(rgb, true);
-        if (ciy_apply_custom_profile(&dev, rgb, sizeof(rgb))) {
+        const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
-                printf("{\n  \"success\": true,\n  \"action\": \"wasd-arrows\",\n  \"name\": \"WASD + Pfeiltasten (Rot & Gelb / Basis Blau)\",\n  \"brightness\": 5\n}\n");
+                printf("{\n  \"success\": true,\n  \"action\": \"wasd-arrows\",\n  \"name\": \"WASD + Pfeiltasten (Rot & Gelb / Basis Blau)\",\n  \"brightness\": %u\n}\n", br);
             } else {
                 printf("Kombiniertes Profil erfolgreich angewendet!\n");
             }
@@ -1001,9 +1580,10 @@ int main(int argc, char **argv) {
         }
         uint8_t rgb[CIY_PLANAR_RGB_SIZE];
         ciy_build_all_red_profile(rgb);
-        if (ciy_apply_custom_profile(&dev, rgb, sizeof(rgb))) {
+        const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
-                printf("{\n  \"success\": true,\n  \"action\": \"all-red\",\n  \"name\": \"Alles Rot\",\n  \"brightness\": 5\n}\n");
+                printf("{\n  \"success\": true,\n  \"action\": \"all-red\",\n  \"name\": \"Alles Rot\",\n  \"brightness\": %u\n}\n", br);
             } else {
                 printf("Profil 'Alles Rot' erfolgreich angewendet!\n");
             }
@@ -1036,7 +1616,8 @@ int main(int argc, char **argv) {
             rc = 1;
         } else {
             CIYLightingState current = {19, 0, 1, 5};
-            if (num_set_args < 4 && !ciy_get_state(&dev, &current)) {
+            const bool needs_state = (num_set_args < 3) || (!has_flag_brightness && num_set_args < 4);
+            if (needs_state && !ciy_get_state(&dev, &current)) {
                 if (json_mode) {
                     printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Auslesen des aktuellen Status\"\n}\n");
                 } else {
@@ -1045,6 +1626,9 @@ int main(int argc, char **argv) {
                 rc = 1;
             } else {
                 CIYLightingState st = current;
+                if (has_flag_brightness && num_set_args <= 3) {
+                    st.brightness = flag_brightness;
+                }
                 if (!parse_range(set_args[0], 0, CIY_MAX_MODE, &st.mode) ||
                     (num_set_args > 1 && !parse_range(set_args[1], 0, CIY_MAX_COLOR, &st.color)) ||
                     (num_set_args > 2 && !parse_range(set_args[2], 0, CIY_MAX_SPEED, &st.speed)) ||
@@ -1073,6 +1657,319 @@ int main(int argc, char **argv) {
                 }
             }
         }
+    } else if (strcmp(cmd, "probe-led") == 0) {
+        int led = 0, slot = 0;
+        uint8_t r = 0, g = 0, b = 0;
+        char err[256];
+        if (!parse_probe_args(argc, argv, &led, &slot, &r, &g, &b, err, sizeof(err))) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"");
+                print_escaped_json_string(stdout, err);
+                printf("\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: %s\n", err);
+            }
+            rc = 1;
+        } else {
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+            if (led >= 0 && led <= 125) {
+                rgb[led] = r;
+                rgb[126 + led] = g;
+                rgb[252 + led] = b;
+            }
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+            const CIYLogicalKey *k = (slot >= 0) ? ciy_layout_find_key_by_slot(layout, slot) : NULL;
+            const char *key_name = k ? k->name : "Unbelegt";
+
+            if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": true,\n  \"action\": \"probe-led\",\n  \"led_index\": %d,\n  \"matrix_slot\": %d,\n  \"key_name\": \"", led, slot);
+                    print_escaped_json_string(stdout, key_name);
+                    printf("\",\n  \"color\": \"#%02X%02X%02X\",\n  \"brightness\": %u\n}\n", r, g, b, br);
+                } else {
+                    printf("LED-Index %d (Slot %d, Taste '%s') erfolgreich angesteuert mit Farbe #%02X%02X%02X (Helligkeit %u).\n",
+                           led, slot, key_name, r, g, b, br);
+                }
+            } else {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Senden des Profils an die Tastatur\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler beim Senden des Profils an die Tastatur.\n");
+                }
+                rc = 1;
+            }
+        }
+    } else if (strcmp(cmd, "sweep") == 0) {
+        bool auto_mode = false;
+        uint32_t delay_ms = 500;
+        char err[256];
+        if (!parse_sweep_args(argc, argv, &auto_mode, &delay_ms, err, sizeof(err))) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"");
+                print_escaped_json_string(stdout, err);
+                printf("\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: %s\n", err);
+            }
+            rc = 1;
+        } else if (!auto_mode && !isatty(STDIN_FILENO)) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"'sweep' erfordert ein interaktives Terminal (TTY) oder das Flag '--auto'\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: 'sweep' erfordert ein interaktives Terminal (TTY) oder das Flag '--auto'.\n");
+            }
+            rc = 1;
+        } else {
+            CIYLightingState orig_state = {15, 0, 1, 5};
+            bool had_orig_state = ciy_get_state(&dev, &orig_state);
+
+            s_sweep_interrupted = 0;
+            struct sigaction sa, old_sa_int, old_sa_term;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = sweep_sigint_handler;
+            sigemptyset(&sa.sa_mask);
+            sigaction(SIGINT, &sa, &old_sa_int);
+            sigaction(SIGTERM, &sa, &old_sa_term);
+
+            bool is_tty = isatty(STDIN_FILENO);
+            if (is_tty) {
+                tcgetattr(STDIN_FILENO, &s_orig_termios);
+                s_termios_saved = 1;
+                struct termios raw = s_orig_termios;
+                raw.c_lflag &= ~(ICANON | ECHO);
+                raw.c_cc[VMIN] = 1;
+                raw.c_cc[VTIME] = 0;
+                tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+            }
+
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+
+            if (!json_mode) {
+                if (auto_mode) {
+                    printf("=== CIY X79 Matrix Sweep (Automatisch, Verzögerung: %u ms) ===\n", delay_ms);
+                    printf("Drücken Sie Ctrl+C zum Abbrechen.\n");
+                } else {
+                    printf("=== CIY X79 Matrix Sweep (Interaktiv) ===\n");
+                    printf("Befehle: [Enter]/[n] = Nächste Taste, [p] = Vorherige Taste, [q] = Beenden (Ctrl+C = Abbruch)\n");
+                }
+            }
+
+            if (auto_mode) {
+                for (int cur_slot = 0; cur_slot <= 124 && !s_sweep_interrupted; cur_slot++) {
+                    int led = cur_slot + 1;
+                    uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+                    rgb[led] = 255;
+                    ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br);
+                    const CIYLogicalKey *k = ciy_layout_find_key_by_slot(layout, cur_slot);
+                    if (!json_mode) {
+                        printf("\r\033[K[Slot %3d / LED %3d] Taste: %-16s", cur_slot, led, k ? k->name : "Unbelegt");
+                        fflush(stdout);
+                    }
+                    for (uint32_t ms = 0; ms < delay_ms && !s_sweep_interrupted; ms += 10) {
+                        struct timespec ts = {0, 10 * 1000 * 1000};
+                        nanosleep(&ts, NULL);
+                    }
+                }
+            } else {
+                int cur_slot = 0;
+                while (!s_sweep_interrupted && cur_slot >= 0 && cur_slot <= 124) {
+                    int led = cur_slot + 1;
+                    uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+                    rgb[led] = 255;
+                    ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br);
+                    const CIYLogicalKey *k = ciy_layout_find_key_by_slot(layout, cur_slot);
+                    if (!json_mode) {
+                        printf("\r\033[K[Slot %3d / LED %3d] Taste: %-16s -> ", cur_slot, led, k ? k->name : "Unbelegt");
+                        fflush(stdout);
+                    }
+                    int ch = getchar();
+                    if (ch == EOF || s_sweep_interrupted || ch == 'q' || ch == 'Q' ||
+                        ch == 27 /* ESC */ || ch == 3 /* ETX / Ctrl+C */ || ch == 4 /* EOT / Ctrl+D */) {
+                        break;
+                    } else if (ch == 'p' || ch == 'P') {
+                        if (cur_slot > 0) cur_slot--;
+                    } else if (ch == '\n' || ch == '\r' || ch == 'n' || ch == 'N' || ch == ' ') {
+                        cur_slot++;
+                    }
+                }
+            }
+
+            if (s_termios_saved) {
+                tcsetattr(STDIN_FILENO, TCSANOW, &s_orig_termios);
+                s_termios_saved = 0;
+            }
+            sigaction(SIGINT, &old_sa_int, NULL);
+            sigaction(SIGTERM, &old_sa_term, NULL);
+
+            if (had_orig_state) {
+                ciy_set_state(&dev, orig_state);
+            }
+
+            if (json_mode) {
+                printf("{\n  \"success\": true,\n  \"action\": \"sweep\",\n  \"interrupted\": %s\n}\n",
+                       s_sweep_interrupted ? "true" : "false");
+            } else {
+                if (s_sweep_interrupted) {
+                    printf("\nSweep abgebrochen. Ursprünglicher Beleuchtungsstatus wiederhergestellt.\n");
+                } else {
+                    printf("\nSweep abgeschlossen. Ursprünglicher Beleuchtungsstatus wiederhergestellt.\n");
+                }
+            }
+        }
+    } else if (strcmp(cmd, "battery") == 0) {
+        bool apply_mode = false;
+        bool watch_mode = false;
+        bool list_sources = false;
+        bool segmented = false;
+        const char *target_str = "1-0";
+        const char *source_str = "internal";
+        char err_msg[256] = {0};
+        parse_battery_options(argc, argv, &apply_mode, &watch_mode, &list_sources, &segmented,
+                              &target_str, &source_str, err_msg, sizeof(err_msg));
+
+        int target_slots[64];
+        size_t target_count = 0;
+        ciy_battery_parse_target(target_str, target_slots, 64, &target_count);
+
+        CIYBatterySourceType stype = parse_battery_source_type(source_str);
+        const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+
+        if (watch_mode) {
+            struct sigaction sa, old_sa_int, old_sa_term;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = watch_sigint_handler;
+            sigaction(SIGINT, &sa, &old_sa_int);
+            sigaction(SIGTERM, &sa, &old_sa_term);
+
+            int last_percent = -999;
+            bool last_charging = false;
+
+            if (!json_mode) {
+                printf("=== CIY X79 Akku-Überwachung aktiv (Ziel: '%s') ===\n", target_str);
+                printf("Drücken Sie Ctrl+C zum Beenden.\n");
+            }
+
+            while (!s_watch_interrupted) {
+                CIYBatteryInfo info;
+                ciy_battery_get_info(stype, &info);
+
+                if (info.percent != last_percent || info.is_charging != last_charging) {
+                    last_percent = info.percent;
+                    last_charging = info.is_charging;
+
+                    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+                    ciy_battery_calculate_overlay(NULL, info.percent, info.is_charging,
+                                                 target_slots, target_count, segmented, rgb);
+                    ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br);
+
+                    if (!json_mode) {
+                        uint8_t r = 0, g = 0, b = 0;
+                        ciy_battery_get_color(info.percent, info.is_charging, &r, &g, &b);
+                        printf("\r\033[KAkku aktualisiert: %d%% (%s, #%02X%02X%02X) auf '%s'",
+                               info.percent, info.is_charging ? "Laden" : "Akku", r, g, b, target_str);
+                        fflush(stdout);
+                    }
+                }
+
+                for (int ms = 0; ms < 1000 && !s_watch_interrupted; ms += 100) {
+                    struct timespec ts = {0, 100 * 1000 * 1000};
+                    nanosleep(&ts, NULL);
+                }
+            }
+
+            sigaction(SIGINT, &old_sa_int, NULL);
+            sigaction(SIGTERM, &old_sa_term, NULL);
+
+            if (json_mode) {
+                printf("{\n  \"success\": true,\n  \"action\": \"battery_watch\",\n  \"interrupted\": true\n}\n");
+            } else {
+                printf("\nAkku-Überwachung beendet.\n");
+            }
+        } else {
+            // apply_mode
+            CIYBatteryInfo info;
+            ciy_battery_get_info(stype, &info);
+
+            size_t active_count = 0;
+            if (target_count == 1) {
+                active_count = 1;
+            } else if (info.percent > 0) {
+                active_count = (size_t)((info.percent * target_count + 99) / 100);
+                if (active_count > target_count) active_count = target_count;
+            }
+
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            ciy_battery_calculate_overlay(NULL, info.percent, info.is_charging,
+                                         target_slots, target_count, segmented, rgb);
+
+            uint8_t r = 0, g = 0, b = 0;
+            ciy_battery_get_color(info.percent, info.is_charging, &r, &g, &b);
+
+            if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": true,\n  \"action\": \"battery_apply\",\n  \"percent\": %d,\n  \"charging\": %s,\n  \"color\": \"#%02X%02X%02X\",\n  \"target\": \"",
+                           info.percent, info.is_charging ? "true" : "false", r, g, b);
+                    print_escaped_json_string(stdout, target_str);
+                    printf("\",\n  \"active_keys\": %zu,\n  \"brightness\": %u\n}\n",
+                           active_count, br);
+                } else {
+                    printf("Akku-Status (%d%%, #%02X%02X%02X) erfolgreich auf Ziel '%s' angewendet (%zu/%zu Tasten aktiv, Helligkeit %u/5).\n",
+                           info.percent, r, g, b, target_str, active_count, target_count, br);
+                }
+            } else {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Übertragen des Akku-Overlays an die Tastatur\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler beim Übertragen des Akku-Overlays an die Tastatur.\n");
+                }
+                rc = 1;
+            }
+        }
+    } else if (strcmp(cmd, "gradient") == 0) {
+        const char *col1_str = NULL, *col2_str = NULL;
+        CIYGradientDirection dir = CIY_GRADIENT_HORIZONTAL;
+        char err[256] = {0};
+        if (!parse_gradient_options(argc, argv, &col1_str, &col2_str, &dir, err, sizeof(err))) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"%s\"\n}\n", err);
+            } else {
+                fprintf(stderr, "Fehler: %s\n", err);
+            }
+            ciy_close(&dev);
+            return 1;
+        }
+        uint8_t r1 = 0, g1 = 0, b1 = 0, r2 = 0, g2 = 0, b2 = 0;
+        if (!ciy_parse_hex_color(col1_str, &r1, &g1, &b1) || !ciy_parse_hex_color(col2_str, &r2, &g2, &b2)) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Hex-Farbe (erwartet #RRGGBB)\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: Ungültige Hex-Farbe. Erwartet: #RRGGBB (z. B. #00FFFF #FF00FF).\n");
+            }
+            ciy_close(&dev);
+            return 1;
+        }
+        uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+        ciy_gradient_generate_planar(rgb, r1, g1, b1, r2, g2, b2, dir);
+        const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+            if (json_mode) {
+                printf("{\n  \"success\": true,\n  \"action\": \"gradient\",\n  \"color_start\": \"%s\",\n  \"color_end\": \"%s\",\n  \"direction\": \"%s\",\n  \"brightness\": %u\n}\n",
+                       col1_str, col2_str, dir == CIY_GRADIENT_VERTICAL ? "vertical" : "horizontal", br);
+            } else {
+                printf("Farbverlauf (%s -> %s, %s, Helligkeit %u) erfolgreich auf Tastatur übertragen.\n",
+                       col1_str, col2_str, dir == CIY_GRADIENT_VERTICAL ? "vertikal" : "horizontal", br);
+            }
+            rc = 0;
+        } else {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"Übertragung des Farbverlaufs an USB fehlgeschlagen\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: Übertragung des Farbverlaufs an USB fehlgeschlagen.\n");
+            }
+            rc = 1;
+        }
     } else {
         if (json_mode) {
             printf("{\n  \"success\": false,\n  \"error\": \"Unbekannter Befehl '");
@@ -1080,7 +1977,7 @@ int main(int argc, char **argv) {
             printf("'\"\n}\n");
         } else {
             fprintf(stderr, "Unbekannter Befehl: %s\n", cmd);
-            fprintf(stderr, "Verfügbare Befehle: status, fill, load, wasd, wasd-arrows, all-red, list-modes, set, export-layout, validate-profile\n");
+            fprintf(stderr, "Verfügbare Befehle: status, fill, load, wasd, wasd-arrows, all-red, list-modes, set, export-layout, validate-profile, probe-led, sweep, battery, gradient\n");
             fprintf(stderr, "Rufen Sie '%s --help' für weitere Informationen auf.\n", argv[0]);
         }
         rc = 1;

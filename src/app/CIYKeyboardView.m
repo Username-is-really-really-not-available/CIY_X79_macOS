@@ -3,6 +3,7 @@
 
 @interface CIYKeyboardView () {
     NSMutableDictionary<NSNumber *, NSColor *> *_keyColors;
+    NSMutableDictionary<NSNumber *, NSColor *> *_overlayColors;
     NSTrackingArea *_trackingArea;
     int _hoveredSlot;
 }
@@ -14,6 +15,7 @@
     self = [super initWithFrame:frameRect];
     if (self) {
         _keyColors = [NSMutableDictionary dictionary];
+        _overlayColors = [NSMutableDictionary dictionary];
         _selectedSlot = -1;
         _hoveredSlot = -1;
         [self resetAllKeysToColor:[NSColor colorWithCalibratedRed:0.85 green:0.1 blue:0.1 alpha:1.0]]; // Red default
@@ -89,6 +91,35 @@
     [self invalidateSlot:slot];
 }
 
+- (void)setOverlayColors:(nullable NSDictionary<NSNumber *, NSColor *> *)overlayColors {
+    if (overlayColors) {
+        [_overlayColors setDictionary:overlayColors];
+    } else {
+        [_overlayColors removeAllObjects];
+    }
+    [self setNeedsDisplay:YES];
+}
+
+- (void)clearOverlayColors {
+    if (_overlayColors.count > 0) {
+        [_overlayColors removeAllObjects];
+        [self setNeedsDisplay:YES];
+    }
+}
+
+- (nullable NSDictionary<NSNumber *, NSColor *> *)overlayColors {
+    return _overlayColors.count > 0 ? [_overlayColors copy] : nil;
+}
+
+- (void)applyColor:(NSColor *)color toSlots:(NSArray<NSNumber *> *)slots {
+    if (!color || !slots) return;
+    for (NSNumber *slotNum in slots) {
+        int slot = [slotNum intValue];
+        _keyColors[@(slot)] = color;
+        [self invalidateSlot:slot];
+    }
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
 
@@ -140,7 +171,7 @@
 
     // Base key cap body
     NSColor *defaultColor = [NSColor colorWithCalibratedRed:0.2 green:0.2 blue:0.2 alpha:1.0];
-    NSColor *rawGlow = _keyColors[@(surface->matrix_slot)];
+    NSColor *rawGlow = _overlayColors[@(surface->matrix_slot)] ?: _keyColors[@(surface->matrix_slot)];
     if (!rawGlow) rawGlow = defaultColor;
     NSColor *glowColor = [rawGlow colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
     if (!glowColor) glowColor = defaultColor;

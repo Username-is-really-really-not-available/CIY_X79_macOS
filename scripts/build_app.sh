@@ -4,7 +4,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 APP_NAME="CIYX79Control"
-VERSION="${1:-${VERSION:-1.2.0}}"
+VERSION="${1:-${VERSION:-1.4.0}}"
 VERSION="${VERSION#v}"
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
@@ -31,6 +31,7 @@ clang -arch arm64 -arch x86_64 \
     src/layouts/ciy_x79_iso_de.c \
     src/app/KeyboardBackend.m \
     src/app/CIYKeyboardView.m \
+    src/app/CIYBatteryMonitor.m \
     src/app/AppDelegate.m \
     src/app/main.m \
     -o "${MACOS_DIR}/${APP_NAME}"

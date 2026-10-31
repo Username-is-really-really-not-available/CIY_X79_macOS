@@ -24,6 +24,19 @@ NS_ASSUME_NONNULL_BEGIN
 /// Gibt die Tastenbeschriftung für einen Matrix-Slot zurück (z. B. "W", "Esc", "↵").
 - (NSString *)labelForSlot:(int)slot;
 
+/// Setzt ein flüchtiges Anzeige-Overlay (z. B. für den Akku-Indikator).
+/// Überschreibt die visuelle Tastenfarbe temporär, ohne das Basis-Profil zu verändern.
+- (void)setOverlayColors:(nullable NSDictionary<NSNumber *, NSColor *> *)overlayColors;
+
+/// Löscht alle aktiven Overlay-Farben und stellt die Basis-Profilfarben dar.
+- (void)clearOverlayColors;
+
+/// Liefert die aktuell aktiven flüchtigen Overlay-Farben oder nil.
+- (nullable NSDictionary<NSNumber *, NSColor *> *)overlayColors;
+
+/// Färbt eine geordnete Liste von Slots in der Basisfarbe ein.
+- (void)applyColor:(NSColor *)color toSlots:(NSArray<NSNumber *> *)slots;
+
 @end
 
 NS_ASSUME_NONNULL_END

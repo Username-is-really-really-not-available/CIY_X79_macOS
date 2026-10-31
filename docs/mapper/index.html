@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CIY X79 WebHID Community Mapper</title>
+  <style>
+    :root {
+      --bg: #121214;
+      --card-bg: #1c1c1e;
+      --border: #2c2c2e;
+      --accent: #00e5ff;
+      --accent-green: #00e676;
+      --accent-red: #ff1744;
+      --accent-yellow: #ffd600;
+      --text: #f5f5f7;
+      --text-muted: #8e8e93;
+      --key-bg: #2a2a2e;
+      --key-border: #3a3a3e;
+      --key-active: #00e5ff;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    header {
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    h1 span.badge {
+      font-size: 12px;
+      background: rgba(0, 229, 255, 0.15);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 229, 255, 0.3);
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .alert {
+      padding: 14px 18px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .alert-warning {
+      background: rgba(255, 214, 0, 0.1);
+      border: 1px solid rgba(255, 214, 0, 0.3);
+      color: #ffea79;
+    }
+
+    .alert-danger {
+      background: rgba(255, 23, 68, 0.1);
+      border: 1px solid rgba(255, 23, 68, 0.3);
+      color: #ff8a9e;
+    }
+
+    .toolbar {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button {
+      background: #2c2c2e;
+      color: var(--text);
+      border: 1px solid #3a3a3c;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    button:hover:not(:disabled) {
+      background: #3a3a3c;
+      border-color: #5a5a5e;
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    button.btn-primary {
+      background: var(--accent);
+      color: #000;
+      font-weight: 600;
+      border-color: var(--accent);
+    }
+
+    button.btn-primary:hover:not(:disabled) {
+      background: #33ebff;
+      border-color: #33ebff;
+    }
+
+    button.btn-danger {
+      background: rgba(255, 23, 68, 0.2);
+      color: #ff5277;
+      border-color: rgba(255, 23, 68, 0.4);
+    }
+
+    button.btn-danger:hover:not(:disabled) {
+      background: rgba(255, 23, 68, 0.35);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: #252528;
+      border: 1px solid #333336;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-red);
+    }
+
+    .status-dot.online {
+      background: var(--accent-green);
+      box-shadow: 0 0 8px rgba(0, 230, 118, 0.6);
+    }
+
+    /* Keyboard Matrix Canvas Frame */
+    .keyboard-container {
+      background: #18181b;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      overflow-x: auto;
+    }
+
+    .keyboard-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .keyboard-matrix {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 820px;
+      user-select: none;
+    }
+
+    .kb-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .key {
+      height: 48px;
+      background: var(--key-bg);
+      border: 1.5px solid var(--key-border);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.12s ease;
+    }
+
+    .key:hover {
+      border-color: #6a6a72;
+      background: #333338;
+    }
+
+    .key.active-sweep {
+      border-color: var(--accent);
+      background: rgba(0, 229, 255, 0.25);
+      box-shadow: 0 0 12px rgba(0, 229, 255, 0.6);
+    }
+
+    .key.mapped {
+      border-color: rgba(0, 230, 118, 0.6);
+      background: rgba(0, 230, 118, 0.12);
+    }
+
+    .key .label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .key .meta {
+      font-size: 9px;
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
+
+    /* Key unit widths */
+    .u-1 { width: 50px; }
+    .u-1-25 { width: 64px; }
+    .u-1-5 { width: 78px; }
+    .u-1-75 { width: 92px; }
+    .u-2 { width: 106px; }
+    .u-2-25 { width: 120px; }
+    .u-6-25 { width: 338px; }
+
+    /* Split layout panel */
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 850px) {
+      .panels { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+    }
+
+    .panel h2 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+
+    .control-row input[type="number"], .control-row input[type="text"] {
+      background: #252528;
+      border: 1px solid #3c3c40;
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 5px;
+      font-size: 13px;
+      width: 100px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 180px;
+      background: #141416;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: #00e5ff;
+      font-family: Menlo, Monaco, "Courier New", monospace;
+      font-size: 11px;
+      padding: 10px;
+      resize: vertical;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>
+          CIY X79 WebHID Mapper
+          <span class="badge">v1.4 Zero-Install</span>
+        </h1>
+        <div class="subtitle">
+          Interaktives WebHID Tool zur Tastenvermessung und Community-Layout-Erstellung (ANSI-US, ISO-UK etc.)
+        </div>
+      </div>
+      <div class="btn-group">
+        <div class="status-badge">
+          <div id="statusDot" class="status-dot"></div>
+          <span id="statusText">Getrennt</span>
+        </div>
+        <button id="connectBtn" class="btn-primary">Tastatur verbinden</button>
+        <button id="disconnectBtn" style="display:none;" class="btn-danger">Trennen</button>
+      </div>
+    </header>
+
+    <div id="secureNotice" class="alert alert-warning" style="display: none;">
+      <div>⚠️</div>
+      <div>
+        <strong>WebHID Sicherheitshinweis:</strong>
+        WebHID erfordert einen <em>Secure Context</em> (HTTPS oder localhost). Wenn diese Seite über <code>file:///</code> geöffnet wurde, blockiert der Browser den USB-Zugriff.
+        Öffnen Sie diese Seite über GitHub Pages oder starten Sie einen lokalen Server: <code>python3 -m http.server 8000</code> und rufen Sie <code>http://localhost:8000/docs/mapper/</code> auf.
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="btn-group">
+        <label style="font-size: 13px; font-weight: 500;">Modus:</label>
+        <button id="modeSweepBtn" class="btn-primary">Matrix Sweep</button>
+        <button id="modeProbeBtn">LED Probe</button>
+      </div>
+
+      <div id="sweepControls" class="btn-group">
+        <button id="sweepPrevBtn">◀ Vorherige [P]</button>
+        <button id="sweepNextBtn" class="btn-primary">Nächste LED [N / ↵]</button>
+        <button id="sweepAutoBtn">Auto-Play</button>
+        <span style="font-size: 13px; color: var(--text-muted); margin-left: 8px;">
+          LED: <strong id="currentLedText" style="color: var(--accent);">1</strong> / 125
+          (Slot: <span id="currentSlotText">0</span>)
+        </span>
+      </div>
+
+      <div id="probeControls" class="btn-group" style="display: none;">
+        <label style="font-size: 13px; color: var(--text-muted);">Slot (0..124):</label>
+        <input type="number" id="probeSlotInput" min="0" max="124" value="0" style="width: 60px; padding: 4px 8px; background: #252528; border: 1px solid #3c3c40; color: #fff; border-radius: 5px;">
+        <button id="probeSendBtn" class="btn-primary">LED testen</button>
+        <span style="font-size: 13px; color: var(--text-muted); margin-left: 8px;">
+          (Oder Taste im Canvas direkt anklicken)
+        </span>
+      </div>
+
+      <div class="btn-group">
+        <label style="font-size: 13px; font-weight: 500;">Layout-Ansicht:</label>
+        <button id="layoutIsoBtn" class="btn-primary">ISO-DE</button>
+        <button id="layoutAnsiBtn">ANSI-US</button>
+      </div>
+    </div>
+
+    <!-- Interaktive Tastatur-Matrix -->
+    <div class="keyboard-container">
+      <div class="keyboard-header">
+        <span style="font-size: 13px; color: var(--text-muted);">
+          Klicken Sie auf die physisch aufleuchtende Taste im Raster, um den aktuellen Slot zuzuordnen:
+        </span>
+        <button id="resetMappingBtn" style="font-size: 11px; padding: 4px 8px;">Zuordnungen zurücksetzen</button>
+      </div>
+      <div id="keyboardMatrix" class="keyboard-matrix">
+        <!-- Dynamisch generiert -->
+      </div>
+    </div>
+
+    <div class="panels">
+      <!-- Mapping Übersicht -->
+      <div class="panel">
+        <h2>
+          <span>Erfasste Zuordnungen</span>
+          <span id="mappingCountBadge" style="font-size: 12px; color: var(--accent);">0 Tasten</span>
+        </h2>
+        <div style="max-height: 220px; overflow-y: auto; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; padding: 8px;">
+          <table style="width: 100%; border-collapse: collapse; text-align: left;">
+            <thead>
+              <tr style="color: var(--text-muted); border-bottom: 1px solid var(--border);">
+                <th style="padding: 4px;">Slot</th>
+                <th style="padding: 4px;">LED</th>
+                <th style="padding: 4px;">Taste</th>
+              </tr>
+            </thead>
+            <tbody id="mappingTableBody">
+              <tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 12px;">Noch keine Tasten gemappt. Starten Sie den Sweep.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- JSON Export -->
+      <div class="panel">
+        <h2>
+          <span>GitHub Issue Export</span>
+          <button id="copyJsonBtn" style="font-size: 11px; padding: 4px 8px;">JSON kopieren</button>
+        </h2>
+        <textarea id="jsonOutput" readonly placeholder="Klicken Sie auf 'JSON generieren' oder mappen Sie Tasten..."></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // WebHID Konstanten für CIY X79
+    const CIY_VID = 0x258A;
+    const CIY_PID = 0x0049;
+    const LED_COUNT = 126;
+    const PLANAR_RGB_SIZE = 378;
+
+    let hidDevice = null;
+    let isTransferring = false;
+    let pendingSlot = null;
+    let currentSlot = 0;
+    let autoPlayTimer = null;
+    let activeLayout = 'iso'; // 'iso' oder 'ansi'
+    let currentMode = 'sweep'; // 'sweep' oder 'probe'
+    const keyMappings = new Map(); // keyId -> { slot, led, label }
+
+    // Standard Layout-Definitionen
+    const ISO_LAYOUT = [
+      [
+        { id: "esc", label: "Esc", u: "u-1", slot: 1 },
+        { id: "1", label: "1", u: "u-1", slot: 7 },
+        { id: "2", label: "2", u: "u-1", slot: 13 },
+        { id: "3", label: "3", u: "u-1", slot: 19 },
+        { id: "4", label: "4", u: "u-1", slot: 25 },
+        { id: "5", label: "5", u: "u-1", slot: 31 },
+        { id: "6", label: "6", u: "u-1", slot: 37 },
+        { id: "7", label: "7", u: "u-1", slot: 43 },
+        { id: "8", label: "8", u: "u-1", slot: 49 },
+        { id: "9", label: "9", u: "u-1", slot: 55 },
+        { id: "0", label: "0", u: "u-1", slot: 61 },
+        { id: "sz", label: "ß", u: "u-1", slot: 67 },
+        { id: "acute", label: "´", u: "u-1", slot: 73 },
+        { id: "backspace", label: "⌫ Back", u: "u-2", slot: 79 },
+        { id: "del", label: "Entf", u: "u-1", slot: 86 }
+      ],
+      [
+        { id: "tab", label: "⇥ Tab", u: "u-1-5", slot: 2 },
+        { id: "q", label: "Q", u: "u-1", slot: 8 },
+        { id: "w", label: "W", u: "u-1", slot: 14 },
+        { id: "e", label: "E", u: "u-1", slot: 20 },
+        { id: "r", label: "R", u: "u-1", slot: 26 },
+        { id: "t", label: "T", u: "u-1", slot: 32 },
+        { id: "z", label: "Z", u: "u-1", slot: 38 },
+        { id: "u", label: "U", u: "u-1", slot: 44 },
+        { id: "i", label: "I", u: "u-1", slot: 50 },
+        { id: "o", label: "O", u: "u-1", slot: 56 },
+        { id: "p", label: "P", u: "u-1", slot: 62 },
+        { id: "ue", label: "Ü", u: "u-1", slot: 68 },
+        { id: "plus", label: "+", u: "u-1", slot: 74 },
+        { id: "enter_iso", label: "↵ Enter", u: "u-1-5", slot: 81 },
+        { id: "pgup", label: "Bild ⇡", u: "u-1", slot: 87 }
+      ],
+      [
+        { id: "caps", label: "⇪ Caps", u: "u-1-75", slot: 3 },
+        { id: "a", label: "A", u: "u-1", slot: 9 },
+        { id: "s", label: "S", u: "u-1", slot: 15 },
+        { id: "d", label: "D", u: "u-1", slot: 21 },
+        { id: "f", label: "F", u: "u-1", slot: 27 },
+        { id: "g", label: "G", u: "u-1", slot: 33 },
+        { id: "h", label: "H", u: "u-1", slot: 39 },
+        { id: "j", label: "J", u: "u-1", slot: 45 },
+        { id: "k", label: "K", u: "u-1", slot: 51 },
+        { id: "l", label: "L", u: "u-1", slot: 57 },
+        { id: "oe", label: "Ö", u: "u-1", slot: 63 },
+        { id: "ae", label: "Ä", u: "u-1", slot: 69 },
+        { id: "hash", label: "#", u: "u-1", slot: 75 },
+        { id: "pgdn", label: "Bild ⇣", u: "u-1", slot: 94 }
+      ],
+      [
+        { id: "lshift", label: "⇧ Shift", u: "u-1-25", slot: 4 },
+        { id: "less", label: "<", u: "u-1", slot: 76 },
+        { id: "y", label: "Y", u: "u-1", slot: 10 },
+        { id: "x", label: "X", u: "u-1", slot: 16 },
+        { id: "c", label: "C", u: "u-1", slot: 22 },
+        { id: "v", label: "V", u: "u-1", slot: 28 },
+        { id: "b", label: "B", u: "u-1", slot: 34 },
+        { id: "n", label: "N", u: "u-1", slot: 40 },
+        { id: "m", label: "M", u: "u-1", slot: 46 },
+        { id: "comma", label: ",", u: "u-1", slot: 52 },
+        { id: "dot", label: ".", u: "u-1", slot: 58 },
+        { id: "minus", label: "-", u: "u-1", slot: 64 },
+        { id: "rshift", label: "⇧ Shift", u: "u-1-75", slot: 82 },
+        { id: "up", label: "▲", u: "u-1", slot: 88 },
+        { id: "end", label: "Ende", u: "u-1", slot: 91 }
+      ],
+      [
+        { id: "lctrl", label: "Strg", u: "u-1-25", slot: 5 },
+        { id: "lwin", label: "Win", u: "u-1-25", slot: 11 },
+        { id: "lalt", label: "Alt", u: "u-1-25", slot: 17 },
+        { id: "space", label: "Space", u: "u-6-25", slot: 35 },
+        { id: "ralt", label: "AltGr", u: "u-1-25", slot: 53 },
+        { id: "fn", label: "Fn", u: "u-1", slot: 77 },
+        { id: "rctrl", label: "Strg", u: "u-1", slot: 80 },
+        { id: "left", label: "◄", u: "u-1", slot: 83 },
+        { id: "down", label: "▼", u: "u-1", slot: 89 },
+        { id: "right", label: "►", u: "u-1", slot: 95 }
+      ]
+    ];
+
+    // ANSI-US Layout (1-zeiliges Enter 2.25U, langes Shift 2.25U etc.)
+    const ANSI_LAYOUT = [
+      [
+        { id: "esc", label: "Esc", u: "u-1" },
+        { id: "1", label: "1", u: "u-1" },
+        { id: "2", label: "2", u: "u-1" },
+        { id: "3", label: "3", u: "u-1" },
+        { id: "4", label: "4", u: "u-1" },
+        { id: "5", label: "5", u: "u-1" },
+        { id: "6", label: "6", u: "u-1" },
+        { id: "7", label: "7", u: "u-1" },
+        { id: "8", label: "8", u: "u-1" },
+        { id: "9", label: "9", u: "u-1" },
+        { id: "0", label: "0", u: "u-1" },
+        { id: "minus", label: "-", u: "u-1" },
+        { id: "equal", label: "=", u: "u-1" },
+        { id: "backspace", label: "⌫ Back", u: "u-2" },
+        { id: "del", label: "Del", u: "u-1" }
+      ],
+      [
+        { id: "tab", label: "⇥ Tab", u: "u-1-5" },
+        { id: "q", label: "Q", u: "u-1" },
+        { id: "w", label: "W", u: "u-1" },
+        { id: "e", label: "E", u: "u-1" },
+        { id: "r", label: "R", u: "u-1" },
+        { id: "t", label: "T", u: "u-1" },
+        { id: "y", label: "Y", u: "u-1" },
+        { id: "u", label: "U", u: "u-1" },
+        { id: "i", label: "I", u: "u-1" },
+        { id: "o", label: "O", u: "u-1" },
+        { id: "p", label: "P", u: "u-1" },
+        { id: "lbracket", label: "[", u: "u-1" },
+        { id: "rbracket", label: "]", u: "u-1" },
+        { id: "backslash", label: "\\", u: "u-1-5" },
+        { id: "pgup", label: "PgUp", u: "u-1" }
+      ],
+      [
+        { id: "caps", label: "⇪ Caps", u: "u-1-75" },
+        { id: "a", label: "A", u: "u-1" },
+        { id: "s", label: "S", u: "u-1" },
+        { id: "d", label: "D", u: "u-1" },
+        { id: "f", label: "F", u: "u-1" },
+        { id: "g", label: "G", u: "u-1" },
+        { id: "h", label: "H", u: "u-1" },
+        { id: "j", label: "J", u: "u-1" },
+        { id: "k", label: "K", u: "u-1" },
+        { id: "l", label: "L", u: "u-1" },
+        { id: "semicolon", label: ";", u: "u-1" },
+        { id: "quote", label: "'", u: "u-1" },
+        { id: "enter_ansi", label: "↵ Enter", u: "u-2-25" },
+        { id: "pgdn", label: "PgDn", u: "u-1" }
+      ],
+      [
+        { id: "lshift", label: "⇧ Shift", u: "u-2-25" },
+        { id: "z", label: "Z", u: "u-1" },
+        { id: "x", label: "X", u: "u-1" },
+        { id: "c", label: "C", u: "u-1" },
+        { id: "v", label: "V", u: "u-1" },
+        { id: "b", label: "B", u: "u-1" },
+        { id: "n", label: "N", u: "u-1" },
+        { id: "m", label: "M", u: "u-1" },
+        { id: "comma", label: ",", u: "u-1" },
+        { id: "dot", label: ".", u: "u-1" },
+        { id: "slash", label: "/", u: "u-1" },
+        { id: "rshift", label: "⇧ Shift", u: "u-1-75" },
+        { id: "up", label: "▲", u: "u-1" },
+        { id: "end", label: "End", u: "u-1" }
+      ],
+      [
+        { id: "lctrl", label: "Ctrl", u: "u-1-25" },
+        { id: "lwin", label: "Win", u: "u-1-25" },
+        { id: "lalt", label: "Alt", u: "u-1-25" },
+        { id: "space", label: "Space", u: "u-6-25" },
+        { id: "ralt", label: "Alt", u: "u-1-25" },
+        { id: "fn", label: "Fn", u: "u-1" },
+        { id: "rctrl", label: "Ctrl", u: "u-1" },
+        { id: "left", label: "◄", u: "u-1" },
+        { id: "down", label: "▼", u: "u-1" },
+        { id: "right", label: "►", u: "u-1" }
+      ]
+    ];
+
+    // Prüfe Secure Context
+    if (!window.isSecureContext || !navigator.hid) {
+      document.getElementById('secureNotice').style.display = 'flex';
+      document.getElementById('connectBtn').disabled = true;
+    }
+
+    // UI Initialisierung
+    function renderKeyboard() {
+      const matrix = document.getElementById('keyboardMatrix');
+      matrix.innerHTML = '';
+      const layout = (activeLayout === 'iso') ? ISO_LAYOUT : ANSI_LAYOUT;
+
+      layout.forEach((row, rowIdx) => {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'kb-row';
+        row.forEach(key => {
+          const keyEl = document.createElement('div');
+          keyEl.className = `key ${key.u}`;
+          keyEl.id = `key_${key.id}`;
+
+          const mapping = keyMappings.get(key.id);
+          if (mapping) {
+            keyEl.classList.add('mapped');
+          }
+
+          keyEl.innerHTML = `
+            <div class="label">${key.label}</div>
+            <div class="meta">${mapping ? `S${mapping.slot}/L${mapping.led}` : (key.slot !== undefined ? `S${key.slot}` : '')}</div>
+          `;
+
+          keyEl.addEventListener('click', () => onKeyClicked(key));
+          rowEl.appendChild(keyEl);
+        });
+        matrix.appendChild(rowEl);
+      });
+    }
+
+    function onKeyClicked(key) {
+      if (currentMode === 'probe') {
+        const mapping = keyMappings.get(key.id);
+        const slot = (mapping && mapping.slot !== undefined) ? mapping.slot : (key.slot !== undefined ? key.slot : currentSlot);
+        document.getElementById('probeSlotInput').value = slot;
+        sendLedHighlight(slot);
+        return;
+      }
+
+      // Sweep-Modus: Ordne aktuellen Sweep-Slot der angeklickten Taste zu
+      const led = currentSlot + 1;
+      keyMappings.set(key.id, {
+        slot: currentSlot,
+        led: led,
+        label: key.label
+      });
+      renderKeyboard();
+      updateMappingTable();
+      generateJsonExport();
+
+      // Gehe automatisch zur nächsten Taste
+      advanceSweep(1);
+    }
+
+    function updateMappingTable() {
+      const tbody = document.getElementById('mappingTableBody');
+      const countBadge = document.getElementById('mappingCountBadge');
+      countBadge.textContent = `${keyMappings.size} Tasten`;
+
+      if (keyMappings.size === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 12px;">Noch keine Tasten gemappt. Starten Sie den Sweep.</td></tr>';
+        return;
+      }
+
+      const rows = [];
+      const sorted = Array.from(keyMappings.values()).sort((a, b) => a.slot - b.slot);
+      sorted.forEach(m => {
+        rows.push(`
+          <tr style="border-bottom: 1px solid #252528;">
+            <td style="padding: 4px; color: var(--accent);">${m.slot}</td>
+            <td style="padding: 4px;">${m.led}</td>
+            <td style="padding: 4px; font-weight: 500;">${m.label}</td>
+          </tr>
+        `);
+      });
+      tbody.innerHTML = rows.join('');
+    }
+
+    function generateJsonExport() {
+      const sorted = Array.from(keyMappings.values()).sort((a, b) => a.slot - b.slot);
+      const exportObj = {
+        layout_id: activeLayout === 'ansi' ? 'ciy_x79_ansi_us' : 'ciy_x79_custom',
+        display_name: activeLayout === 'ansi' ? 'CIY X79 (ANSI-US Community)' : 'CIY X79 (Custom)',
+        key_count: sorted.length,
+        keys: sorted.map(k => ({
+          matrix_slot: k.slot,
+          led_index: k.led,
+          name: k.label
+        }))
+      };
+      document.getElementById('jsonOutput').value = JSON.stringify(exportObj, null, 2);
+    }
+
+    // WebHID Hardware Übertragung
+    async function sendLedHighlight(slot) {
+      if (!hidDevice || !hidDevice.opened) return;
+      const led = slot + 1;
+      if (led < 0 || led >= LED_COUNT) return;
+
+      if (isTransferring) {
+        pendingSlot = slot;
+        return;
+      }
+      isTransferring = true;
+
+      const rgb = new Uint8Array(PLANAR_RGB_SIZE);
+      // R = Cyan (0x00, 0xE5, 0xFF)
+      rgb[led] = 0x00;
+      rgb[LED_COUNT + led] = 0xE5;
+      rgb[2 * LED_COUNT + led] = 0xFF;
+
+      try {
+        await hidDevice.sendFeatureReport(0x0B, rgb);
+        await new Promise(r => setTimeout(r, 40));
+        if (!hidDevice || !hidDevice.opened) return;
+        const buf0A = new Uint8Array(41);
+        buf0A[0] = 19; // Modus 19
+        buf0A[1] = 0;
+        buf0A[2] = 4;
+        buf0A[3] = 5;  // Helligkeit 5
+        await hidDevice.sendFeatureReport(0x0A, buf0A);
+      } catch (err) {
+        console.error("HID Senden fehlgeschlagen:", err);
+      } finally {
+        isTransferring = false;
+        if (pendingSlot !== null) {
+          const next = pendingSlot;
+          pendingSlot = null;
+          if (hidDevice && hidDevice.opened) {
+            sendLedHighlight(next);
+          }
+        }
+      }
+    }
+
+    function advanceSweep(delta) {
+      currentSlot += delta;
+      if (currentSlot > 124) currentSlot = 0;
+      if (currentSlot < 0) currentSlot = 124;
+
+      document.getElementById('currentSlotText').textContent = currentSlot;
+      document.getElementById('currentLedText').textContent = currentSlot + 1;
+
+      sendLedHighlight(currentSlot);
+    }
+
+    // Modus-Umschaltung
+    function setMode(mode) {
+      currentMode = mode;
+      if (mode === 'probe') {
+        if (autoPlayTimer) {
+          clearInterval(autoPlayTimer);
+          autoPlayTimer = null;
+          document.getElementById('sweepAutoBtn').textContent = 'Auto-Play';
+        }
+        document.getElementById('modeProbeBtn').className = 'btn-primary';
+        document.getElementById('modeSweepBtn').className = '';
+        document.getElementById('sweepControls').style.display = 'none';
+        document.getElementById('probeControls').style.display = 'flex';
+      } else {
+        document.getElementById('modeSweepBtn').className = 'btn-primary';
+        document.getElementById('modeProbeBtn').className = '';
+        document.getElementById('sweepControls').style.display = 'flex';
+        document.getElementById('probeControls').style.display = 'none';
+        sendLedHighlight(currentSlot);
+      }
+    }
+
+    document.getElementById('modeSweepBtn').addEventListener('click', () => setMode('sweep'));
+    document.getElementById('modeProbeBtn').addEventListener('click', () => setMode('probe'));
+
+    document.getElementById('probeSendBtn').addEventListener('click', () => {
+      const val = parseInt(document.getElementById('probeSlotInput').value, 10);
+      if (!isNaN(val) && val >= 0 && val <= 124) {
+        sendLedHighlight(val);
+      }
+    });
+
+    // Event Listener
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+      try {
+        const devices = await navigator.hid.requestDevice({
+          filters: [{ vendorId: CIY_VID, productId: CIY_PID }]
+        });
+        if (devices.length === 0) return;
+
+        // Bevorzuge Vendor-Defined Interface (Collections mit usagePage >= 0xFF00)
+        let targetDev = devices.find(d => d.collections && d.collections.some(c => c.usagePage >= 0xFF00));
+        hidDevice = targetDev || devices[0];
+        await hidDevice.open();
+
+        document.getElementById('statusDot').className = 'status-dot online';
+        document.getElementById('statusText').textContent = 'Verbunden (Interface 1)';
+        document.getElementById('connectBtn').style.display = 'none';
+        document.getElementById('disconnectBtn').style.display = 'inline-flex';
+
+        // Starte ersten Sweep
+        advanceSweep(0);
+      } catch (err) {
+        alert("Verbindung fehlgeschlagen: " + err.message);
+      }
+    });
+
+    function handleDisconnect() {
+      if (autoPlayTimer) {
+        clearInterval(autoPlayTimer);
+        autoPlayTimer = null;
+        const autoBtn = document.getElementById('sweepAutoBtn');
+        if (autoBtn) autoBtn.textContent = 'Auto-Play';
+      }
+      hidDevice = null;
+      isTransferring = false;
+      pendingSlot = null;
+
+      document.getElementById('statusDot').className = 'status-dot';
+      document.getElementById('statusText').textContent = 'Getrennt';
+      document.getElementById('connectBtn').style.display = 'inline-flex';
+      document.getElementById('disconnectBtn').style.display = 'none';
+    }
+
+    document.getElementById('disconnectBtn').addEventListener('click', async () => {
+      if (hidDevice) {
+        try {
+          await hidDevice.close();
+        } catch (e) {
+          // Ignoriere Fehler beim Schließen
+        }
+      }
+      handleDisconnect();
+    });
+
+    if (navigator.hid) {
+      const onDisconnect = (e) => {
+        if (hidDevice && (e.device === hidDevice || (e.device && e.device.vendorId === CIY_VID && e.device.productId === CIY_PID))) {
+          handleDisconnect();
+        }
+      };
+      navigator.hid.addEventListener('disconnect', onDisconnect);
+    }
+
+    document.getElementById('sweepNextBtn').addEventListener('click', () => advanceSweep(1));
+    document.getElementById('sweepPrevBtn').addEventListener('click', () => advanceSweep(-1));
+
+    document.getElementById('sweepAutoBtn').addEventListener('click', (e) => {
+      if (autoPlayTimer) {
+        clearInterval(autoPlayTimer);
+        autoPlayTimer = null;
+        e.target.textContent = 'Auto-Play';
+      } else {
+        autoPlayTimer = setInterval(() => advanceSweep(1), 600);
+        e.target.textContent = 'Pause';
+      }
+    });
+
+    // Tastaturbedienung
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.key === 'Enter' || e.key === 'n' || e.key === 'N') {
+        advanceSweep(1);
+      } else if (e.key === 'p' || e.key === 'P') {
+        advanceSweep(-1);
+      }
+    });
+
+    document.getElementById('layoutIsoBtn').addEventListener('click', () => {
+      activeLayout = 'iso';
+      document.getElementById('layoutIsoBtn').className = 'btn-primary';
+      document.getElementById('layoutAnsiBtn').className = '';
+      renderKeyboard();
+    });
+
+    document.getElementById('layoutAnsiBtn').addEventListener('click', () => {
+      activeLayout = 'ansi';
+      document.getElementById('layoutAnsiBtn').className = 'btn-primary';
+      document.getElementById('layoutIsoBtn').className = '';
+      renderKeyboard();
+    });
+
+    document.getElementById('resetMappingBtn').addEventListener('click', () => {
+      if (confirm('Alle erfassten Zuordnungen löschen?')) {
+        keyMappings.clear();
+        renderKeyboard();
+        updateMappingTable();
+        generateJsonExport();
+      }
+    });
+
+    document.getElementById('copyJsonBtn').addEventListener('click', () => {
+      const txt = document.getElementById('jsonOutput').value;
+      if (!txt) return;
+      navigator.clipboard.writeText(txt).then(() => {
+        const btn = document.getElementById('copyJsonBtn');
+        const orig = btn.textContent;
+        btn.textContent = '✓ Kopiert!';
+        setTimeout(() => btn.textContent = orig, 1500);
+      });
+    });
+
+    // Initiales Rendern
+    renderKeyboard();
+    generateJsonExport();
+  </script>
+</body>
+</html>

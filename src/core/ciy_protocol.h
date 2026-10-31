@@ -102,15 +102,15 @@ CIY_INLINE bool ciy_protocol_encode_0a(CIYLightingState st, uint8_t out_buf[CIY_
 }
 
 /// Dekodiert einen empfangenen Report 0x0A (mindestens 5 Bytes) in CIYLightingState.
-/// Clampt Tempo und Helligkeit defensiv auf die gültigen Hardware-Grenzen.
+/// Clampt Modus, Farbe, Tempo und Helligkeit defensiv auf die gültigen Hardware-Grenzen.
 /// out_st darf NULL sein (reine Formatprüfung).
 CIY_INLINE bool ciy_protocol_decode_0a(const uint8_t *in_buf, size_t len, CIYLightingState *out_st) {
     if (!in_buf || len < CIY_REPORT_0A_MIN_LEN || in_buf[0] != CIY_REPORT_0A_ID) {
         return false;
     }
     if (out_st) {
-        out_st->mode = in_buf[1];
-        out_st->color = in_buf[2];
+        out_st->mode = (in_buf[1] <= CIY_MAX_MODE) ? in_buf[1] : 0;
+        out_st->color = (in_buf[2] <= CIY_MAX_COLOR) ? in_buf[2] : 0;
         out_st->speed = (in_buf[3] <= CIY_MAX_SPEED) ? (uint8_t)(CIY_MAX_SPEED - in_buf[3]) : 0;
         out_st->brightness = (in_buf[4] <= CIY_MAX_BRIGHTNESS) ? in_buf[4] : CIY_MAX_BRIGHTNESS;
     }

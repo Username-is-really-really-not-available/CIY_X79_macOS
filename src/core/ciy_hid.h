@@ -6,18 +6,28 @@
 // Plattformunabhängige Paket-Enkodierung, Konstanten und Transferpläne liegen in ciy_protocol.h.
 
 #include "ciy_protocol.h"
+
+#if defined(__APPLE__) && !defined(CIY_BACKEND_HIDAPI)
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOCFPlugIn.h>
 #include <IOKit/usb/IOUSBLib.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#if defined(CIY_BACKEND_HIDAPI) || (!defined(__APPLE__) && !defined(CIY_BACKEND_IOKIT))
+struct hid_device_;
+typedef struct {
+    struct hid_device_ *dev;
+} CIYDevice;
+#else
 typedef struct {
     IOUSBDeviceInterface **dev;
 } CIYDevice;
+#endif
 
 /// Öffnet die erste gefundene CIY X79. Bei Fehler false und dev == NULL.
 bool ciy_open(CIYDevice *d);

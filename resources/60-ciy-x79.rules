@@ -1,0 +1,7 @@
+# CIY X79 RGB Gaming Keyboard (Interface 1: Vendor-defined HID Feature Reports)
+# Sino Wealth MCU VID 0x258A, PID 0x0049
+# Enables unprivileged access for OpenRGB and ciy_ctl on Linux systems
+
+# Access via hidraw for systemd-logind (uaccess) and classic plugdev group
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="258a", ATTRS{idProduct}=="0049", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="258a", ATTRS{idProduct}=="0049", MODE="0660", GROUP="plugdev", TAG+="uaccess"

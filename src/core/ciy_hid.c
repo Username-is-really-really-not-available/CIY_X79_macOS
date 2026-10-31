@@ -12,7 +12,13 @@
 #include <time.h>
 #include <errno.h>
 
-#define CIY_TESTING_MOCK_DEV ((IOUSBDeviceInterface **)0x1)
+#define CIY_TESTING_MOCK_DEV ((void *)(uintptr_t)1)
+
+#if defined(CIY_BACKEND_HIDAPI) || (!defined(__APPLE__) && !defined(CIY_BACKEND_IOKIT))
+#include "ciy_hid_hidapi.c"
+#else
+#include "ciy_hid_iokit.c"
+#endif
 
 bool ciy_open(CIYDevice *d) {
     if (!d) return false;
@@ -24,49 +30,17 @@ bool ciy_open(CIYDevice *d) {
     }
 
     if (getenv("CIY_TESTING") != NULL) {
-        d->dev = CIY_TESTING_MOCK_DEV;
+        d->dev = (void *)CIY_TESTING_MOCK_DEV;
         return true;
     }
 
-    CFMutableDictionaryRef matchingDict = IOServiceMatching(kIOUSBDeviceClassName);
-    if (!matchingDict) return false;
-    int vid = CIY_VENDOR_ID, pid = CIY_PRODUCT_ID;
-    CFNumberRef vidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
-    CFNumberRef pidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
-    CFDictionarySetValue(matchingDict, CFSTR(kUSBVendorID), vidRef);
-    CFDictionarySetValue(matchingDict, CFSTR(kUSBProductID), pidRef);
-    CFRelease(vidRef);
-    CFRelease(pidRef);
-
-    io_iterator_t iter = 0;
-    // Das matchingDict wird von IOServiceGetMatchingServices verbraucht.
-    if (IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iter) != KERN_SUCCESS || !iter) {
-        return false;
-    }
-    io_service_t service = IOIteratorNext(iter);
-    IOObjectRelease(iter);
-    if (!service) return false;
-
-    IOCFPlugInInterface **plugIn = NULL;
-    SInt32 score = 0;
-    kern_return_t kr = IOCreatePlugInInterfaceForService(service, kIOUSBDeviceUserClientTypeID,
-                                                         kIOCFPlugInInterfaceID, &plugIn, &score);
-    IOObjectRelease(service);
-    if (kr != KERN_SUCCESS || !plugIn) return false;
-
-    IOUSBDeviceInterface **dev = NULL;
-    HRESULT qr = (*plugIn)->QueryInterface(plugIn, CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID), (LPVOID *)&dev);
-    (*plugIn)->Release(plugIn);
-    if (qr != S_OK || !dev) return false;
-
-    d->dev = dev;
-    return true;
+    return ciy_backend_open(d);
 }
 
 void ciy_close(CIYDevice *d) {
     if (d && d->dev) {
-        if (d->dev != CIY_TESTING_MOCK_DEV) {
-            (*d->dev)->Release(d->dev);
+        if (d->dev != (void *)CIY_TESTING_MOCK_DEV) {
+            ciy_backend_close(d);
         }
         d->dev = NULL;
     }
@@ -181,13 +155,13 @@ void ciy_bus_unlock(void) {
 }
 
 static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t reportId, uint8_t *buf, uint16_t len,
-                        UInt32 *done) {
+                        uint32_t *done) {
     if (getenv("CIY_FAIL_ON_HARDWARE_IO") != NULL) {
         fprintf(stderr, "SECURITY GUARD ASSERTION: ciy_request called while CIY_FAIL_ON_HARDWARE_IO is set!\n");
         abort();
     }
     if (!d || !d->dev) return false;
-    if (d->dev == CIY_TESTING_MOCK_DEV) {
+    if (d->dev == (void *)CIY_TESTING_MOCK_DEV) {
         if (!out && getenv("CIY_TESTING_FAIL_GET_REPORTS") != NULL) return false;
         if (!out && reportId == 0x0A && buf && len >= 5) {
             buf[0] = 0x0A;
@@ -199,25 +173,13 @@ static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t report
         if (done) *done = len;
         return true;
     }
-    IOUSBDevRequestTO req = {
-        .bmRequestType = (UInt8)USBmakebmRequestType(out ? kUSBOut : kUSBIn, kUSBClass, kUSBInterface),
-        .bRequest = bRequest,
-        .wValue = (uint16_t)((0x03 << 8) | reportId),
-        .wIndex = CIY_INTERFACE_NUM,
-        .wLength = len,
-        .pData = buf,
-        .completionTimeout = 1000, // 1000 ms Timeout
-        .noDataTimeout = 1000      // 1000 ms Timeout
-    };
-    IOReturn kr = (*d->dev)->DeviceRequestTO(d->dev, &req);
-    if (done) *done = req.wLenDone;
-    return kr == kIOReturnSuccess;
+    return ciy_backend_request(d, out, bRequest, reportId, buf, len, done);
 }
 
 bool ciy_get_state(CIYDevice *d, CIYLightingState *out) {
     if (!d) return false;
     uint8_t buf[CIY_REPORT_0A_SIZE] = {CIY_REPORT_0A_ID};
-    UInt32 done = 0;
+    uint32_t done = 0;
     if (!ciy_bus_lock()) return false;
     bool ok = ciy_request(d, false, 0x01 /* GET_REPORT */, CIY_REPORT_0A_ID, buf, sizeof(buf), &done);
     ciy_bus_unlock();

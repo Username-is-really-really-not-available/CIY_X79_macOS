@@ -1,5 +1,8 @@
 #import "AppDelegate.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "../core/ciy_battery.h"
+#import "../core/ciy_gradient.h"
+#import "CIYBatteryMonitor.h"
 
 @interface AppDelegate () {
     NSTextField *_statusLabel;
@@ -19,6 +22,21 @@
     NSColorWell *_colorWell;
     NSSlider *_brightnessSlider;
     uint8_t _currentBrightness;
+
+    // Zonen & Verlauf (v1.4)
+    NSPopUpButton *_zonePopUp;
+    NSButton *_gradientBtn;
+    NSWindow *_gradientSheet;
+    NSColorWell *_gradStartWell;
+    NSColorWell *_gradEndWell;
+    NSPopUpButton *_gradDirPopUp;
+
+    // Akku-Spiegelung (v1.4)
+    NSButton *_batteryMirrorCheckbox;
+    NSPopUpButton *_batterySourcePopUp;
+    NSPopUpButton *_batteryTargetPopUp;
+    NSTextField *_batteryStatusLabel;
+    NSString *_customBatterySlots;
 
     // Auto-Trigger (App-Fokus-Erkennung)
     NSButton *_autoTriggerCheckbox;
@@ -48,6 +66,30 @@ static NSString * const kCustomProfilesKey = @"CIYX79CustomProfiles_v1";
 static NSString * const kActiveProfileIdKey = @"CIYX79ActiveProfileId_v1";
 static NSString * const kAutoTriggerEnabledKey = @"CIYX79AutoTriggerEnabled_v1";
 static NSString * const kFallbackProfileIdKey = @"CIYX79FallbackProfileId_v1";
+static NSString * const kBatteryMirrorEnabledKey = @"CIYX79BatteryMirrorEnabled_v1";
+static NSString * const kBatterySourceKey = @"CIYX79BatterySource_v1";
+static NSString * const kBatteryTargetKey = @"CIYX79BatteryTarget_v1";
+static NSString * const kBatteryCustomSlotsKey = @"CIYX79BatteryCustomSlots_v1";
+
+static NSArray<NSNumber *> *SlotsForZone(NSInteger tag) {
+    switch (tag) {
+        case 0: // WASD
+            return @[@14, @9, @15, @21];
+        case 1: // Pfeile
+            return @[@88, @83, @89, @95];
+        case 2: // Zahlenreihe 1-0
+            return @[@7, @13, @19, @25, @31, @37, @43, @49, @55, @61];
+        case 3: // Modifikatoren
+            return @[@2, @3, @4, @82, @5, @11, @17, @53, @77, @80];
+        case 4: // Alpha (A-Z)
+            return @[@14, @9, @15, @21, @8, @20, @26, @32, @38, @44, @50, @56, @62,
+                     @27, @33, @39, @45, @51, @57, @10, @16, @22, @28, @34, @40, @46];
+        case 5: // Nav-Spalte (Entf, Bild Auf, Bild Ab, Ende)
+            return @[@86, @87, @94, @91];
+        default:
+            return @[];
+    }
+}
 
 static NSString *HexFromColor(NSColor *color) {
     if (!color) return @"#000000";
@@ -178,6 +220,28 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                                            selector:@selector(onSystemDidWake:)
                                                                name:NSWorkspaceDidWakeNotification
                                                              object:nil];
+    // Akku-Überwachung einrichten (v1.4)
+    __weak typeof(self) weakSelf = self;
+    [CIYBatteryMonitor sharedMonitor].updateHandler = ^(CIYBatteryInfo info) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf handleBatteryUpdate:info];
+        });
+    };
+
+    BOOL batteryMirrorOn = [[NSUserDefaults standardUserDefaults] boolForKey:kBatteryMirrorEnabledKey];
+    NSInteger savedSource = [[NSUserDefaults standardUserDefaults] integerForKey:kBatterySourceKey];
+    [_batterySourcePopUp selectItemWithTag:savedSource];
+    [CIYBatteryMonitor sharedMonitor].preferredSource = (CIYBatterySourceType)savedSource;
+
+    NSInteger savedTarget = [[NSUserDefaults standardUserDefaults] integerForKey:kBatteryTargetKey];
+    [_batteryTargetPopUp selectItemWithTag:savedTarget];
+    _customBatterySlots = [[NSUserDefaults standardUserDefaults] stringForKey:kBatteryCustomSlotsKey] ?: @"14,9,15,21";
+
+    if (batteryMirrorOn) {
+        _batteryMirrorCheckbox.state = NSControlStateValueOn;
+        [[CIYBatteryMonitor sharedMonitor] startMonitoring];
+        [self updateBatteryDisplay];
+    }
 
     [self.window makeKeyAndOrderFront:nil];
 }
@@ -329,29 +393,29 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     // Farb- und Tasten-Leiste
     _selectedKeyLabel = [self labelWithText:@"Ausgewählte Taste: [ W ] (Slot 14)" fontSize:12 weight:NSFontWeightBold];
-    _selectedKeyLabel.frame = NSMakeRect(16, kbBoxH - 46, 184, 22);
+    _selectedKeyLabel.frame = NSMakeRect(16, kbBoxH - 46, 168, 22);
     _selectedKeyLabel.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:_selectedKeyLabel];
 
     NSTextField *lblColorPick = [self labelWithText:@"Farbe:" fontSize:12 weight:NSFontWeightMedium];
-    lblColorPick.frame = NSMakeRect(204, kbBoxH - 46, 42, 22);
+    lblColorPick.frame = NSMakeRect(188, kbBoxH - 46, 40, 22);
     lblColorPick.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:lblColorPick];
 
     NSArray<NSDictionary *> *colors = KeyPalette();
-    CGFloat btnX = 248;
+    CGFloat btnX = 230;
     for (NSDictionary *cDict in colors) {
         NSButton *b = [NSButton buttonWithTitle:cDict[@"name"] target:self action:@selector(onKeyColorChosen:)];
-        b.frame = NSMakeRect(btnX, kbBoxH - 48, 44, 24);
+        b.frame = NSMakeRect(btnX, kbBoxH - 48, 38, 24);
         b.bezelStyle = NSBezelStyleRounded;
         b.tag = (NSInteger)[colors indexOfObject:cDict];
         b.autoresizingMask = NSViewMinYMargin;
         [kbView addSubview:b];
-        btnX += 48;
+        btnX += 42;
     }
 
     // Farbrad / Farbwähler (NSColorWell)
-    _colorWell = [[NSColorWell alloc] initWithFrame:NSMakeRect(btnX + 2, kbBoxH - 47, 34, 22)];
+    _colorWell = [[NSColorWell alloc] initWithFrame:NSMakeRect(btnX + 2, kbBoxH - 47, 32, 22)];
     _colorWell.color = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0];
     _colorWell.toolTip = @"Eigene Farbe wählen (macOS Farbrad)...";
     _colorWell.target = self;
@@ -361,18 +425,62 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     NSButton *fillAllBtn = [NSButton buttonWithTitle:@"Alle..." target:self action:@selector(onFillAllKeys:)];
     fillAllBtn.toolTip = @"Alle 69 Tasten im Editor mit einer Basisfarbe füllen";
-    fillAllBtn.frame = NSMakeRect(btnX + 42, kbBoxH - 48, 64, 24);
+    fillAllBtn.frame = NSMakeRect(btnX + 38, kbBoxH - 48, 52, 24);
     fillAllBtn.bezelStyle = NSBezelStyleRounded;
     fillAllBtn.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:fillAllBtn];
 
+    // Zonen-Auswahl (v1.4)
+    _zonePopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(btnX + 94, kbBoxH - 48, 76, 24) pullsDown:YES];
+    [_zonePopUp addItemWithTitle:@"Zone ▾"];
+    NSMenuItem *wasdItem = [[NSMenuItem alloc] initWithTitle:@"WASD" action:@selector(onApplyZone:) keyEquivalent:@""];
+    wasdItem.target = self;
+    wasdItem.tag = 0;
+    [_zonePopUp.menu addItem:wasdItem];
+
+    NSMenuItem *arrowsItem = [[NSMenuItem alloc] initWithTitle:@"Pfeiltasten" action:@selector(onApplyZone:) keyEquivalent:@""];
+    arrowsItem.target = self;
+    arrowsItem.tag = 1;
+    [_zonePopUp.menu addItem:arrowsItem];
+
+    NSMenuItem *numItem = [[NSMenuItem alloc] initWithTitle:@"Zahlen 1–0" action:@selector(onApplyZone:) keyEquivalent:@""];
+    numItem.target = self;
+    numItem.tag = 2;
+    [_zonePopUp.menu addItem:numItem];
+
+    NSMenuItem *modItem = [[NSMenuItem alloc] initWithTitle:@"Modifikatoren" action:@selector(onApplyZone:) keyEquivalent:@""];
+    modItem.target = self;
+    modItem.tag = 3;
+    [_zonePopUp.menu addItem:modItem];
+
+    NSMenuItem *alphaItem = [[NSMenuItem alloc] initWithTitle:@"Buchstaben (Alpha)" action:@selector(onApplyZone:) keyEquivalent:@""];
+    alphaItem.target = self;
+    alphaItem.tag = 4;
+    [_zonePopUp.menu addItem:alphaItem];
+
+    NSMenuItem *navZoneItem = [[NSMenuItem alloc] initWithTitle:@"Nav-Spalte" action:@selector(onApplyZone:) keyEquivalent:@""];
+    navZoneItem.target = self;
+    navZoneItem.tag = 5;
+    [_zonePopUp.menu addItem:navZoneItem];
+
+    _zonePopUp.autoresizingMask = NSViewMinYMargin;
+    [kbView addSubview:_zonePopUp];
+
+    // Verlauf-Generator (v1.4)
+    _gradientBtn = [NSButton buttonWithTitle:@"Verlauf..." target:self action:@selector(onOpenGradientSheet:)];
+    _gradientBtn.toolTip = @"2-Farben-Linear-Farbverlauf über U-Koordinaten oder Reihen generieren";
+    _gradientBtn.frame = NSMakeRect(btnX + 174, kbBoxH - 48, 72, 24);
+    _gradientBtn.bezelStyle = NSBezelStyleRounded;
+    _gradientBtn.autoresizingMask = NSViewMinYMargin;
+    [kbView addSubview:_gradientBtn];
+
     // Helligkeits-Steuerung (Slider 1..5)
     NSTextField *lblBright = [self labelWithText:@"☀️" fontSize:13 weight:NSFontWeightRegular];
-    lblBright.frame = NSMakeRect(btnX + 112, kbBoxH - 46, 18, 22);
+    lblBright.frame = NSMakeRect(btnX + 250, kbBoxH - 46, 18, 22);
     lblBright.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:lblBright];
 
-    _brightnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(btnX + 132, kbBoxH - 48, 66, 24)];
+    _brightnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(btnX + 270, kbBoxH - 48, 54, 24)];
     _brightnessSlider.minValue = 1;
     _brightnessSlider.maxValue = 5;
     _brightnessSlider.numberOfTickMarks = 5;
@@ -393,11 +501,53 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _keyboardView.selectedSlot = _currentSelectedSlot;
     [kbView addSubview:_keyboardView];
 
-    // Fußzeile
-    NSTextField *footer = [self labelWithText:@"CIY X79 Controller • Profil-Zentrierte IOKit USB Ansteuerung (Report 0x0B -> 50ms -> Modus 19)" fontSize:11 weight:NSFontWeightRegular];
+    // Fußzeile mit Akku-Spiegelung (v1.4)
+    NSTextField *footer = [self labelWithText:@"CIY X79 Controller • Profil-Zentrierte IOKit USB Ansteuerung" fontSize:11 weight:NSFontWeightRegular];
     footer.textColor = [NSColor tertiaryLabelColor];
-    footer.frame = NSMakeRect(24, 16, 680, 18);
+    footer.frame = NSMakeRect(24, 16, 320, 18);
     [container addSubview:footer];
+
+    CGFloat rightEdge = container.bounds.size.width - 24;
+
+    _batteryStatusLabel = [self labelWithText:@"" fontSize:11 weight:NSFontWeightMedium];
+    _batteryStatusLabel.frame = NSMakeRect(rightEdge - 90, 15, 90, 18);
+    _batteryStatusLabel.textColor = [NSColor secondaryLabelColor];
+    _batteryStatusLabel.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+    [container addSubview:_batteryStatusLabel];
+
+    _batteryTargetPopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(rightEdge - 90 - 118, 12, 114, 24) pullsDown:NO];
+    [_batteryTargetPopUp addItemWithTitle:@"Zahlen 1–0"];
+    _batteryTargetPopUp.lastItem.tag = 0;
+    [_batteryTargetPopUp addItemWithTitle:@"Leertaste"];
+    _batteryTargetPopUp.lastItem.tag = 1;
+    [_batteryTargetPopUp addItemWithTitle:@"Nav-Spalte"];
+    _batteryTargetPopUp.lastItem.tag = 2;
+    [_batteryTargetPopUp addItemWithTitle:@"Eigene..."];
+    _batteryTargetPopUp.lastItem.tag = 3;
+    _batteryTargetPopUp.target = self;
+    _batteryTargetPopUp.action = @selector(onBatteryTargetChanged:);
+    _batteryTargetPopUp.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+    [container addSubview:_batteryTargetPopUp];
+
+    _batterySourcePopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(rightEdge - 90 - 118 - 124, 12, 120, 24) pullsDown:NO];
+    [_batterySourcePopUp addItemWithTitle:@"Intern (Mac)"];
+    _batterySourcePopUp.lastItem.tag = 0;
+    [_batterySourcePopUp addItemWithTitle:@"Peripherie (BT)"];
+    _batterySourcePopUp.lastItem.tag = 1;
+    [_batterySourcePopUp addItemWithTitle:@"USV"];
+    _batterySourcePopUp.lastItem.tag = 2;
+    [_batterySourcePopUp addItemWithTitle:@"Alle Quellen"];
+    _batterySourcePopUp.lastItem.tag = 3;
+    _batterySourcePopUp.target = self;
+    _batterySourcePopUp.action = @selector(onBatterySourceChanged:);
+    _batterySourcePopUp.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+    [container addSubview:_batterySourcePopUp];
+
+    _batteryMirrorCheckbox = [NSButton checkboxWithTitle:@"⚡ Akku spiegeln" target:self action:@selector(onToggleBatteryMirror:)];
+    _batteryMirrorCheckbox.frame = NSMakeRect(rightEdge - 90 - 118 - 124 - 120, 14, 116, 20);
+    _batteryMirrorCheckbox.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+    _batteryMirrorCheckbox.toolTip = @"Spiegelt den Ladestand flüchtig auf die CIY X79 (ohne das Profil zu überschreiben)";
+    [container addSubview:_batteryMirrorCheckbox];
 }
 
 #pragma mark - Profilverwaltung
@@ -1133,6 +1283,236 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self sendCurrentProfileToHardware];
 }
 
+#pragma mark - Zonen- & Farbverlauf-Aktionen (v1.4)
+
+- (void)onApplyZone:(NSMenuItem *)sender {
+    NSArray<NSNumber *> *slots = SlotsForZone(sender.tag);
+    if (slots.count == 0) return;
+    NSColor *color = _colorWell.color;
+    [_keyboardView applyColor:color toSlots:slots];
+    [self setHasUnsavedEdits:YES];
+    [self updateButtonsState];
+
+    NSString *profName = [self currentProfileName];
+    _statusLabel.stringValue = [NSString stringWithFormat:@"● Zone „%@“ eingefärbt (Profil „%@“ ungespeichert)", sender.title, profName];
+    _statusLabel.textColor = [NSColor systemOrangeColor];
+}
+
+- (void)onOpenGradientSheet:(id)sender {
+    (void)sender;
+    _gradientSheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 380, 220)
+                                                 styleMask:(NSWindowStyleMaskTitled)
+                                                   backing:NSBackingStoreBuffered
+                                                     defer:NO];
+    _gradientSheet.title = @"Farbverlauf-Generator (Linear Gradient)";
+
+    NSView *content = _gradientSheet.contentView;
+
+    NSTextField *lblStart = [self labelWithText:@"Startfarbe:" fontSize:12 weight:NSFontWeightMedium];
+    lblStart.frame = NSMakeRect(24, 162, 90, 20);
+    [content addSubview:lblStart];
+
+    _gradStartWell = [[NSColorWell alloc] initWithFrame:NSMakeRect(120, 160, 48, 26)];
+    _gradStartWell.color = [NSColor colorWithSRGBRed:0.0 green:0.9 blue:1.0 alpha:1.0]; // Cyan
+    [content addSubview:_gradStartWell];
+
+    NSTextField *lblEnd = [self labelWithText:@"Endfarbe:" fontSize:12 weight:NSFontWeightMedium];
+    lblEnd.frame = NSMakeRect(24, 122, 90, 20);
+    [content addSubview:lblEnd];
+
+    _gradEndWell = [[NSColorWell alloc] initWithFrame:NSMakeRect(120, 120, 48, 26)];
+    _gradEndWell.color = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.8 alpha:1.0]; // Magenta
+    [content addSubview:_gradEndWell];
+
+    NSTextField *lblDir = [self labelWithText:@"Richtung:" fontSize:12 weight:NSFontWeightMedium];
+    lblDir.frame = NSMakeRect(24, 82, 90, 20);
+    [content addSubview:lblDir];
+
+    _gradDirPopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, 80, 230, 26) pullsDown:NO];
+    [_gradDirPopUp addItemWithTitle:@"Horizontal (Links → Rechts)"];
+    [_gradDirPopUp addItemWithTitle:@"Vertikal (Oben → Unten)"];
+    [content addSubview:_gradDirPopUp];
+
+    NSButton *applyBtn = [NSButton buttonWithTitle:@"Auf Tastatur anwenden" target:self action:@selector(onApplyGradient:)];
+    applyBtn.frame = NSMakeRect(190, 20, 166, 32);
+    applyBtn.bezelStyle = NSBezelStyleRounded;
+    applyBtn.keyEquivalent = @"\r";
+    [content addSubview:applyBtn];
+
+    NSButton *copyBtn = [NSButton buttonWithTitle:@"ciy_ctl kopieren" target:self action:@selector(onCopyGradientCommand:)];
+    copyBtn.frame = NSMakeRect(80, 20, 106, 32);
+    copyBtn.bezelStyle = NSBezelStyleRounded;
+    [content addSubview:copyBtn];
+
+    NSButton *cancelBtn = [NSButton buttonWithTitle:@"Abbrechen" target:self action:@selector(onCancelGradientSheet:)];
+    cancelBtn.frame = NSMakeRect(16, 20, 60, 32);
+    cancelBtn.bezelStyle = NSBezelStyleRounded;
+    [content addSubview:cancelBtn];
+
+    [self.window beginSheet:_gradientSheet completionHandler:nil];
+}
+
+- (void)onApplyGradient:(id)sender {
+    (void)sender;
+    NSColor *c1 = _gradStartWell.color;
+    NSColor *c2 = _gradEndWell.color;
+    CIYGradientDirection dir = (_gradDirPopUp.indexOfSelectedItem == 1) ? CIY_GRADIENT_VERTICAL : CIY_GRADIENT_HORIZONTAL;
+
+    NSColor *srgb1 = [c1 colorUsingColorSpace:[NSColorSpace sRGBColorSpace]] ?: c1;
+    NSColor *srgb2 = [c2 colorUsingColorSpace:[NSColorSpace sRGBColorSpace]] ?: c2;
+
+    CGFloat r1, g1, b1, a1;
+    CGFloat r2, g2, b2, a2;
+    [srgb1 getRed:&r1 green:&g1 blue:&b1 alpha:&a1];
+    [srgb2 getRed:&r2 green:&g2 blue:&b2 alpha:&a2];
+
+    uint8_t ur1 = (uint8_t)(r1 * 255.0 + 0.5);
+    uint8_t ug1 = (uint8_t)(g1 * 255.0 + 0.5);
+    uint8_t ub1 = (uint8_t)(b1 * 255.0 + 0.5);
+
+    uint8_t ur2 = (uint8_t)(r2 * 255.0 + 0.5);
+    uint8_t ug2 = (uint8_t)(g2 * 255.0 + 0.5);
+    uint8_t ub2 = (uint8_t)(b2 * 255.0 + 0.5);
+
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    NSMutableDictionary<NSNumber *, NSColor *> *newColors = [NSMutableDictionary dictionaryWithCapacity:layout->key_count];
+
+    for (size_t i = 0; i < layout->key_count; i++) {
+        int slot = layout->keys[i].matrix_slot;
+        uint8_t r = 0, g = 0, b = 0;
+        if (ciy_gradient_calculate_slot_color(slot, ur1, ug1, ub1, ur2, ug2, ub2, dir, &r, &g, &b)) {
+            newColors[@(slot)] = [NSColor colorWithSRGBRed:r / 255.0 green:g / 255.0 blue:b / 255.0 alpha:1.0];
+        }
+    }
+
+    [_keyboardView applyKeyColors:newColors];
+    [self setHasUnsavedEdits:YES];
+    [self updateButtonsState];
+    [self sendCurrentProfileToHardware];
+
+    if (_gradientSheet) {
+        [self.window endSheet:_gradientSheet];
+        _gradientSheet = nil;
+    }
+}
+
+- (void)onCopyGradientCommand:(id)sender {
+    (void)sender;
+    NSString *hex1 = HexFromColor(_gradStartWell.color);
+    NSString *hex2 = HexFromColor(_gradEndWell.color);
+    NSString *dirStr = (_gradDirPopUp.indexOfSelectedItem == 1) ? @"vertical" : @"horizontal";
+    NSString *cmdStr = [NSString stringWithFormat:@"ciy_ctl gradient %@ %@ --dir %@ -b 5\n", hex1, hex2, dirStr];
+    [[NSPasteboard generalPasteboard] clearContents];
+    [[NSPasteboard generalPasteboard] setString:cmdStr forType:NSPasteboardTypeString];
+    _statusLabel.stringValue = @"● Verlauf-Befehl in Zwischenablage kopiert";
+    _statusLabel.textColor = [NSColor systemCyanColor];
+}
+
+- (void)onCancelGradientSheet:(id)sender {
+    (void)sender;
+    if (_gradientSheet) {
+        [self.window endSheet:_gradientSheet];
+        _gradientSheet = nil;
+    }
+}
+
+#pragma mark - Akku-Spiegelung (v1.4)
+
+- (void)onToggleBatteryMirror:(NSButton *)sender {
+    BOOL enabled = (sender.state == NSControlStateValueOn);
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kBatteryMirrorEnabledKey];
+
+    if (enabled) {
+        [[CIYBatteryMonitor sharedMonitor] startMonitoring];
+        [self updateBatteryDisplay];
+    } else {
+        [[CIYBatteryMonitor sharedMonitor] stopMonitoring];
+        _batteryStatusLabel.stringValue = @"";
+        [_keyboardView clearOverlayColors];
+        [self sendCurrentProfileToHardware];
+    }
+}
+
+- (void)onBatterySourceChanged:(NSPopUpButton *)sender {
+    [[NSUserDefaults standardUserDefaults] setInteger:sender.selectedItem.tag forKey:kBatterySourceKey];
+    [CIYBatteryMonitor sharedMonitor].preferredSource = (CIYBatterySourceType)sender.selectedItem.tag;
+    if (_batteryMirrorCheckbox.state == NSControlStateValueOn) {
+        [self updateBatteryDisplay];
+    }
+}
+
+- (void)onBatteryTargetChanged:(NSPopUpButton *)sender {
+    if (sender.selectedItem.tag == 3) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Benutzerdefinierte Akku-Tastenfolge";
+        alert.informativeText = @"Geben Sie die Matrix-Slots kommagetrennt ein (z. B. 14,9,15,21 für WASD oder 88,83,89,95 für Pfeile):";
+        NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 240, 24)];
+        input.stringValue = _customBatterySlots ?: @"14,9,15,21";
+        alert.accessoryView = input;
+        [alert addButtonWithTitle:@"Übernehmen"];
+        [alert addButtonWithTitle:@"Abbrechen"];
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            NSString *val = [input.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (val.length > 0) {
+                _customBatterySlots = val;
+                [[NSUserDefaults standardUserDefaults] setObject:_customBatterySlots forKey:kBatteryCustomSlotsKey];
+            }
+        }
+    }
+    [[NSUserDefaults standardUserDefaults] setInteger:sender.selectedItem.tag forKey:kBatteryTargetKey];
+    if (_batteryMirrorCheckbox.state == NSControlStateValueOn) {
+        [self updateBatteryDisplay];
+    }
+}
+
+- (void)updateBatteryDisplay {
+    CIYBatteryInfo info = [[CIYBatteryMonitor sharedMonitor] currentInfo];
+    [self handleBatteryUpdate:info];
+}
+
+- (void)handleBatteryUpdate:(CIYBatteryInfo)info {
+    if (_batteryMirrorCheckbox.state != NSControlStateValueOn) return;
+
+    if (info.percent < 0) {
+        _batteryStatusLabel.stringValue = @"N/A";
+        [_keyboardView clearOverlayColors];
+        [self sendCurrentProfileToHardware];
+        return;
+    }
+
+    _batteryStatusLabel.stringValue = [NSString stringWithFormat:@"%d%%%@",
+                                       info.percent, info.is_charging ? @" ⚡" : @""];
+
+    int targetSlots[64];
+    size_t targetCount = 0;
+    NSInteger targetIndex = _batteryTargetPopUp.selectedItem.tag;
+    const char *targetStr = "1-0";
+    if (targetIndex == 1) {
+        targetStr = "space";
+    } else if (targetIndex == 2) {
+        targetStr = "nav";
+    } else if (targetIndex == 3) {
+        targetStr = [_customBatterySlots UTF8String] ?: "14,9,15,21";
+    }
+    ciy_battery_parse_target(targetStr, targetSlots, 64, &targetCount);
+
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    ciy_battery_calculate_overlay(NULL, info.percent, info.is_charging, targetSlots, targetCount, false, rgb);
+
+    NSMutableDictionary<NSNumber *, NSColor *> *overlay = [NSMutableDictionary dictionaryWithCapacity:targetCount];
+    for (size_t i = 0; i < targetCount; i++) {
+        int slot = targetSlots[i];
+        int led = slot + 1;
+        uint8_t r = rgb[led];
+        uint8_t g = rgb[CIY_LED_COUNT + led];
+        uint8_t b = rgb[2 * CIY_LED_COUNT + led];
+        overlay[@(slot)] = [NSColor colorWithSRGBRed:r / 255.0 green:g / 255.0 blue:b / 255.0 alpha:1.0];
+    }
+
+    [_keyboardView setOverlayColors:overlay];
+    [self sendCurrentProfileToHardware];
+}
+
 #pragma mark - USB-Hardware Transfer (Reines Profil-Senden)
 
 - (void)sendCurrentProfileToHardware {
@@ -1149,7 +1529,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     // Liest den aktuellen Zustand der Tasten aus der Canvas-Ansicht aus
     NSDictionary<NSNumber *, NSColor *> *allColors = [_keyboardView allKeyColors];
-    NSDictionary<NSNumber *, NSColor *> *snapshot = [allColors copy];
+    NSMutableDictionary<NSNumber *, NSColor *> *snapshot = [allColors mutableCopy];
+    NSDictionary<NSNumber *, NSColor *> *overlay = [_keyboardView overlayColors];
+    if (overlay && _batteryMirrorCheckbox.state == NSControlStateValueOn) {
+        [snapshot addEntriesFromDictionary:overlay];
+    }
     uint8_t br = (_currentBrightness >= 1 && _currentBrightness <= 5) ? _currentBrightness : 5;
     CFAbsoluteTime delay = MAX(0.0, (_lastSendTime + 0.12) - CFAbsoluteTimeGetCurrent());
 
@@ -1218,6 +1602,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // Anstehende Auto-Switches und Hardware-Syncs stornieren, damit während des Suspend-Vorgangs keine Transfers laufen
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
     [self cancelHardwareSync];
+    // Akku-Überwachung während Ruhezustand pausieren
+    [[CIYBatteryMonitor sharedMonitor] stopMonitoring];
     // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
     [[KeyboardBackend shared] requestCancel];
     [self updateConnectionStatus];
@@ -1248,6 +1634,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             self->_wakeRetryCount = 0;
             // Tastatur mit dem aktuell aktiven Profil synchronisieren
             [self sendCurrentProfileToHardware];
+            if (self->_batteryMirrorCheckbox.state == NSControlStateValueOn) {
+                [[CIYBatteryMonitor sharedMonitor] startMonitoring];
+                [self updateBatteryDisplay];
+            }
         } else if (self->_wakeRetryCount < 3) {
             self->_wakeRetryCount++;
             NSTimeInterval delay = 0.5 * (1 << (self->_wakeRetryCount - 1));
