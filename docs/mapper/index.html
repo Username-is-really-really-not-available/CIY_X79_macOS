@@ -354,10 +354,9 @@
 
     <div id="secureNotice" class="alert alert-warning" style="display: none;">
       <div>⚠️</div>
-      <div>
-        <strong>WebHID Sicherheitshinweis:</strong>
-        WebHID erfordert einen <em>Secure Context</em> (HTTPS oder localhost). Wenn diese Seite über <code>file:///</code> geöffnet wurde, blockiert der Browser den USB-Zugriff.
-        Öffnen Sie diese Seite über GitHub Pages oder starten Sie einen lokalen Server: <code>python3 -m http.server 8000</code> und rufen Sie <code>http://localhost:8000/docs/mapper/</code> auf.
+      <div id="secureNoticeText">
+        <strong>WebHID Hinweis:</strong>
+        WebHID erfordert einen <em>Secure Context</em> (HTTPS oder localhost) und einen kompatiblen Chromium-Browser.
       </div>
     </div>
 
@@ -622,8 +621,15 @@
       ]
     ];
 
-    // Prüfe Secure Context
-    if (!window.isSecureContext || !navigator.hid) {
+    // Prüfe Browser-Kompatibilität & Secure Context
+    if (!navigator.hid) {
+      document.getElementById('secureNoticeText').innerHTML =
+        '<strong>Browser-Kompatibilität:</strong> Ihr Browser (z. B. Apple Safari oder Firefox) unterstützt die WebHID-Schnittstelle nicht. Bitte öffnen Sie diese Seite in <strong>Google Chrome, Microsoft Edge, Brave oder Opera</strong>, um die Tastatur direkt im Browser anzusteuern.';
+      document.getElementById('secureNotice').style.display = 'flex';
+      document.getElementById('connectBtn').disabled = true;
+    } else if (!window.isSecureContext) {
+      document.getElementById('secureNoticeText').innerHTML =
+        '<strong>WebHID Sicherheitshinweis:</strong> WebHID erfordert einen <em>Secure Context</em> (HTTPS oder localhost).';
       document.getElementById('secureNotice').style.display = 'flex';
       document.getElementById('connectBtn').disabled = true;
     }
