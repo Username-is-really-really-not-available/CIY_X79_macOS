@@ -47,7 +47,7 @@ clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}"
 /tmp/test_ciy_gradient
 
 echo "=== Test 1: HID & Protokoll Tests (macOS IOKit, ASan/UBSan) ==="
-clang -Wall -Wextra -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -framework IOKit \
     -framework CoreFoundation \
     src/core/ciy_hid.c \

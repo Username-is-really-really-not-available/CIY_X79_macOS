@@ -439,12 +439,23 @@ static void test_lockfile_security(void) {
 
     ciy_bus_unlock();
     assert(unlink(user_path) == 0);
-    assert(access(user_path, F_OK) != 0);
+}
+
+static void test_lockfile_rejects_fifo(void) {
+    char fifo_path[128];
+    ciy_bus_lock_path(fifo_path, sizeof(fifo_path));
+
+    unlink(fifo_path);
 
     // Nicht-reguläre Datei als Lockfile abweisen
-    assert(mkfifo(user_path, 0600) == 0);
+    assert(mkfifo(fifo_path, 0600) == 0);
     assert(!ciy_bus_lock());
-    assert(unlink(user_path) == 0);
+    assert(unlink(fifo_path) == 0);
+
+    // Verifizieren, dass der Lock-Mechanismus nach Abweisung im sauberen Zustand bleibt
+    assert(ciy_bus_lock());
+    ciy_bus_unlock();
+    assert(unlink(fifo_path) == 0);
 }
 
 static void test_truncated_unicode_escapes(void) {
@@ -817,6 +828,9 @@ static void test_transfer_plan(void) {
 }
 
 int main(void) {
+    if (!getenv("CIY_TESTING")) {
+        setenv("CIY_TESTING", "1", 1);
+    }
     test_layout_c_model();
     test_profile_validation();
     test_transfer_plan();
@@ -840,6 +854,7 @@ int main(void) {
     test_fifo_profile_rejection();
     test_bus_lock_reentrancy();
     test_lockfile_security();
+    test_lockfile_rejects_fifo();
     puts("Alle Tests bestanden.");
     return 0;
 }
