@@ -760,6 +760,14 @@ int main(int argc, char **argv) {
     bool dump_bytes = false;
     const char *cmd = NULL;
 
+    bool batt_apply_mode = false;
+    bool batt_watch_mode = false;
+    bool batt_segmented = false;
+    const char *batt_target_str = "1-0";
+    CIYBatterySourceType batt_stype = CIY_BATTERY_SOURCE_INTERNAL;
+    int batt_target_slots[64] = {0};
+    size_t batt_target_count = 0;
+
     // 1. Zuerst prüfen, ob Hilfe angefordert wurde oder Optionen gesetzt sind
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0 || (i == 1 && strcmp(argv[i], "help") == 0)) {
@@ -925,16 +933,12 @@ int main(int argc, char **argv) {
     }
 
     if (strcmp(cmd, "battery") == 0) {
-        bool apply_mode = false;
-        bool watch_mode = false;
         bool list_sources = false;
-        bool segmented = false;
-        const char *target_str = "1-0";
         const char *source_str = "internal";
         char err_msg[256] = {0};
 
-        if (!parse_battery_options(argc, argv, &apply_mode, &watch_mode, &list_sources, &segmented,
-                                  &target_str, &source_str, err_msg, sizeof(err_msg))) {
+        if (!parse_battery_options(argc, argv, &batt_apply_mode, &batt_watch_mode, &list_sources, &batt_segmented,
+                                  &batt_target_str, &source_str, err_msg, sizeof(err_msg))) {
             if (json_mode) {
                 printf("{\n  \"success\": false,\n  \"error\": \"");
                 print_escaped_json_string(stdout, err_msg);
@@ -945,15 +949,13 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        int target_slots[64];
-        size_t target_count = 0;
-        if (!ciy_battery_parse_target(target_str, target_slots, 64, &target_count)) {
+        if (!ciy_battery_parse_target(batt_target_str, batt_target_slots, 64, &batt_target_count)) {
             if (json_mode) {
                 printf("{\n  \"success\": false,\n  \"error\": \"Ungültiges Akku-Ziel '");
-                print_escaped_json_string(stdout, target_str);
+                print_escaped_json_string(stdout, batt_target_str);
                 printf("' (erlaubt: 1-0, space, nav oder Slot-Liste)\"\n}\n");
             } else {
-                fprintf(stderr, "Fehler: Ungültiges Akku-Ziel '%s'. Erlaubt: 1-0, space, nav oder Komma-getrennte Slot-Liste (z. B. 14,9,15,21).\n", target_str);
+                fprintf(stderr, "Fehler: Ungültiges Akku-Ziel '%s'. Erlaubt: 1-0, space, nav oder Komma-getrennte Slot-Liste (z. B. 14,9,15,21).\n", batt_target_str);
             }
             return 1;
         }
@@ -969,22 +971,22 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        CIYBatterySourceType stype = parse_battery_source_type(source_str);
+        batt_stype = parse_battery_source_type(source_str);
         CIYBatteryInfo info;
-        ciy_battery_get_info(stype, &info);
+        ciy_battery_get_info(batt_stype, &info);
 
         size_t active_count = 0;
-        if (target_count == 1) {
+        if (batt_target_count == 1) {
             active_count = 1;
         } else if (info.percent > 0) {
-            active_count = (size_t)((info.percent * target_count + 99) / 100);
-            if (active_count > target_count) active_count = target_count;
+            active_count = (size_t)((info.percent * batt_target_count + 99) / 100);
+            if (active_count > batt_target_count) active_count = batt_target_count;
         }
 
         if (dry_run) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_battery_calculate_overlay(NULL, info.percent, info.is_charging,
-                                         target_slots, target_count, segmented, rgb);
+                                         batt_target_slots, batt_target_count, batt_segmented, rgb);
             uint8_t r = 0, g = 0, b = 0;
             ciy_battery_get_color(info.percent, info.is_charging, &r, &g, &b);
             char prof_name[64];
@@ -999,12 +1001,12 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        if (!apply_mode && !watch_mode) {
+        if (!batt_apply_mode && !batt_watch_mode) {
             // Reiner Status-/Info-Modus (ohne Hardwarezugriff)
             if (json_mode) {
-                print_battery_status_json(&info, target_str, target_slots, target_count, active_count);
+                print_battery_status_json(&info, batt_target_str, batt_target_slots, batt_target_count, active_count);
             } else {
-                print_battery_status_text(&info, target_str, target_slots, target_count, active_count);
+                print_battery_status_text(&info, batt_target_str, batt_target_slots, batt_target_count, active_count);
             }
             return 0;
         }
@@ -1089,9 +1091,28 @@ int main(int argc, char **argv) {
                 }
             }
 
-            // Strikte Profilvalidierung ZUERST
+            // Strikte Profilvalidierung ZUERST (Single Read, keine TOCTOU-Gefahr)
             CIYValidationResult val_res;
-            if (!ciy_validate_profile_file(file_arg, &val_res)) {
+            char *buf = ciy_read_text_file_with_result(file_arg, NULL, &val_res);
+            if (!buf) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"");
+                    print_escaped_json_string(stdout, val_res.error_message);
+                    printf("\",\n  \"field\": \"");
+                    print_escaped_json_string(stdout, val_res.error_field);
+                    printf("\"\n}\n");
+                } else {
+                    if (val_res.error_field[0] != '\0') {
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s' (Feld '%s'): %s\n", file_arg, val_res.error_field, val_res.error_message);
+                    } else {
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s': %s\n", file_arg, val_res.error_message);
+                    }
+                }
+                return 1;
+            }
+
+            if (!ciy_validate_profile_json(buf, &val_res)) {
+                free(buf);
                 if (json_mode) {
                     printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"");
                     print_escaped_json_string(stdout, val_res.error_message);
@@ -1111,7 +1132,9 @@ int main(int argc, char **argv) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             char profile_name[64] = {0};
             int slots_count = 0;
-            if (!ciy_load_profile_file(file_arg, target_profile, rgb, profile_name, sizeof(profile_name), &slots_count)) {
+            uint8_t profile_brightness = CIY_MAX_BRIGHTNESS;
+            if (!ciy_parse_profile_json_with_brightness(buf, target_profile, rgb, profile_name, sizeof(profile_name), &slots_count, &profile_brightness)) {
+                free(buf);
                 if (json_mode) {
                     if (target_profile) {
                         printf("{\n  \"success\": false,\n  \"dry_run\": true,\n  \"hardware_opened\": false,\n  \"error\": \"Profil '");
@@ -1132,6 +1155,11 @@ int main(int argc, char **argv) {
                     }
                 }
                 return 1;
+            }
+            free(buf);
+
+            if (!has_flag_brightness && num_extras < 2) {
+                brightness = profile_brightness;
             }
 
             CIYTransferPlan plan;
@@ -1230,6 +1258,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(cmd, "set") == 0) {
             const char *set_args[4] = {NULL, NULL, NULL, NULL};
             int num_set_args = 0;
+            int total_set_args = 0;
             for (int i = 1; i < argc; i++) {
                 if (strcmp(argv[i], "set") == 0 || strcmp(argv[i], "--json") == 0 ||
                     strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
@@ -1237,12 +1266,21 @@ int main(int argc, char **argv) {
                 if (num_set_args < 4) {
                     set_args[num_set_args++] = argv[i];
                 }
+                total_set_args++;
             }
-            if (num_set_args < 1) {
+            if (total_set_args < 1 || total_set_args > 4) {
                 if (json_mode) {
-                    printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Argumente. Verwendung: ciy_ctl set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\"\n}\n");
+                    if (total_set_args > 4) {
+                        printf("{\n  \"success\": false,\n  \"error\": \"Zu viele Argumente. Maximal 4 erlaubt. Verwendung: ciy_ctl set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\"\n}\n");
+                    } else {
+                        printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Argumente. Verwendung: ciy_ctl set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\"\n}\n");
+                    }
                 } else {
-                    fprintf(stderr, "Verwendung: %s set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\n", argv[0]);
+                    if (total_set_args > 4) {
+                        fprintf(stderr, "Fehler: Zu viele Argumente (maximal 4 erlaubt).\nVerwendung: %s set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\n", argv[0]);
+                    } else {
+                        fprintf(stderr, "Verwendung: %s set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\n", argv[0]);
+                    }
                 }
                 return 1;
             }
@@ -1255,13 +1293,16 @@ int main(int argc, char **argv) {
             if (!parse_range(set_args[0], 0, CIY_MAX_MODE, &st.mode) ||
                 (num_set_args > 1 && !parse_range(set_args[1], 0, CIY_MAX_COLOR, &st.color)) ||
                 (num_set_args > 2 && !parse_range(set_args[2], 0, CIY_MAX_SPEED, &st.speed)) ||
-                (num_set_args > 3 && !parse_range(set_args[3], 0, CIY_MAX_BRIGHTNESS, &st.brightness))) {
+                (num_set_args > 3 && !has_flag_brightness && !parse_range(set_args[3], 0, CIY_MAX_BRIGHTNESS, &st.brightness))) {
                 if (json_mode) {
                     printf("{\n  \"success\": false,\n  \"error\": \"Ungültiger Wert. Bereiche: Modus 0..20, Farbe 0..10, Tempo 0..4, Helligkeit 0..5\"\n}\n");
                 } else {
                     fprintf(stderr, "Ungültiger Wert. Bereiche: Modus 0..20, Farbe 0..10, Tempo 0..4, Helligkeit 0..5\n");
                 }
                 return 1;
+            }
+            if (has_flag_brightness) {
+                st.brightness = flag_brightness;
             }
             CIYTransferPlan plan;
             if (!ciy_build_state_transfer_plan(&plan, st)) {
@@ -1286,8 +1327,8 @@ int main(int argc, char **argv) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
             if (led >= 0 && led <= 125) {
                 rgb[led] = r;
-                rgb[126 + led] = g;
-                rgb[252 + led] = b;
+                rgb[CIY_LED_COUNT + led] = g;
+                rgb[(2 * CIY_LED_COUNT) + led] = b;
             }
             const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
@@ -1419,7 +1460,7 @@ int main(int argc, char **argv) {
 
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "load") == 0 || strcmp(argv[i], "--json") == 0) continue;
-            if (argv[i][0] == '-') continue;
+            if (argv[i][0] == '-' && (argv[i][1] < '0' || argv[i][1] > '9')) continue;
             if (!file_arg) {
                 file_arg = argv[i];
             } else if (num_extras < 2) {
@@ -1456,58 +1497,81 @@ int main(int argc, char **argv) {
                 }
                 rc = 1;
             } else {
-                CIYValidationResult val_res;
-                if (!ciy_validate_profile_file(file_arg, &val_res)) {
-                    if (json_mode) {
-                        printf("{\n  \"success\": false,\n  \"error\": \"");
-                        print_escaped_json_string(stdout, val_res.error_message);
-                        printf("\",\n  \"field\": \"");
-                        print_escaped_json_string(stdout, val_res.error_field);
-                        printf("\"\n}\n");
+            CIYValidationResult val_res;
+            char *buf = ciy_read_text_file_with_result(file_arg, NULL, &val_res);
+            if (!buf) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"");
+                    print_escaped_json_string(stdout, val_res.error_message);
+                    printf("\",\n  \"field\": \"");
+                    print_escaped_json_string(stdout, val_res.error_field);
+                    printf("\"\n}\n");
+                } else {
+                    if (val_res.error_field[0] != '\0') {
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s' (Feld '%s'): %s\n", file_arg, val_res.error_field, val_res.error_message);
                     } else {
-                        if (val_res.error_field[0] != '\0') {
-                            fprintf(stderr, "Fehler: Ungültiges Profil in '%s' (Feld '%s'): %s\n", file_arg, val_res.error_field, val_res.error_message);
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s': %s\n", file_arg, val_res.error_message);
+                    }
+                }
+                rc = 1;
+            } else if (!ciy_validate_profile_json(buf, &val_res)) {
+                free(buf);
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"");
+                    print_escaped_json_string(stdout, val_res.error_message);
+                    printf("\",\n  \"field\": \"");
+                    print_escaped_json_string(stdout, val_res.error_field);
+                    printf("\"\n}\n");
+                } else {
+                    if (val_res.error_field[0] != '\0') {
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s' (Feld '%s'): %s\n", file_arg, val_res.error_field, val_res.error_message);
+                    } else {
+                        fprintf(stderr, "Fehler: Ungültiges Profil in '%s': %s\n", file_arg, val_res.error_message);
+                    }
+                }
+                rc = 1;
+            } else {
+                uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+                char profile_name[64] = {0};
+                int slots_count = 0;
+                uint8_t profile_brightness = CIY_MAX_BRIGHTNESS;
+                if (!ciy_parse_profile_json_with_brightness(buf, target_profile, rgb, profile_name, sizeof(profile_name), &slots_count, &profile_brightness)) {
+                    free(buf);
+                    if (json_mode) {
+                        if (target_profile) {
+                            printf("{\n  \"success\": false,\n  \"error\": \"Profil '");
+                            print_escaped_json_string(stdout, target_profile);
+                            printf("' konnte in '");
+                            print_escaped_json_string(stdout, file_arg);
+                            printf("' nicht gefunden werden\"\n}\n");
                         } else {
-                            fprintf(stderr, "Fehler: Ungültiges Profil in '%s': %s\n", file_arg, val_res.error_message);
+                            printf("{\n  \"success\": false,\n  \"error\": \"Profil aus '");
+                            print_escaped_json_string(stdout, file_arg);
+                            printf("' konnte nicht geladen werden\"\n}\n");
+                        }
+                    } else {
+                        if (target_profile) {
+                            fprintf(stderr, "Fehler: Profil '%s' konnte in '%s' nicht gefunden werden.\n", target_profile, file_arg);
+                        } else {
+                            fprintf(stderr, "Fehler: Profil aus '%s' konnte nicht geladen werden (Datei fehlt, zu groß oder ungültiges Format).\n", file_arg);
                         }
                     }
                     rc = 1;
                 } else {
-                    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
-                    char profile_name[64] = {0};
-                    int slots_count = 0;
-                    if (!ciy_load_profile_file(file_arg, target_profile, rgb, profile_name, sizeof(profile_name), &slots_count)) {
-                        if (json_mode) {
-                            if (target_profile) {
-                                printf("{\n  \"success\": false,\n  \"error\": \"Profil '");
-                                print_escaped_json_string(stdout, target_profile);
-                                printf("' konnte in '");
-                                print_escaped_json_string(stdout, file_arg);
-                                printf("' nicht gefunden werden\"\n}\n");
-                            } else {
-                                printf("{\n  \"success\": false,\n  \"error\": \"Profil aus '");
-                                print_escaped_json_string(stdout, file_arg);
-                                printf("' konnte nicht geladen werden\"\n}\n");
-                            }
+                    free(buf);
+                    if (!has_flag_brightness && num_extras < 2) {
+                        brightness = profile_brightness;
+                    }
+                    if (!json_mode) {
+                        if (profile_name[0] != '\0') {
+                            printf("Wende Profil „%s“ (%d Tasten, Helligkeit %u/5) aus '%s' an...\n",
+                                   profile_name, slots_count, brightness, file_arg);
                         } else {
-                            if (target_profile) {
-                                fprintf(stderr, "Fehler: Profil '%s' konnte in '%s' nicht gefunden werden.\n", target_profile, file_arg);
-                            } else {
-                                fprintf(stderr, "Fehler: Profil aus '%s' konnte nicht geladen werden (Datei fehlt, zu groß oder ungültiges Format).\n", file_arg);
-                            }
+                            printf("Wende Profil (%d Tasten, Helligkeit %u/5) aus '%s' an...\n",
+                                   slots_count, brightness, file_arg);
                         }
-                        rc = 1;
-                    } else {
-                        if (!json_mode) {
-                            if (profile_name[0] != '\0') {
-                                printf("Wende Profil „%s“ (%d Tasten, Helligkeit %u/5) aus '%s' an...\n",
-                                       profile_name, slots_count, brightness, file_arg);
-                            } else {
-                                printf("Wende Profil (%d Tasten, Helligkeit %u/5) aus '%s' an...\n",
-                                       slots_count, brightness, file_arg);
-                            }
-                        }
-                        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
+                    }
+                    if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
                             if (json_mode) {
                                 printf("{\n  \"success\": true,\n  \"action\": \"load\",\n  \"file\": \"");
                                 print_escaped_json_string(stdout, file_arg);
@@ -1598,6 +1662,7 @@ int main(int argc, char **argv) {
     } else if (strcmp(cmd, "set") == 0) {
         const char *set_args[4] = {NULL, NULL, NULL, NULL};
         int num_set_args = 0;
+        int total_set_args = 0;
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "set") == 0 || strcmp(argv[i], "--json") == 0 ||
                 strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--dump-bytes") == 0) continue;
@@ -1605,13 +1670,22 @@ int main(int argc, char **argv) {
             if (num_set_args < 4) {
                 set_args[num_set_args++] = argv[i];
             }
+            total_set_args++;
         }
 
-        if (num_set_args < 1) {
+        if (total_set_args < 1 || total_set_args > 4) {
             if (json_mode) {
-                printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Argumente. Verwendung: ciy_ctl set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\"\n}\n");
+                if (total_set_args > 4) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Zu viele Argumente. Maximal 4 erlaubt. Verwendung: ciy_ctl set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\"\n}\n");
+                } else {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehlende Argumente. Verwendung: ciy_ctl set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\"\n}\n");
+                }
             } else {
-                fprintf(stderr, "Verwendung: %s set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\n", argv[0]);
+                if (total_set_args > 4) {
+                    fprintf(stderr, "Fehler: Zu viele Argumente (maximal 4 erlaubt).\nVerwendung: %s set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\n", argv[0]);
+                } else {
+                    fprintf(stderr, "Verwendung: %s set <Modus (0..20)> [Farbe (0..10)] [Tempo (0..4)] [Helligkeit (0..5)]\n", argv[0]);
+                }
             }
             rc = 1;
         } else {
@@ -1626,34 +1700,36 @@ int main(int argc, char **argv) {
                 rc = 1;
             } else {
                 CIYLightingState st = current;
-                if (has_flag_brightness && num_set_args <= 3) {
-                    st.brightness = flag_brightness;
-                }
                 if (!parse_range(set_args[0], 0, CIY_MAX_MODE, &st.mode) ||
                     (num_set_args > 1 && !parse_range(set_args[1], 0, CIY_MAX_COLOR, &st.color)) ||
                     (num_set_args > 2 && !parse_range(set_args[2], 0, CIY_MAX_SPEED, &st.speed)) ||
-                    (num_set_args > 3 && !parse_range(set_args[3], 0, CIY_MAX_BRIGHTNESS, &st.brightness))) {
+                    (num_set_args > 3 && !has_flag_brightness && !parse_range(set_args[3], 0, CIY_MAX_BRIGHTNESS, &st.brightness))) {
                     if (json_mode) {
                         printf("{\n  \"success\": false,\n  \"error\": \"Ungültiger Wert. Bereiche: Modus 0..20, Farbe 0..10, Tempo 0..4, Helligkeit 0..5\"\n}\n");
                     } else {
                         fprintf(stderr, "Ungültiger Wert. Bereiche: Modus 0..20, Farbe 0..10, Tempo 0..4, Helligkeit 0..5\n");
                     }
                     rc = 1;
-                } else if (ciy_set_state(&dev, st)) {
-                    if (json_mode) {
-                        printf("{\n  \"success\": true,\n  \"action\": \"set\",\n  \"mode\": %u,\n  \"color\": %u,\n  \"speed\": %u,\n  \"brightness\": %u\n}\n",
-                               st.mode, st.color, st.speed, st.brightness);
-                    } else {
-                        printf("Modus %u, Farbe %u, Tempo %u, Helligkeit %u gesetzt.\n",
-                               st.mode, st.color, st.speed, st.brightness);
-                    }
                 } else {
-                    if (json_mode) {
-                        printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Senden des Befehls an die Tastatur\"\n}\n");
-                    } else {
-                        fprintf(stderr, "Fehler beim Senden des Befehls an die Tastatur.\n");
+                    if (has_flag_brightness) {
+                        st.brightness = flag_brightness;
                     }
-                    rc = 1;
+                    if (ciy_set_state(&dev, st)) {
+                        if (json_mode) {
+                            printf("{\n  \"success\": true,\n  \"action\": \"set\",\n  \"mode\": %u,\n  \"color\": %u,\n  \"speed\": %u,\n  \"brightness\": %u\n}\n",
+                                   st.mode, st.color, st.speed, st.brightness);
+                        } else {
+                            printf("Modus %u, Farbe %u, Tempo %u, Helligkeit %u gesetzt.\n",
+                                   st.mode, st.color, st.speed, st.brightness);
+                        }
+                    } else {
+                        if (json_mode) {
+                            printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Senden des Befehls an die Tastatur\"\n}\n");
+                        } else {
+                            fprintf(stderr, "Fehler beim Senden des Befehls an die Tastatur.\n");
+                        }
+                        rc = 1;
+                    }
                 }
             }
         }
@@ -1674,8 +1750,8 @@ int main(int argc, char **argv) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
             if (led >= 0 && led <= 125) {
                 rgb[led] = r;
-                rgb[126 + led] = g;
-                rgb[252 + led] = b;
+                rgb[CIY_LED_COUNT + led] = g;
+                rgb[(2 * CIY_LED_COUNT) + led] = b;
             }
             const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
@@ -1733,7 +1809,7 @@ int main(int argc, char **argv) {
             sigaction(SIGTERM, &sa, &old_sa_term);
 
             bool is_tty = isatty(STDIN_FILENO);
-            if (is_tty) {
+            if (is_tty && !auto_mode) {
                 tcgetattr(STDIN_FILENO, &s_orig_termios);
                 s_termios_saved = 1;
                 struct termios raw = s_orig_termios;
@@ -1819,24 +1895,9 @@ int main(int argc, char **argv) {
             }
         }
     } else if (strcmp(cmd, "battery") == 0) {
-        bool apply_mode = false;
-        bool watch_mode = false;
-        bool list_sources = false;
-        bool segmented = false;
-        const char *target_str = "1-0";
-        const char *source_str = "internal";
-        char err_msg[256] = {0};
-        parse_battery_options(argc, argv, &apply_mode, &watch_mode, &list_sources, &segmented,
-                              &target_str, &source_str, err_msg, sizeof(err_msg));
-
-        int target_slots[64];
-        size_t target_count = 0;
-        ciy_battery_parse_target(target_str, target_slots, 64, &target_count);
-
-        CIYBatterySourceType stype = parse_battery_source_type(source_str);
         const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
 
-        if (watch_mode) {
+        if (batt_watch_mode) {
             struct sigaction sa, old_sa_int, old_sa_term;
             memset(&sa, 0, sizeof(sa));
             sa.sa_handler = watch_sigint_handler;
@@ -1847,13 +1908,13 @@ int main(int argc, char **argv) {
             bool last_charging = false;
 
             if (!json_mode) {
-                printf("=== CIY X79 Akku-Überwachung aktiv (Ziel: '%s') ===\n", target_str);
+                printf("=== CIY X79 Akku-Überwachung aktiv (Ziel: '%s') ===\n", batt_target_str);
                 printf("Drücken Sie Ctrl+C zum Beenden.\n");
             }
 
             while (!s_watch_interrupted) {
                 CIYBatteryInfo info;
-                ciy_battery_get_info(stype, &info);
+                ciy_battery_get_info(batt_stype, &info);
 
                 if (info.percent != last_percent || info.is_charging != last_charging) {
                     last_percent = info.percent;
@@ -1861,14 +1922,14 @@ int main(int argc, char **argv) {
 
                     uint8_t rgb[CIY_PLANAR_RGB_SIZE];
                     ciy_battery_calculate_overlay(NULL, info.percent, info.is_charging,
-                                                 target_slots, target_count, segmented, rgb);
+                                                 batt_target_slots, batt_target_count, batt_segmented, rgb);
                     ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br);
 
                     if (!json_mode) {
                         uint8_t r = 0, g = 0, b = 0;
                         ciy_battery_get_color(info.percent, info.is_charging, &r, &g, &b);
                         printf("\r\033[KAkku aktualisiert: %d%% (%s, #%02X%02X%02X) auf '%s'",
-                               info.percent, info.is_charging ? "Laden" : "Akku", r, g, b, target_str);
+                               info.percent, info.is_charging ? "Laden" : "Akku", r, g, b, batt_target_str);
                         fflush(stdout);
                     }
                 }
@@ -1890,19 +1951,19 @@ int main(int argc, char **argv) {
         } else {
             // apply_mode
             CIYBatteryInfo info;
-            ciy_battery_get_info(stype, &info);
+            ciy_battery_get_info(batt_stype, &info);
 
             size_t active_count = 0;
-            if (target_count == 1) {
+            if (batt_target_count == 1) {
                 active_count = 1;
             } else if (info.percent > 0) {
-                active_count = (size_t)((info.percent * target_count + 99) / 100);
-                if (active_count > target_count) active_count = target_count;
+                active_count = (size_t)((info.percent * batt_target_count + 99) / 100);
+                if (active_count > batt_target_count) active_count = batt_target_count;
             }
 
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_battery_calculate_overlay(NULL, info.percent, info.is_charging,
-                                         target_slots, target_count, segmented, rgb);
+                                         batt_target_slots, batt_target_count, batt_segmented, rgb);
 
             uint8_t r = 0, g = 0, b = 0;
             ciy_battery_get_color(info.percent, info.is_charging, &r, &g, &b);
@@ -1911,12 +1972,12 @@ int main(int argc, char **argv) {
                 if (json_mode) {
                     printf("{\n  \"success\": true,\n  \"action\": \"battery_apply\",\n  \"percent\": %d,\n  \"charging\": %s,\n  \"color\": \"#%02X%02X%02X\",\n  \"target\": \"",
                            info.percent, info.is_charging ? "true" : "false", r, g, b);
-                    print_escaped_json_string(stdout, target_str);
+                    print_escaped_json_string(stdout, batt_target_str);
                     printf("\",\n  \"active_keys\": %zu,\n  \"brightness\": %u\n}\n",
                            active_count, br);
                 } else {
                     printf("Akku-Status (%d%%, #%02X%02X%02X) erfolgreich auf Ziel '%s' angewendet (%zu/%zu Tasten aktiv, Helligkeit %u/5).\n",
-                           info.percent, r, g, b, target_str, active_count, target_count, br);
+                           info.percent, r, g, b, batt_target_str, active_count, batt_target_count, br);
                 }
             } else {
                 if (json_mode) {

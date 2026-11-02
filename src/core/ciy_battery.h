@@ -394,12 +394,11 @@ CIY_INLINE bool ciy_battery_parse_target(const char *target_str, int *out_slots,
     if (!target_str || !out_slots || max_slots == 0 || !out_count) return false;
 
     if (strcmp(target_str, "1-0") == 0 || strcmp(target_str, "1..0") == 0 || strcmp(target_str, "numbers") == 0) {
-        size_t n = 10;
-        if (n > max_slots) n = max_slots;
-        for (size_t i = 0; i < n; i++) {
+        if (max_slots < 10) return false;
+        for (size_t i = 0; i < 10; i++) {
             out_slots[i] = CIY_BATTERY_TARGET_1_0_SLOTS[i];
         }
-        *out_count = n;
+        *out_count = 10;
         return true;
     }
 
@@ -410,12 +409,11 @@ CIY_INLINE bool ciy_battery_parse_target(const char *target_str, int *out_slots,
     }
 
     if (strcmp(target_str, "nav") == 0 || strcmp(target_str, "navigation") == 0) {
-        size_t n = 4;
-        if (n > max_slots) n = max_slots;
-        for (size_t i = 0; i < n; i++) {
+        if (max_slots < 4) return false;
+        for (size_t i = 0; i < 4; i++) {
             out_slots[i] = CIY_BATTERY_TARGET_NAV_SLOTS[i];
         }
-        *out_count = n;
+        *out_count = 4;
         return true;
     }
 
@@ -435,6 +433,9 @@ CIY_INLINE bool ciy_battery_parse_target(const char *target_str, int *out_slots,
         while (*p == ' ' || *p == '\t') p++;
         if (*p == ',') p++;
     }
+
+    while (*p == ' ' || *p == '\t' || *p == ',') p++;
+    if (*p != '\0') return false; // Überzählige oder unlesbare Zeichen vorhanden
 
     if (count == 0) return false;
     *out_count = count;

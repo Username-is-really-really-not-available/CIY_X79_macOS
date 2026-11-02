@@ -2118,6 +2118,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
     [[KeyboardBackend shared] stopMonitoring];
+    [[CIYBatteryMonitor sharedMonitor] stopMonitoring];
     [[KeyboardBackend shared] requestCancel];
     if (_hwQueue) {
         dispatch_sync(_hwQueue, ^{

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
@@ -53,17 +54,58 @@ static pthread_t s_bus_lock_owner;
 static _Atomic bool s_bus_has_owner = false;
 
 const char *ciy_bus_lock_path(char *buf, size_t bufsize) {
+    if (!buf || bufsize == 0) return NULL;
+    int r = -1;
     if (getenv("CIY_TESTING") != NULL) {
-        snprintf(buf, bufsize, "/tmp/ciy_x79_bus_%u_%d.lock", (unsigned)getuid(), (int)getpid());
-    } else {
-        snprintf(buf, bufsize, "/tmp/ciy_x79_bus_%u.lock", (unsigned)getuid());
+        r = snprintf(buf, bufsize, "/tmp/ciy_x79_bus_%u_%d.lock", (unsigned)getuid(), (int)getpid());
+        if (r > 0 && (size_t)r < bufsize) return buf;
+        buf[0] = '\0';
+        return NULL;
     }
-    return buf;
+#if defined(__APPLE__) && defined(_CS_DARWIN_USER_TEMP_DIR)
+    char temp_dir[1024];
+    size_t n = confstr(_CS_DARWIN_USER_TEMP_DIR, temp_dir, sizeof(temp_dir));
+    if (n > 1 && n < sizeof(temp_dir) && temp_dir[0] == '/') {
+        struct stat st;
+        if (stat(temp_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+            size_t len = strlen(temp_dir);
+            if (len > 0 && temp_dir[len - 1] == '/') {
+                r = snprintf(buf, bufsize, "%sciy_x79_bus_%u.lock", temp_dir, (unsigned)getuid());
+            } else {
+                r = snprintf(buf, bufsize, "%s/ciy_x79_bus_%u.lock", temp_dir, (unsigned)getuid());
+            }
+            if (r > 0 && (size_t)r < bufsize) return buf;
+            buf[0] = '\0';
+            return NULL;
+        }
+    }
+#endif
+    const char *tmp = getenv("TMPDIR");
+    if (tmp && tmp[0] == '/') {
+        struct stat st;
+        if (stat(tmp, &st) == 0 && S_ISDIR(st.st_mode)) {
+            size_t len = strlen(tmp);
+            if (len > 0 && tmp[len - 1] == '/') {
+                r = snprintf(buf, bufsize, "%sciy_x79_bus_%u.lock", tmp, (unsigned)getuid());
+            } else {
+                r = snprintf(buf, bufsize, "%s/ciy_x79_bus_%u.lock", tmp, (unsigned)getuid());
+            }
+            if (r > 0 && (size_t)r < bufsize) return buf;
+            buf[0] = '\0';
+            return NULL;
+        }
+    }
+    r = snprintf(buf, bufsize, "/tmp/ciy_x79_bus_%u.lock", (unsigned)getuid());
+    if (r > 0 && (size_t)r < bufsize) return buf;
+    buf[0] = '\0';
+    return NULL;
 }
 
 static int ciy_open_lock_file(void) {
-    char user_path[128];
-    ciy_bus_lock_path(user_path, sizeof(user_path));
+    char user_path[PATH_MAX > 1024 ? PATH_MAX : 1024];
+    if (!ciy_bus_lock_path(user_path, sizeof(user_path))) {
+        return -1;
+    }
     int fd = open(user_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600);
     if (fd < 0) {
         return -1;
@@ -401,12 +443,11 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
 
                     uint32_t full_cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
                     if (out) {
-                        if (written + 4 < limit) {
-                            out[written++] = (char)(0xF0 | (full_cp >> 18));
-                            out[written++] = (char)(0x80 | ((full_cp >> 12) & 0x3F));
-                            out[written++] = (char)(0x80 | ((full_cp >> 6) & 0x3F));
-                            out[written++] = (char)(0x80 | (full_cp & 0x3F));
-                        }
+                        if (written + 4 >= limit) return NULL;
+                        out[written++] = (char)(0xF0 | (full_cp >> 18));
+                        out[written++] = (char)(0x80 | ((full_cp >> 12) & 0x3F));
+                        out[written++] = (char)(0x80 | ((full_cp >> 6) & 0x3F));
+                        out[written++] = (char)(0x80 | (full_cp & 0x3F));
                     } else {
                         if (written + 4 < limit) written += 4;
                     }
@@ -419,26 +460,25 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
                     // Valid BMP codepoint
                     if (cp < 0x80) {
                         if (out) {
-                            if (written + 1 < limit) out[written++] = (char)cp;
+                            if (written + 1 >= limit) return NULL;
+                            out[written++] = (char)cp;
                         } else {
                             if (written + 1 < limit) written++;
                         }
                     } else if (cp < 0x800) {
                         if (out) {
-                            if (written + 2 < limit) {
-                                out[written++] = (char)(0xC0 | (cp >> 6));
-                                out[written++] = (char)(0x80 | (cp & 0x3F));
-                            }
+                            if (written + 2 >= limit) return NULL;
+                            out[written++] = (char)(0xC0 | (cp >> 6));
+                            out[written++] = (char)(0x80 | (cp & 0x3F));
                         } else {
                             if (written + 2 < limit) written += 2;
                         }
                     } else {
                         if (out) {
-                            if (written + 3 < limit) {
-                                out[written++] = (char)(0xE0 | (cp >> 12));
-                                out[written++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-                                out[written++] = (char)(0x80 | (cp & 0x3F));
-                            }
+                            if (written + 3 >= limit) return NULL;
+                            out[written++] = (char)(0xE0 | (cp >> 12));
+                            out[written++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                            out[written++] = (char)(0x80 | (cp & 0x3F));
                         } else {
                             if (written + 3 < limit) written += 3;
                         }
@@ -458,7 +498,8 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
                 }
                 if (rep) {
                     if (out) {
-                        if (written + 1 < limit) out[written++] = rep;
+                        if (written + 1 >= limit) return NULL;
+                        out[written++] = rep;
                     } else {
                         if (written + 1 < limit) written++;
                     }
@@ -469,7 +510,8 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
             }
         }
         if (out) {
-            if (written + 1 < limit) out[written++] = *p;
+            if (written + 1 >= limit) return NULL;
+            out[written++] = *p;
         } else {
             if (written + 1 < limit) written++;
         }
@@ -851,7 +893,8 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
     return true;
 }
 
-bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
+char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYValidationResult *out_res) {
+    if (out_size) *out_size = 0;
     if (out_res) {
         memset(out_res, 0, sizeof(*out_res));
     }
@@ -860,7 +903,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Dateipfad ist NULL");
         }
-        return false;
+        return NULL;
     }
 
     int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
@@ -869,7 +912,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' existiert nicht oder konnte nicht geöffnet werden", path);
         }
-        return false;
+        return NULL;
     }
 
     struct stat st;
@@ -879,7 +922,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' ist keine reguläre Datei", path);
         }
-        return false;
+        return NULL;
     }
     if (st.st_size <= 0) {
         close(fd);
@@ -887,7 +930,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' ist leer (0 Bytes)", path);
         }
-        return false;
+        return NULL;
     }
     if (st.st_size > 512 * 1024) {
         close(fd);
@@ -895,7 +938,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' überschreitet maximale Größe (512 KB)", path);
         }
-        return false;
+        return NULL;
     }
 
     FILE *f = fdopen(fd, "rb");
@@ -905,7 +948,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' konnte nicht geöffnet werden", path);
         }
-        return false;
+        return NULL;
     }
 
     char *buf = (char *)malloc((size_t)st.st_size + 1);
@@ -915,7 +958,7 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "memory");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Speicherallokationsfehler");
         }
-        return false;
+        return NULL;
     }
 
     size_t read_bytes = fread(buf, 1, (size_t)st.st_size, f);
@@ -926,23 +969,39 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei enthält ungültige Null-Bytes oder Lesefehler");
         }
-        return false;
+        return NULL;
     }
     buf[read_bytes] = '\0';
+    if (out_size) *out_size = read_bytes;
+    return buf;
+}
+
+char *ciy_read_text_file(const char *path, size_t *out_size) {
+    return ciy_read_text_file_with_result(path, out_size, NULL);
+}
+
+bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res) {
+    if (out_res) {
+        memset(out_res, 0, sizeof(*out_res));
+    }
+    char *buf = ciy_read_text_file_with_result(path, NULL, out_res);
+    if (!buf) return false;
 
     bool ok = ciy_validate_profile_json(buf, out_res);
     free(buf);
     return ok;
 }
 
-bool ciy_parse_profile_json(const char *json, const char *target_profile,
-                            uint8_t rgb[CIY_PLANAR_RGB_SIZE],
-                            char *out_name, size_t max_name_len,
-                            int *out_slots_count) {
+bool ciy_parse_profile_json_with_brightness(const char *json, const char *target_profile,
+                                            uint8_t rgb[CIY_PLANAR_RGB_SIZE],
+                                            char *out_name, size_t max_name_len,
+                                            int *out_slots_count,
+                                            uint8_t *out_brightness) {
     if (!json || !rgb) return false;
     memset(rgb, 0, CIY_PLANAR_RGB_SIZE);
     if (out_name && max_name_len > 0) out_name[0] = '\0';
     if (out_slots_count) *out_slots_count = 0;
+    if (out_brightness) *out_brightness = CIY_MAX_BRIGHTNESS;
 
     // UTF-8 BOM (\xEF\xBB\xBF) überspringen
     if ((unsigned char)json[0] == 0xEF && (unsigned char)json[1] == 0xBB && (unsigned char)json[2] == 0xBF) {
@@ -965,6 +1024,7 @@ bool ciy_parse_profile_json(const char *json, const char *target_profile,
         profile_index++;
 
         char prof_name[64] = {0};
+        uint8_t prof_brightness = CIY_MAX_BRIGHTNESS;
         int valid_count = 0;
         char key[64];
         char slot_key[32];
@@ -990,6 +1050,14 @@ bool ciy_parse_profile_json(const char *json, const char *target_profile,
                     p = skip_json_val(p);
                     if (!p) return false;
                 }
+            } else if (strcmp(key, "brightness") == 0) {
+                char *endptr = NULL;
+                long b = strtol(p, &endptr, 10);
+                if (endptr != p && b >= 0 && b <= CIY_MAX_BRIGHTNESS) {
+                    prof_brightness = (uint8_t)b;
+                }
+                p = skip_json_val(p);
+                if (!p) return false;
             } else if (strcmp(key, "slots") == 0) {
                 if (*p != '{') {
                     p = skip_json_val(p);
@@ -1092,6 +1160,7 @@ bool ciy_parse_profile_json(const char *json, const char *target_profile,
                 out_name[max_name_len - 1] = '\0';
             }
             if (out_slots_count) *out_slots_count = valid_count;
+            if (out_brightness) *out_brightness = prof_brightness;
             found_target = true;
             break;
         }
@@ -1105,47 +1174,37 @@ bool ciy_parse_profile_json(const char *json, const char *target_profile,
     return found_target;
 }
 
+bool ciy_parse_profile_json(const char *json, const char *target_profile,
+                            uint8_t rgb[CIY_PLANAR_RGB_SIZE],
+                            char *out_name, size_t max_name_len,
+                            int *out_slots_count) {
+    return ciy_parse_profile_json_with_brightness(json, target_profile, rgb, out_name, max_name_len, out_slots_count, NULL);
+}
+
+bool ciy_load_profile_file_with_brightness(const char *path, const char *target_profile,
+                                           uint8_t rgb[CIY_PLANAR_RGB_SIZE],
+                                           char *out_name, size_t max_name_len,
+                                           int *out_slots_count,
+                                           uint8_t *out_brightness) {
+    if (!path || !rgb) return false;
+
+    char *buf = ciy_read_text_file(path, NULL);
+    if (!buf) return false;
+
+    if (!ciy_validate_profile_json(buf, NULL)) {
+        free(buf);
+        return false;
+    }
+
+    bool ok = ciy_parse_profile_json_with_brightness(buf, target_profile, rgb, out_name, max_name_len, out_slots_count, out_brightness);
+    free(buf);
+    return ok;
+}
+
 bool ciy_load_profile_file(const char *path, const char *target_profile,
                            uint8_t rgb[CIY_PLANAR_RGB_SIZE],
                            char *out_name, size_t max_name_len,
                            int *out_slots_count) {
-    if (!path || !rgb) return false;
-
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) return false;
-
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        close(fd);
-        return false;
-    }
-    if (st.st_size <= 0 || st.st_size > 512 * 1024) {
-        close(fd);
-        return false;
-    }
-
-    FILE *f = fdopen(fd, "rb");
-    if (!f) {
-        close(fd);
-        return false;
-    }
-
-    char *buf = (char *)malloc((size_t)st.st_size + 1);
-    if (!buf) {
-        fclose(f);
-        return false;
-    }
-
-    size_t read_bytes = fread(buf, 1, (size_t)st.st_size, f);
-    fclose(f);
-    if (read_bytes != (size_t)st.st_size || memchr(buf, '\0', read_bytes) != NULL) {
-        free(buf);
-        return false;
-    }
-    buf[read_bytes] = '\0';
-
-    bool ok = ciy_parse_profile_json(buf, target_profile, rgb, out_name, max_name_len, out_slots_count);
-    free(buf);
-    return ok;
+    return ciy_load_profile_file_with_brightness(path, target_profile, rgb, out_name, max_name_len, out_slots_count, NULL);
 }
 

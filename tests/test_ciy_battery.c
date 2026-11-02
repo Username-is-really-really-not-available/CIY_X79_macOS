@@ -70,6 +70,24 @@ static void test_battery_target_parsing(void) {
     assert(!ciy_battery_parse_target("999", slots, 16, &count)); // Slot > 124
     assert(!ciy_battery_parse_target("", slots, 16, &count));
     assert(!ciy_battery_parse_target(NULL, slots, 16, &count));
+
+    // Mehr Slots als max_slots -> muss false zurückgeben
+    int small_slots[4];
+    assert(!ciy_battery_parse_target("1,2,3,4,5", small_slots, 4, &count));
+    assert(!ciy_battery_parse_target("1-0", small_slots, 4, &count)); // 10 Slots passen nicht in 4
+    int tiny_slots[2];
+    assert(!ciy_battery_parse_target("nav", tiny_slots, 2, &count)); // 4 Slots passen nicht in 2
+
+    // Über 64 Slots bei max_slots 64 (Finding 6)
+    int max_test_slots[64];
+    char large_target[512] = {0};
+    for (int i = 0; i < 65; i++) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d%s", i % 100, (i < 64) ? "," : "");
+        strcat(large_target, buf);
+    }
+    assert(!ciy_battery_parse_target(large_target, max_test_slots, 64, &count));
+
     printf("[Test 2] Akku-Zielzonen Parsing (1-0, space, nav, custom)... PASSED\n");
 }
 

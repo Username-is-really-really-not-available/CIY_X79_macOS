@@ -102,6 +102,13 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res);
 /// Liest eine Profildatei hardwarefrei ein und validiert ihren Inhalt.
 bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res);
 
+/// Liest eine Text-/JSON-Datei sicher von der Festplatte ein (max. 512 KB, keine Binär-/Nullbytes).
+/// Gibt den nullterminierten Puffer zurück (muss mit free() freigegeben werden) oder NULL bei Fehler.
+char *ciy_read_text_file(const char *path, size_t *out_size);
+
+/// Liest eine Text-/JSON-Datei sicher von der Festplatte ein und füllt im Fehlerfall out_res.
+char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYValidationResult *out_res);
+
 /// Parst ein JSON-Profil (Array oder Objekt mit "slots") und befüllt den Planar-Puffer.
 /// target_profile (optional) wählt ein Profil nach Name oder 1-basiertem Index; NULL wählt das erste Profil.
 /// Gibt true zurück, wenn mindestens eine Taste erfolgreich geparst wurde.
@@ -112,12 +119,27 @@ bool ciy_parse_profile_json(const char *json, const char *target_profile,
                             char *out_name, size_t max_name_len,
                             int *out_slots_count);
 
+/// Parst ein JSON-Profil inklusive Helligkeit (0..CIY_MAX_BRIGHTNESS) und befüllt den Planar-Puffer.
+/// out_brightness (optional) nimmt die Helligkeit auf (Default: CIY_MAX_BRIGHTNESS).
+bool ciy_parse_profile_json_with_brightness(const char *json, const char *target_profile,
+                                            uint8_t rgb[CIY_PLANAR_RGB_SIZE],
+                                            char *out_name, size_t max_name_len,
+                                            int *out_slots_count,
+                                            uint8_t *out_brightness);
+
 /// Liest eine JSON-Profildatei von der Festplatte und parst sie in den Planar-Puffer.
 /// target_profile (optional) wählt ein Profil nach Name oder 1-basiertem Index; NULL wählt das erste Profil.
 bool ciy_load_profile_file(const char *path, const char *target_profile,
                            uint8_t rgb[CIY_PLANAR_RGB_SIZE],
                            char *out_name, size_t max_name_len,
                            int *out_slots_count);
+
+/// Liest eine JSON-Profildatei von der Festplatte und parst sie inklusive Helligkeit in den Planar-Puffer.
+bool ciy_load_profile_file_with_brightness(const char *path, const char *target_profile,
+                                           uint8_t rgb[CIY_PLANAR_RGB_SIZE],
+                                           char *out_name, size_t max_name_len,
+                                           int *out_slots_count,
+                                           uint8_t *out_brightness);
 
 #ifdef __cplusplus
 }

@@ -127,6 +127,13 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             int vid = CIY_VENDOR_ID, pid = CIY_PRODUCT_ID;
             CFNumberRef vidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
             CFNumberRef pidRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
+            if (!vidRef || !pidRef) {
+                if (vidRef) CFRelease(vidRef);
+                if (pidRef) CFRelease(pidRef);
+                CFRelease(dict);
+                ok = NO;
+                break;
+            }
             CFDictionarySetValue(dict, CFSTR(kUSBVendorID), vidRef);
             CFDictionarySetValue(dict, CFSTR(kUSBProductID), pidRef);
             CFRelease(vidRef);

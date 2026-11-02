@@ -21,7 +21,9 @@ echo "1. Kompiliere Universal Binary (arm64 & x86_64) mit Clang..."
 clang -arch arm64 -arch x86_64 \
     -mmacosx-version-min=12.0 \
     -O2 \
-    -Wall -Wextra \
+    -fstack-protector-strong \
+    -D_FORTIFY_SOURCE=2 \
+    -Wall -Wextra -Werror \
     -fobjc-arc \
     -framework Cocoa \
     -framework IOKit \
@@ -40,7 +42,9 @@ echo "2. Kompiliere CLI-Tool ciy_ctl (Universal Binary)..."
 clang -arch arm64 -arch x86_64 \
     -mmacosx-version-min=12.0 \
     -O2 \
-    -Wall -Wextra \
+    -fstack-protector-strong \
+    -D_FORTIFY_SOURCE=2 \
+    -Wall -Wextra -Werror \
     -framework IOKit \
     -framework CoreFoundation \
     src/core/ciy_hid.c \
@@ -87,8 +91,8 @@ chmod +x "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${DIST_DIR}/ciy_ctl"
 
 echo "4. Ad-hoc Codesign (arm64 & x86_64)..."
-codesign --force --deep --sign - "${APP_BUNDLE}"
-codesign --force --sign - "${DIST_DIR}/ciy_ctl"
+codesign --force --deep --options runtime --sign - "${APP_BUNDLE}"
+codesign --force --options runtime --sign - "${DIST_DIR}/ciy_ctl"
 
 # Praktische Symlinks im Root-Verzeichnis aktualisieren
 ln -sfn "dist/${APP_NAME}.app" "${PROJECT_ROOT}/${APP_NAME}.app"

@@ -592,6 +592,32 @@ static void test_battery_monitor_sleep_safety(void) {
     assert(updateCountB == 1);
 }
 
+static void test_battery_monitor_termination_cleanup(void) {
+    CIYBatteryMonitor *monitor = [CIYBatteryMonitor sharedMonitor];
+    [monitor startMonitoring];
+    assert([monitor isMonitoring]);
+
+    // Simuliere Lifecycle-Bereinigung bei App-Terminierung
+    [monitor stopMonitoring];
+    assert(![monitor isMonitoring]);
+
+    // Idempotentes Stoppen darf keinen Fehler werfen
+    [monitor stopMonitoring];
+    assert(![monitor isMonitoring]);
+}
+
+static void test_keyboard_backend_monitoring_lifecycle(void) {
+    KeyboardBackend *backend = [KeyboardBackend shared];
+    [backend startMonitoring];
+    // Idempotenter Start darf keine doppelten Notification-Ports erzeugen
+    [backend startMonitoring];
+
+    // Sauberes Stoppen und Freigeben aller IOKit-Ressourcen
+    [backend stopMonitoring];
+    // Idempotentes Stoppen darf keinen Fehler werfen
+    [backend stopMonitoring];
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -612,6 +638,8 @@ int main(void) {
         test_disconnect_during_apply();
         test_malformed_json_slots_ignored();
         test_battery_monitor_sleep_safety();
+        test_battery_monitor_termination_cleanup();
+        test_keyboard_backend_monitoring_lifecycle();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

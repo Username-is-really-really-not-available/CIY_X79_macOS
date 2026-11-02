@@ -280,6 +280,39 @@ fi
 echo "${LOAD_BAD_JSON}" | grep -q '"success": false'
 echo "${LOAD_BAD_JSON}" | grep -q '"field": "130"'
 
+# 4.6 Profil mit definierter Helligkeit ohne -b Flag: übernimmt Profil-Helligkeit (Finding 4 - CLI)
+TMP_BRIGHT_JSON="${TMP_DIR}/profile_bright.json"
+cat << 'EOF' > "${TMP_BRIGHT_JSON}"
+{
+  "name": "Bright Profile",
+  "brightness": 3,
+  "slots": { "14": "#FF0000" }
+}
+EOF
+LOAD_BRIGHT_OUT="$("${CIY_CTL}" load "${TMP_BRIGHT_JSON}" --json)"
+echo "${LOAD_BRIGHT_OUT}" | grep -q '"name": "Bright Profile"'
+echo "${LOAD_BRIGHT_OUT}" | grep -q '"brightness": 3'
+
+# 4.7 Profil mit definierter Helligkeit, aber mit -b Flag überschrieben
+LOAD_OVERRIDE_OUT="$("${CIY_CTL}" load "${TMP_BRIGHT_JSON}" -b 1 --json)"
+echo "${LOAD_OVERRIDE_OUT}" | grep -q '"name": "Bright Profile"'
+echo "${LOAD_OVERRIDE_OUT}" | grep -q '"brightness": 1'
+
+# 4.8 Ungültiger negativer Profil-Index muss in realem Modus und Dry-Run einheitlich scheitern
+LOAD_NEG_OUT="$("${CIY_CTL}" load "${PROJECT_ROOT}/tests/fixtures/valid_multi_profile.json" -1 --json 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: load mit negativem Profilindex -1 hätte scheitern müssen!"
+    exit 1
+fi
+echo "${LOAD_NEG_OUT}" | grep -q '"success": false'
+
+LOAD_DRY_NEG_OUT="$("${CIY_CTL}" --dry-run load "${PROJECT_ROOT}/tests/fixtures/valid_multi_profile.json" -1 --json 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: --dry-run load mit negativem Profilindex -1 hätte scheitern müssen!"
+    exit 1
+fi
+echo "${LOAD_DRY_NEG_OUT}" | grep -q '"success": false'
+
 echo "=== Test CLI: 5. Status-/Set-Exit-Codes und JSON-Schema ==="
 STATUS_OK="$("${CIY_CTL}" status --json)"
 echo "${STATUS_OK}" | grep -q '"connected": true'
@@ -300,6 +333,22 @@ SET_B_OK="$("${CIY_CTL}" set 15 -b 3 --json)"
 echo "${SET_B_OK}" | grep -q '"success": true'
 echo "${SET_B_OK}" | grep -q '"mode": 15'
 echo "${SET_B_OK}" | grep -q '"brightness": 3'
+
+# 5.1c Flag -b hat Vorrang vor 4. Positionsargument (Finding 5)
+SET_FLAG_PRIO_OK="$("${CIY_CTL}" set 1 0 2 5 -b 3 --json)"
+echo "${SET_FLAG_PRIO_OK}" | grep -q '"success": true'
+echo "${SET_FLAG_PRIO_OK}" | grep -q '"brightness": 3'
+
+# Flag -b überschreibt 4. Positionsargument selbst dann, wenn dieses ungültig/out-of-range ist
+SET_FLAG_OVERRIDE_OUT="$("${CIY_CTL}" set 1 0 2 99 -b 3 --json)"
+echo "${SET_FLAG_OVERRIDE_OUT}" | grep -q '"success": true'
+echo "${SET_FLAG_OVERRIDE_OUT}" | grep -q '"brightness": 3'
+
+SET_DRY_FLAG_PRIO_OK="$("${CIY_CTL}" --dry-run set 1 0 2 5 -b 3 --json)"
+echo "${SET_DRY_FLAG_PRIO_OK}" | grep -q '"brightness": 3'
+
+SET_DRY_FLAG_OVERRIDE_OUT="$("${CIY_CTL}" --dry-run set 1 0 2 99 -b 3 --json)"
+echo "${SET_DRY_FLAG_OVERRIDE_OUT}" | grep -q '"brightness": 3'
 
 WASD_B_OK="$("${CIY_CTL}" wasd -b 1 --json)"
 echo "${WASD_B_OK}" | grep -q '"success": true'
@@ -333,6 +382,68 @@ echo "${SET_NO_READ_B_OK}" | grep -q '"brightness": 3'
 SET_NO_READ_POS_OK="$(CIY_TESTING_FAIL_GET_REPORTS=1 "${CIY_CTL}" set 15 0 2 3 --json)"
 echo "${SET_NO_READ_POS_OK}" | grep -q '"success": true'
 echo "${SET_NO_READ_POS_OK}" | grep -q '"brightness": 3'
+
+# 5.1d Ablehnung überzähliger Argumente bei set (Finding 2)
+SET_EXTRA_ERR="$("${CIY_CTL}" set 1 0 2 5 99 2>&1)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: set mit 5 Argumenten hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_EXTRA_ERR}" | grep -q "Zu viele Argumente"
+
+SET_EXTRA_JSON="$("${CIY_CTL}" set 1 0 2 5 99 --json 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: set mit 5 Argumenten --json hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_EXTRA_JSON}" | grep -q '"success": false'
+echo "${SET_EXTRA_JSON}" | grep -q "Zu viele Argumente"
+
+SET_DRY_EXTRA_ERR="$("${CIY_CTL}" --dry-run set 1 0 2 5 99 2>&1)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: --dry-run set mit 5 Argumenten hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_DRY_EXTRA_ERR}" | grep -q "Zu viele Argumente"
+
+SET_DRY_EXTRA_JSON="$("${CIY_CTL}" --dry-run set 1 0 2 5 99 --json 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: --dry-run set mit 5 Argumenten --json hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_DRY_EXTRA_JSON}" | grep -q '"success": false'
+echo "${SET_DRY_EXTRA_JSON}" | grep -q "Zu viele Argumente"
+
+# 5.1e Ablehnung fehlender Argumente bei set (0 Argumente)
+SET_MISSING_ERR="$("${CIY_CTL}" set 2>&1)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: set ohne Argumente hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_MISSING_ERR}" | grep -q "Verwendung: .* set"
+
+SET_MISSING_JSON="$("${CIY_CTL}" set --json 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: set ohne Argumente --json hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_MISSING_JSON}" | grep -q '"success": false'
+echo "${SET_MISSING_JSON}" | grep -q "Fehlende Argumente"
+
+SET_DRY_MISSING_ERR="$("${CIY_CTL}" --dry-run set 2>&1)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: --dry-run set ohne Argumente hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_DRY_MISSING_ERR}" | grep -q "Verwendung: .* set"
+
+SET_DRY_MISSING_JSON="$("${CIY_CTL}" --dry-run set --json 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: --dry-run set ohne Argumente --json hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${SET_DRY_MISSING_JSON}" | grep -q '"success": false'
+echo "${SET_DRY_MISSING_JSON}" | grep -q "Fehlende Argumente"
 
 echo "=== Test CLI: 6. probe-led und sweep (Phase 2 Probing & Diagnostics) ==="
 # 6.1 probe-led Erfolgspfade
@@ -433,6 +544,11 @@ echo "${SWEEP_DRY}" | grep -q "Report 0x0B"
 "${CIY_CTL}" --dry-run sweep -i > /dev/null
 "${CIY_CTL}" --dry-run sweep --interactive > /dev/null
 
+# 6.8 sweep --auto im Dry-Run läuft ohne TTY fehlerfrei durch (Finding 3)
+SWEEP_AUTO_DRY="$("${CIY_CTL}" --dry-run sweep --auto < /dev/null)"
+echo "${SWEEP_AUTO_DRY}" | grep -q "DRY RUN"
+echo "${SWEEP_AUTO_DRY}" | grep -q "Sweep Simulation"
+
 echo "=== Test CLI: 7. battery Subcommand (Mocks, Quellen, Dry-Run & JSON) ==="
 # 7.1 Hilfe enthält battery
 "${CIY_CTL}" --help | grep -q "battery"
@@ -503,6 +619,28 @@ if [ "${RC}" -eq 0 ]; then
 fi
 echo "${BAT_BAD_TARGET}" | grep -q '"success": false'
 echo "${BAT_BAD_TARGET}" | grep -q "Ungültiges Akku-Ziel"
+
+# 7.7 battery --apply Live-Modus mit Mock (Finding 1)
+BAT_APPLY_JSON="$(CIY_TESTING=1 CIY_BATTERY_MOCK_PERCENT=80 CIY_BATTERY_MOCK_CHARGING=1 "${CIY_CTL}" battery --apply --json)"
+echo "${BAT_APPLY_JSON}" | grep -q '"success": true'
+echo "${BAT_APPLY_JSON}" | grep -q '"action": "battery_apply"'
+echo "${BAT_APPLY_JSON}" | grep -q '"percent": 80'
+echo "${BAT_APPLY_JSON}" | grep -q '"charging": true'
+
+BAT_APPLY_SPACE_JSON="$(CIY_TESTING=1 CIY_BATTERY_MOCK_PERCENT=50 CIY_BATTERY_MOCK_CHARGING=0 "${CIY_CTL}" battery --apply --target space --json)"
+echo "${BAT_APPLY_SPACE_JSON}" | grep -q '"success": true'
+echo "${BAT_APPLY_SPACE_JSON}" | grep -q '"action": "battery_apply"'
+echo "${BAT_APPLY_SPACE_JSON}" | grep -q '"percent": 50'
+echo "${BAT_APPLY_SPACE_JSON}" | grep -q '"target": "space"'
+
+# 7.8 battery --apply mit ungültigem Ziel muss vor Hardwarezugriff fehlschlagen
+BAT_APPLY_BAD="$(CIY_TESTING=1 "${CIY_CTL}" battery --apply --target 999,998 --json 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: battery --apply mit Ziel 999,998 hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${BAT_APPLY_BAD}" | grep -q '"success": false'
+echo "${BAT_APPLY_BAD}" | grep -q "Ungültiges Akku-Ziel"
 
 echo "=== Test CLI: 8. gradient Subcommand (Optionen, Richtungen, Dry-Run & JSON) ==="
 # 8.1 Hilfe enthält gradient und --dir

@@ -382,6 +382,133 @@ static void test_load_profile_file(void) {
     remove(tmp_path);
 }
 
+static void test_load_profile_file_schema_validation(void) {
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char name[64];
+    int count = 0;
+    uint8_t brightness = 0;
+    char path[256];
+    snprintf(path, sizeof(path), "/tmp/ciy_test_schema_val_%d.json", (int)getpid());
+
+    // 1. Ungültige Helligkeit (brightness = 9) -> ciy_validate_profile_json muss abweisen
+    FILE *f = fopen(path, "w");
+    assert(f != NULL);
+    fputs("{\"name\": \"BadBright\", \"brightness\": 9, \"slots\": {\"0\": \"#FF0000\"}}", f);
+    fclose(f);
+    assert(!ciy_load_profile_file_with_brightness(path, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(!ciy_load_profile_file(path, NULL, rgb, name, sizeof(name), &count));
+    unlink(path);
+
+    // 2. Ungültiger Slot (slot = 130) -> muss abgewiesen werden
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fputs("{\"name\": \"BadSlot\", \"slots\": {\"130\": \"#FF0000\"}}", f);
+    fclose(f);
+    assert(!ciy_load_profile_file_with_brightness(path, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(!ciy_load_profile_file(path, NULL, rgb, name, sizeof(name), &count));
+    unlink(path);
+
+    // 3. Ungültige Hex-Farbe -> muss abgewiesen werden
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fputs("{\"name\": \"BadColor\", \"slots\": {\"0\": \"#ZZZZZZ\"}}", f);
+    fclose(f);
+    assert(!ciy_load_profile_file_with_brightness(path, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(!ciy_load_profile_file(path, NULL, rgb, name, sizeof(name), &count));
+    unlink(path);
+
+    // 4. Korruptes JSON -> muss abgewiesen werden
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fputs("{\"name\": \"BrokenJSON\", \"slots\": {", f);
+    fclose(f);
+    assert(!ciy_load_profile_file_with_brightness(path, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(!ciy_load_profile_file(path, NULL, rgb, name, sizeof(name), &count));
+    unlink(path);
+
+    // 5. Valides Profil -> muss erfolgreich laden
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fputs("{\"name\": \"ValidProf\", \"brightness\": 3, \"slots\": {\"0\": \"#00FF00\"}}", f);
+    fclose(f);
+    assert(ciy_load_profile_file_with_brightness(path, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(brightness == 3);
+    assert(count == 1);
+    assert(strcmp(name, "ValidProf") == 0);
+    assert(ciy_load_profile_file(path, NULL, rgb, name, sizeof(name), &count));
+    assert(count == 1);
+    unlink(path);
+}
+
+static void test_parse_profile_json_brightness(void) {
+    const char *json_with_bright = "{\"name\": \"Bright3\", \"brightness\": 3, \"slots\": {\"0\": \"#FF0000\"}}";
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char name[64] = {0};
+    int count = 0;
+    uint8_t brightness = 0;
+
+    assert(ciy_parse_profile_json_with_brightness(json_with_bright, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(count == 1);
+    assert(brightness == 3);
+    assert(strcmp(name, "Bright3") == 0);
+
+    // Ohne Helligkeitsfeld: Default CIY_MAX_BRIGHTNESS (5)
+    const char *json_no_bright = "{\"name\": \"NoBright\", \"slots\": {\"0\": \"#00FF00\"}}";
+    brightness = 0;
+    assert(ciy_parse_profile_json_with_brightness(json_no_bright, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(count == 1);
+    assert(brightness == CIY_MAX_BRIGHTNESS);
+
+    // Multi-Profil mit unterschiedlicher Helligkeit
+    const char *multi_bright = "[{\"name\": \"P1\", \"brightness\": 1, \"slots\": {\"1\": \"#FF0000\"}}, {\"name\": \"P2\", \"brightness\": 4, \"slots\": {\"2\": \"#00FF00\"}}]";
+    brightness = 0;
+    assert(ciy_parse_profile_json_with_brightness(multi_bright, "P2", rgb, name, sizeof(name), &count, &brightness));
+    assert(brightness == 4);
+    assert(strcmp(name, "P2") == 0);
+
+    // Helligkeit 0 (Grenzfall)
+    const char *json_zero_bright = "{\"name\": \"ZeroBright\", \"brightness\": 0, \"slots\": {\"0\": \"#FF0000\"}}";
+    brightness = 5;
+    assert(ciy_parse_profile_json_with_brightness(json_zero_bright, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(count == 1);
+    assert(brightness == 0);
+    assert(strcmp(name, "ZeroBright") == 0);
+
+    // Helligkeitsfeld VOR dem Namen (Schlüssel-Reihenfolge Unabhängigkeit)
+    const char *json_bright_first = "{\"brightness\": 2, \"name\": \"PreBright\", \"slots\": {\"0\": \"#AABBCC\"}}";
+    brightness = 0;
+    assert(ciy_parse_profile_json_with_brightness(json_bright_first, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(count == 1);
+    assert(brightness == 2);
+    assert(strcmp(name, "PreBright") == 0);
+
+    // Multi-Profil mit Helligkeit vor Name im zweiten Profil
+    const char *multi_bright_first = "[{\"name\": \"P1\", \"slots\": {\"0\": \"#FF0000\"}}, {\"brightness\": 1, \"name\": \"P2\", \"slots\": {\"1\": \"#00FF00\"}}]";
+    brightness = 0;
+    assert(ciy_parse_profile_json_with_brightness(multi_bright_first, "P2", rgb, name, sizeof(name), &count, &brightness));
+    assert(brightness == 1);
+    assert(strcmp(name, "P2") == 0);
+
+    // Ungültige Helligkeit (Out-of-Range 9) muss von ciy_validate_profile_json abgewiesen werden
+    const char *json_bad_bright = "{\"name\": \"BadBright\", \"brightness\": 9, \"slots\": {\"0\": \"#FF0000\"}}";
+    CIYValidationResult vres;
+    assert(!ciy_validate_profile_json(json_bad_bright, &vres));
+    assert(strcmp(vres.error_field, "brightness") == 0);
+
+    // Laden von Datei mit Helligkeit
+    const char *tmp_path = "/tmp/ciy_test_bright_profile.json";
+    FILE *f = fopen(tmp_path, "w");
+    assert(f != NULL);
+    fputs("{\"name\": \"File Bright\", \"brightness\": 2, \"slots\": {\"0\": \"#112233\"}}", f);
+    fclose(f);
+
+    brightness = 0;
+    assert(ciy_load_profile_file_with_brightness(tmp_path, NULL, rgb, name, sizeof(name), &count, &brightness));
+    assert(brightness == 2);
+    assert(strcmp(name, "File Bright") == 0);
+    remove(tmp_path);
+}
+
 static void test_fifo_profile_rejection(void) {
     char fifo_path[128];
     snprintf(fifo_path, sizeof(fifo_path), "/tmp/ciy_test_fifo_%d.fifo", (int)getpid());
@@ -423,8 +550,8 @@ static void test_bus_lock_reentrancy(void) {
 
 static void test_lockfile_security(void) {
     assert(ciy_bus_lock());
-    char user_path[128];
-    ciy_bus_lock_path(user_path, sizeof(user_path));
+    char user_path[PATH_MAX];
+    assert(ciy_bus_lock_path(user_path, sizeof(user_path)) != NULL);
 
     // Sicheres Öffnen mit O_NOFOLLOW und atomare Prüfung über Dateideskriptor (vermeidet TOCTOU-Race)
     int fd = open(user_path, O_RDONLY | O_NOFOLLOW);
@@ -441,9 +568,62 @@ static void test_lockfile_security(void) {
     assert(unlink(user_path) == 0);
 }
 
+static void test_bus_lock_path_isolated_per_user(void) {
+    char buf[1024];
+    // 1. Mit CIY_TESTING gesetzt: /tmp/ciy_x79_bus_%u_%d.lock
+    const char *p = ciy_bus_lock_path(buf, sizeof(buf));
+    assert(p != NULL);
+    assert(strstr(p, "/tmp/ciy_x79_bus_") != NULL);
+    assert(strstr(p, ".lock") != NULL);
+
+    // 2. NULL, 0 oder zu kleine Buffer Size abweisen (Rückgabe NULL, keine stille Trunkierung)
+    assert(ciy_bus_lock_path(NULL, sizeof(buf)) == NULL);
+    assert(ciy_bus_lock_path(buf, 0) == NULL);
+    char tiny[10];
+    assert(ciy_bus_lock_path(tiny, sizeof(tiny)) == NULL);
+
+    // 3. Mit CIY_TESTING ungesetzt: isolierter Per-User-Temp-Pfad
+    const char *orig_testing = getenv("CIY_TESTING");
+    char saved_testing[64] = {0};
+    if (orig_testing) strncpy(saved_testing, orig_testing, sizeof(saved_testing) - 1);
+    unsetenv("CIY_TESTING");
+
+    p = ciy_bus_lock_path(buf, sizeof(buf));
+    assert(p != NULL);
+    assert(ciy_bus_lock_path(tiny, sizeof(tiny)) == NULL);
+#if defined(__APPLE__) && defined(_CS_DARWIN_USER_TEMP_DIR)
+    char darwin_temp[1024];
+    if (confstr(_CS_DARWIN_USER_TEMP_DIR, darwin_temp, sizeof(darwin_temp)) > 1) {
+        assert(strncmp(p, darwin_temp, strlen(darwin_temp)) == 0);
+    }
+#endif
+
+    // 4. Relatives oder ungültiges TMPDIR darf nicht verwendet werden (muss absolut sein)
+    const char *orig_tmp = getenv("TMPDIR");
+    char saved_tmp[PATH_MAX] = {0};
+    if (orig_tmp) strncpy(saved_tmp, orig_tmp, sizeof(saved_tmp) - 1);
+
+    setenv("TMPDIR", "relative/tmp/dir", 1);
+    char fallback_buf[1024];
+    p = ciy_bus_lock_path(fallback_buf, sizeof(fallback_buf));
+    assert(p != NULL);
+    assert(strncmp(p, "relative/", 9) != 0); // Niemals relativen Pfad als Lockfile nutzen
+
+    if (orig_tmp) {
+        setenv("TMPDIR", saved_tmp, 1);
+    } else {
+        unsetenv("TMPDIR");
+    }
+
+    // Wiederherstellen
+    if (orig_testing) {
+        setenv("CIY_TESTING", saved_testing, 1);
+    }
+}
+
 static void test_lockfile_rejects_fifo(void) {
-    char fifo_path[128];
-    ciy_bus_lock_path(fifo_path, sizeof(fifo_path));
+    char fifo_path[PATH_MAX];
+    assert(ciy_bus_lock_path(fifo_path, sizeof(fifo_path)) != NULL);
 
     unlink(fifo_path);
 
@@ -459,8 +639,8 @@ static void test_lockfile_rejects_fifo(void) {
 }
 
 static void test_lockfile_rejects_symlink(void) {
-    char symlink_path[128];
-    ciy_bus_lock_path(symlink_path, sizeof(symlink_path));
+    char symlink_path[PATH_MAX];
+    assert(ciy_bus_lock_path(symlink_path, sizeof(symlink_path)) != NULL);
 
     unlink(symlink_path);
 
@@ -556,7 +736,7 @@ static void test_json_string_length_limits(void) {
     int count = 0;
 
     // 1. Profilname überschreitet 64-Byte-Puffer (64 Zeichen String + \0 > 64)
-    // Erwartet: Trunkierung auf 63 Zeichen, Profil wird geladen
+    // Erwartet: Abweisung als Längen-/Syntaxfehler (keine stille Trunkierung)
     char long_name[70];
     memset(long_name, 'A', 64);
     long_name[64] = '\0';
@@ -564,11 +744,7 @@ static void test_json_string_length_limits(void) {
     snprintf(json_buf, sizeof(json_buf), "{\"name\": \"%s\", \"slots\": {\"0\": \"#FF0000\"}}", long_name);
     memset(name, 0, sizeof(name));
     count = 0;
-    assert(ciy_parse_profile_json(json_buf, NULL, rgb, name, sizeof(name), &count));
-    assert(count == 1);
-    // Name sollte auf 63 Zeichen trunkiert sein
-    assert(strlen(name) == 63);
-    assert(strncmp(name, long_name, 63) == 0);
+    assert(!ciy_parse_profile_json(json_buf, NULL, rgb, name, sizeof(name), &count));
 
     // 2. Profilname mit exakt 63 Zeichen (Grenzfall: passt inklusive '\0' genau in 64 Byte)
     memset(long_name, 'B', 63);
@@ -580,27 +756,25 @@ static void test_json_string_length_limits(void) {
     assert(count == 1);
     assert(strcmp(name, long_name) == 0);
 
-    // 3. JSON-Key überschreitet 64-Byte-Puffer (64 Zeichen Key) -> trunkiert
+    // 3. JSON-Key überschreitet 64-Byte-Puffer (64 Zeichen Key) -> Abweisung als Überlänge
     char long_key[70];
     memset(long_key, 'k', 64);
     long_key[64] = '\0';
     snprintf(json_buf, sizeof(json_buf), "{\"%s\": 123, \"name\": \"OK\", \"slots\": {\"0\": \"#FF0000\"}}", long_key);
     memset(name, 0, sizeof(name));
     count = 0;
-    assert(ciy_parse_profile_json(json_buf, NULL, rgb, name, sizeof(name), &count));
-    assert(count == 1);
+    assert(!ciy_parse_profile_json(json_buf, NULL, rgb, name, sizeof(name), &count));
 
-    // 4. Slot-Key überschreitet 32-Byte-Puffer (32 Zeichen) -> trunkiert, aber ungültige Slot-Nummer
+    // 4. Slot-Key überschreitet 32-Byte-Puffer (32 Zeichen) -> Abweisung als Überlänge
     char long_slot[40];
     memset(long_slot, '9', 32);
     long_slot[32] = '\0';
     snprintf(json_buf, sizeof(json_buf), "{\"name\": \"OK\", \"slots\": {\"%s\": \"#FF0000\"}}", long_slot);
     memset(name, 0, sizeof(name));
     count = 0;
-    // Erwartet: Parse schlägt fehl, da trunkierter Key "999..." keine gültige Slot-Nummer ist
     assert(!ciy_parse_profile_json(json_buf, NULL, rgb, name, sizeof(name), &count));
 
-    // 5. String in unbekanntem Feld überschreitet CIY_JSON_MAX_STRLEN (4096) -> DoS-Schutz (trunkiert)
+    // 5. String in unbekanntem Feld überschreitet CIY_JSON_MAX_STRLEN (4096) -> DoS-Schutz beim Überspringen
     char *huge_json = (char *)malloc(5000);
     assert(huge_json != NULL);
     strcpy(huge_json, "{\"name\": \"DoS\", \"extra\": \"");
@@ -612,6 +786,54 @@ static void test_json_string_length_limits(void) {
     assert(ciy_parse_profile_json(huge_json, NULL, rgb, name, sizeof(name), &count));
     assert(count == 1);
     free(huge_json);
+}
+
+static void test_json_string_bounds_and_unicode_escapes(void) {
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char name[64];
+    int count = 0;
+
+    // 1. UTF-8 Surrogate Pair (\uD83D\uDE00, 4 Bytes UTF-8):
+    // Name mit 60 Bytes 'A' + 4-Byte Emoji = 64 Bytes Inhalt + '\0' (benötigt 65 Bytes Puffer)
+    // In 64-Byte-Puffer: muss als Überlauf abgewiesen werden!
+    char buf[512];
+    char prefix[64];
+    memset(prefix, 'A', 60);
+    prefix[60] = '\0';
+    snprintf(buf, sizeof(buf), "{\"name\": \"%s\\uD83D\\uDE00\", \"slots\": {\"0\": \"#FF0000\"}}", prefix);
+    assert(!ciy_parse_profile_json(buf, NULL, rgb, name, sizeof(name), &count));
+
+    // 2. UTF-8 Surrogate Pair passend: 59 Bytes 'A' + 4-Byte Emoji = 63 Bytes + '\0' = 64 Bytes (genau passend)
+    prefix[59] = '\0';
+    snprintf(buf, sizeof(buf), "{\"name\": \"%s\\uD83D\\uDE00\", \"slots\": {\"0\": \"#FF0000\"}}", prefix);
+    assert(ciy_parse_profile_json(buf, NULL, rgb, name, sizeof(name), &count));
+    assert(strlen(name) == 63);
+
+    // 3. UTF-8 BMP 3-Byte Codepoint (\u20AC, Euro, 3 Bytes UTF-8):
+    // 61 Bytes 'A' + 3 Bytes = 64 Bytes Inhalt (benötigt 65 Bytes Puffer) -> Abweisung
+    memset(prefix, 'A', 61);
+    prefix[61] = '\0';
+    snprintf(buf, sizeof(buf), "{\"name\": \"%s\\u20AC\", \"slots\": {\"0\": \"#FF0000\"}}", prefix);
+    assert(!ciy_parse_profile_json(buf, NULL, rgb, name, sizeof(name), &count));
+
+    // 4. UTF-8 BMP 3-Byte passend: 60 Bytes 'A' + 3 Bytes = 63 Bytes + '\0' = 64 Bytes -> Erfolg
+    prefix[60] = '\0';
+    snprintf(buf, sizeof(buf), "{\"name\": \"%s\\u20AC\", \"slots\": {\"0\": \"#FF0000\"}}", prefix);
+    assert(ciy_parse_profile_json(buf, NULL, rgb, name, sizeof(name), &count));
+    assert(strlen(name) == 63);
+
+    // 5. UTF-8 BMP 2-Byte Codepoint (\u00A9, Copyright, 2 Bytes UTF-8):
+    // 62 Bytes 'A' + 2 Bytes = 64 Bytes Inhalt -> Abweisung
+    memset(prefix, 'A', 62);
+    prefix[62] = '\0';
+    snprintf(buf, sizeof(buf), "{\"name\": \"%s\\u00A9\", \"slots\": {\"0\": \"#FF0000\"}}", prefix);
+    assert(!ciy_parse_profile_json(buf, NULL, rgb, name, sizeof(name), &count));
+
+    // 6. UTF-8 BMP 2-Byte passend: 61 Bytes 'A' + 2 Bytes = 63 Bytes + '\0' = 64 Bytes -> Erfolg
+    prefix[61] = '\0';
+    snprintf(buf, sizeof(buf), "{\"name\": \"%s\\u00A9\", \"slots\": {\"0\": \"#FF0000\"}}", prefix);
+    assert(ciy_parse_profile_json(buf, NULL, rgb, name, sizeof(name), &count));
+    assert(strlen(name) == 63);
 }
 
 static void test_corrupt_strings_in_unknown_fields(void) {
@@ -844,12 +1066,181 @@ static void test_transfer_plan(void) {
     assert(!ciy_execute_transfer_plan(&dev, &invalid_plan, NULL, NULL));
 }
 
+static void test_read_text_file_validation_result_init(void) {
+    CIYValidationResult res;
+    char path[128];
+
+    // 1. Nicht-existierende Datei
+    snprintf(path, sizeof(path), "/tmp/ciy_nonexist_%d.json", (int)getpid());
+    unlink(path);
+    memset(&res, 0xAA, sizeof(res));
+    size_t out_size = 999;
+    char *buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(res.error_message[0] != '\0');
+    assert(strcmp(res.error_field, "file") == 0);
+
+    // 2. NULL-Dateipfad
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result(NULL, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(res.error_message[0] != '\0');
+    assert(strcmp(res.error_field, "file") == 0);
+
+    // 3. Verzeichnis abweisen
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result("/tmp", &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(res.error_message[0] != '\0');
+    assert(strcmp(res.error_field, "file") == 0);
+
+    // 4. Leere Datei abweisen
+    snprintf(path, sizeof(path), "/tmp/ciy_empty_%d.txt", (int)getpid());
+    unlink(path);
+    FILE *ef = fopen(path, "w");
+    assert(ef != NULL);
+    fclose(ef);
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(res.error_message[0] != '\0');
+    assert(strcmp(res.error_field, "file") == 0);
+    unlink(path);
+
+    // 5. FIFO abweisen (nicht-blockierend)
+    snprintf(path, sizeof(path), "/tmp/ciy_fifo_%d.fifo", (int)getpid());
+    unlink(path);
+    assert(mkfifo(path, 0600) == 0);
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(strcmp(res.error_field, "file") == 0);
+    assert(strstr(res.error_message, "keine reguläre Datei") != NULL);
+    unlink(path);
+
+    // 6. Zyklischen Symlink abweisen
+    snprintf(path, sizeof(path), "/tmp/ciy_symloop_%d.json", (int)getpid());
+    unlink(path);
+    assert(symlink(path, path) == 0);
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(strcmp(res.error_field, "file") == 0);
+    unlink(path);
+
+    // 7. Datei mit Null-Bytes abweisen (Binärdatei-Schutz)
+    snprintf(path, sizeof(path), "/tmp/ciy_nullbyte_%d.json", (int)getpid());
+    unlink(path);
+    FILE *bf = fopen(path, "wb");
+    assert(bf != NULL);
+    char bin_data[] = {'{', '"', 'a', '"', ':', ' ', 0, '}'};
+    assert(fwrite(bin_data, 1, sizeof(bin_data), bf) == sizeof(bin_data));
+    fclose(bf);
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(strcmp(res.error_field, "syntax") == 0);
+    assert(strstr(res.error_message, "Null-Bytes") != NULL);
+    unlink(path);
+
+    // 8. Datei > 512 KB abweisen
+    snprintf(path, sizeof(path), "/tmp/ciy_oversized_%d.json", (int)getpid());
+    unlink(path);
+    FILE *of = fopen(path, "wb");
+    assert(of != NULL);
+    assert(fseek(of, 513 * 1024, SEEK_SET) == 0);
+    assert(fputc('}', of) == '}');
+    fclose(of);
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(strcmp(res.error_field, "file") == 0);
+    assert(strstr(res.error_message, "512 KB") != NULL);
+    unlink(path);
+
+    // 9. Erfolgreiches Lesen initialisiert out_res sauber (keine 0xAA Dummy-Werte)
+    snprintf(path, sizeof(path), "/tmp/ciy_valid_%d.json", (int)getpid());
+    unlink(path);
+    FILE *vf = fopen(path, "w");
+    assert(vf != NULL);
+    const char *content = "{\"slots\":{}}";
+    fputs(content, vf);
+    fclose(vf);
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 0;
+    buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf != NULL);
+    assert(out_size == strlen(content));
+    assert(strcmp(buf, content) == 0);
+    assert(res.is_valid == false);
+    assert(res.profile_count == 0);
+    assert(res.total_keys_count == 0);
+    assert(res.error_message[0] == '\0');
+    assert(res.error_field[0] == '\0');
+    free(buf);
+
+    // 10. Convenience-Funktion ciy_read_text_file testen
+    size_t conv_size = 0;
+    buf = ciy_read_text_file(path, &conv_size);
+    assert(buf != NULL);
+    assert(conv_size == strlen(content));
+    assert(strcmp(buf, content) == 0);
+    free(buf);
+    unlink(path);
+
+    // 11. Robuste Behandlung von NULL out_size und NULL out_res
+    assert(ciy_read_text_file_with_result(NULL, NULL, NULL) == NULL);
+    snprintf(path, sizeof(path), "/tmp/ciy_nonexist_%d.json", (int)getpid());
+    unlink(path);
+    assert(ciy_read_text_file_with_result(path, NULL, NULL) == NULL);
+}
+
 int main(void) {
     if (!getenv("CIY_TESTING")) {
         setenv("CIY_TESTING", "1", 1);
     }
     test_layout_c_model();
     test_profile_validation();
+    test_read_text_file_validation_result_init();
     test_transfer_plan();
     test_build_profile_wasd();
     test_build_profile_yellow_no_base();
@@ -865,12 +1256,16 @@ int main(void) {
     test_unicode_surrogate_rejection();
     test_truncated_unicode_escapes();
     test_json_string_length_limits();
+    test_json_string_bounds_and_unicode_escapes();
     test_corrupt_strings_in_unknown_fields();
     test_cancelable_apply();
     test_load_profile_file();
+    test_load_profile_file_schema_validation();
+    test_parse_profile_json_brightness();
     test_fifo_profile_rejection();
     test_bus_lock_reentrancy();
     test_lockfile_security();
+    test_bus_lock_path_isolated_per_user();
     test_lockfile_rejects_fifo();
     test_lockfile_rejects_symlink();
     puts("Alle Tests bestanden.");
