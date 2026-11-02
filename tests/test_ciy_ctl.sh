@@ -19,7 +19,7 @@ if [ -n "${CIY_CTL_OVERRIDE:-}" ]; then
     fi
 else
     CIY_CTL="${TMP_DIR}/ciy_ctl"
-    CLANG_FLAGS=(-Wall -Wextra -mmacosx-version-min=12.0)
+    CLANG_FLAGS=(-Wall -Wextra -Werror -mmacosx-version-min=12.0)
     if [ "${CIY_SANITIZE:-0}" = "1" ]; then
         CLANG_FLAGS+=(-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer)
     fi

@@ -425,7 +425,7 @@ CIY_X79_macOS/
 ├── dist/                        # Kompilierte Universal Binaries & DMG
 │   ├── CIYX79Control.app
 │   ├── ciy_ctl
-│   └── CIYX79Control-1.2.0.dmg
+│   └── CIYX79Control-1.4.1.dmg
 ├── ROADMAP.md                   # Meilensteine & OpenRGB Upstream-Planung
 ├── README.md                    # Umfassende Dokumentation & Anleitung
 ├── LICENSE                      # MIT-Lizenz
@@ -564,7 +564,7 @@ Das Skript:
 ```bash
 ./scripts/create_dmg.sh
 ```
-Erzeugt die distributionsfertige Datei `CIYX79Control-1.2.0.dmg` mit Drag-and-Drop-Verknüpfung zum `/Applications`-Ordner, eingebettetem CLI-Tool `ciy_ctl`, Lizenz und Dokumentation.
+Erzeugt die distributionsfertige Datei `CIYX79Control-1.4.1.dmg` mit Drag-and-Drop-Verknüpfung zum `/Applications`-Ordner, eingebettetem CLI-Tool `ciy_ctl`, Lizenz und Dokumentation.
 
 ### 3. CLI-Tool manuell kompilieren:
 ```bash

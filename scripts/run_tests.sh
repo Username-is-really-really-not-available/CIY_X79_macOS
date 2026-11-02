@@ -69,7 +69,7 @@ clang++ -Wall -Wextra -Werror -std=c++17 -mmacosx-version-min=12.0 "${SAN_FLAGS[
 /tmp/test_ciy_hidapi
 
 echo "=== Test 2: Profil & KeyboardView Tests (ASan/UBSan) ==="
-clang -Wall -Wextra -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -fobjc-arc \
     -framework Cocoa \
     -framework IOKit \

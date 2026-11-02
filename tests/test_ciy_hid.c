@@ -458,6 +458,23 @@ static void test_lockfile_rejects_fifo(void) {
     assert(unlink(fifo_path) == 0);
 }
 
+static void test_lockfile_rejects_symlink(void) {
+    char symlink_path[128];
+    ciy_bus_lock_path(symlink_path, sizeof(symlink_path));
+
+    unlink(symlink_path);
+
+    // Symlink als Lockfile abweisen (O_NOFOLLOW schützt vor Link-Traversal)
+    assert(symlink("/dev/null", symlink_path) == 0);
+    assert(!ciy_bus_lock());
+    assert(unlink(symlink_path) == 0);
+
+    // Verifizieren, dass der Lock-Mechanismus nach Abweisung im sauberen Zustand bleibt
+    assert(ciy_bus_lock());
+    ciy_bus_unlock();
+    assert(unlink(symlink_path) == 0);
+}
+
 static void test_truncated_unicode_escapes(void) {
     const char *cases[] = {
         // Abgeschnittene Unicode-Escapes am Pufferende (ohne schließendes Anführungszeichen)
@@ -855,6 +872,7 @@ int main(void) {
     test_bus_lock_reentrancy();
     test_lockfile_security();
     test_lockfile_rejects_fifo();
+    test_lockfile_rejects_symlink();
     puts("Alle Tests bestanden.");
     return 0;
 }
