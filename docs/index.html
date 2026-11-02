@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CIY X79 RGB – Controller, WebHID Mapper & OpenRGB</title>
+  <style>
+    :root {
+      --bg: #121214;
+      --card-bg: #1c1c1e;
+      --border: #2c2c2e;
+      --accent: #00e5ff;
+      --accent-green: #00e676;
+      --accent-hover: #33ebff;
+      --text: #f5f5f7;
+      --text-muted: #8e8e93;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 4rem 2rem 2rem;
+      text-align: center;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      background: rgba(0, 229, 255, 0.1);
+      color: var(--accent);
+      border: 1px solid rgba(0, 229, 255, 0.25);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .badge.green {
+      background: rgba(0, 230, 118, 0.1);
+      color: var(--accent-green);
+      border-color: rgba(0, 230, 118, 0.25);
+    }
+
+    h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, #ffffff 40%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    p.subtitle {
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      margin-bottom: 2.5rem;
+    }
+
+    .cta-container {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 3.5rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.9rem 1.8rem;
+      font-size: 1rem;
+      font-weight: 600;
+      border-radius: 10px;
+      text-decoration: none;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      background-color: var(--accent);
+      color: #000;
+      box-shadow: 0 4px 20px rgba(0, 229, 255, 0.35);
+    }
+
+    .btn-primary:hover {
+      background-color: var(--accent-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(0, 229, 255, 0.5);
+    }
+
+    .btn-secondary {
+      background-color: var(--card-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      background-color: #26262a;
+      border-color: #44444a;
+      transform: translateY(-2px);
+    }
+
+    main {
+      flex: 1;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 2rem 4rem;
+      width: 100%;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 3rem;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.75rem;
+      transition: border-color 0.2s;
+    }
+
+    .card:hover {
+      border-color: rgba(0, 229, 255, 0.4);
+    }
+
+    .card-icon {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+
+    .card h3 {
+      font-size: 1.25rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .card p {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem;
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="badges">
+      <span class="badge">macOS 12.0+</span>
+      <span class="badge green">Zero-Install WebHID</span>
+      <span class="badge">OpenRGB Bundle</span>
+      <span class="badge">Pure C11 & Cocoa</span>
+    </div>
+    <h1>CIY X79 RGB Controller</h1>
+    <p class="subtitle">Nativer macOS Controller, Cross-Platform WebHID Mapper und OpenRGB Upstream Bundle für die CIY X79 (65%) mechanische Tastatur.</p>
+    
+    <div class="cta-container">
+      <a href="mapper/" class="btn btn-primary">
+        <span>🚀</span> WebHID Mapper starten
+      </a>
+      <a href="https://github.com/Username-is-really-really-not-available/CIY_X79_macOS" class="btn btn-secondary">
+        <span>📦</span> GitHub Repository
+      </a>
+      <a href="https://github.com/Username-is-really-really-not-available/CIY_X79_macOS/releases/tag/v1.4.0" class="btn btn-secondary">
+        <span>⚡</span> Release v1.4.0
+      </a>
+    </div>
+  </header>
+
+  <main>
+    <div class="grid">
+      <div class="card">
+        <div class="card-icon">🌐</div>
+        <h3>WebHID Mapper (Cross-Platform)</h3>
+        <p>Keine Installation nötig. Funktioniert in Chrome, Edge, Brave und Opera auf macOS, Linux und Windows. LEDs testen, Tasten sweepen und Layouts als JSON exportieren.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-icon">🍎</div>
+        <h3>Native macOS App & CLI</h3>
+        <p>Universal Binary (Apple Silicon & Intel) mit Menüleisten-Steuerung, Live-Farbverläufen, Zonen-Auswahl und Akku-Status-Spiegelung bei 0% CPU-Last.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-icon">🐧</div>
+        <h3>OpenRGB & Linux Bridge</h3>
+        <p>Vollwertiges OpenRGB C++17 Controller-Paket und Linux-udev-Regeln zur nahtlosen Steuerung unter Linux und Windows mit Hardware-Sicherheit.</p>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <p>CIY X79 macOS & Cross-Platform Suite • MIT Lizenz • <a href="https://github.com/Username-is-really-really-not-available/CIY_X79_macOS">Auf GitHub ansehen</a></p>
+  </footer>
+</body>
+</html>
