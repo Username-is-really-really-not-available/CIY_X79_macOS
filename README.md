@@ -2,7 +2,7 @@
 
 Eine native, vollständige macOS-Lösung (Apple Silicon & Intel) zur Ansteuerung der Beleuchtung, Effekte und individueller Tasten-Farbprofile (z. B. WASD-Gaming-Profil) für die mechanische Tastatur **CIY X79** (ISO-DE Layout, 65%, 69 Tasten).
 
-**Sprachen / Languages:** [🇩🇪 Deutsch](README.md) | [🇬🇧 English](README_EN.md) | [🇨🇳 简体中文](README_ZH.md) | [🇷🇺 Русский](README_RU.md)
+**Sprachen / Languages:** [🇩🇪 Deutsch](README.md) | [🇬🇧 English](README_EN.md)
 
 ---
 

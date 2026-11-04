@@ -2,7 +2,7 @@
 
 A native, lightweight macOS solution (Apple Silicon & Intel) for controlling the RGB lighting, built-in dynamic effects, and individual per-key color profiles (e.g. WASD gaming layouts) for the **CIY X79** mechanical keyboard (ISO-DE 65%, 69 keys).
 
-**Languages:** [🇩🇪 Deutsch](README.md) | [🇬🇧 English](README_EN.md) | [🇨🇳 简体中文](README_ZH.md) | [🇷🇺 Русский](README_RU.md)
+**Languages:** [🇩🇪 Deutsch](README.md) | [🇬🇧 English](README_EN.md)
 
 ---
 
@@ -376,8 +376,6 @@ CIY_X79_macOS/
 │   └── CIYX79Control-1.1.0.dmg
 ├── README.md                    # German documentation & primary guide
 ├── README_EN.md                 # English documentation
-├── README_ZH.md                 # Chinese documentation
-├── README_RU.md                 # Russian documentation
 ├── LICENSE                      # MIT license
 └── .gitignore                   # Git ignore patterns
 ```
