@@ -109,7 +109,9 @@ Carthage/
 venv/
 .venv/
 env/
-.env/
+.env
+.env.*
+!.env.example
 virtualenv/
 .pnpm-store/
 

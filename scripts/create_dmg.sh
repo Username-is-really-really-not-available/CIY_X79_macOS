@@ -6,6 +6,10 @@ cd "${PROJECT_ROOT}"
 APP_NAME="CIYX79Control"
 VERSION="${1:-${VERSION:-1.4.1}}"
 VERSION="${VERSION#v}"
+if [[ ! "${VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+    echo "FEHLER: Ungültige Version '${VERSION}'. Erlaubt sind Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich." >&2
+    exit 1
+fi
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
 DMG_NAME="${DIST_DIR}/${APP_NAME}-${VERSION}.dmg"
