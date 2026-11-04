@@ -8,6 +8,10 @@
 #import "../src/app/CIYKeyboardView.h"
 #import "../src/app/CIYBatteryMonitor.h"
 
+#if !defined(CIY_ENABLE_TEST_HOOKS)
+#error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
+#endif
+
 @interface CIYBatteryMonitor (Testing)
 - (void)scheduleDebouncedUpdate;
 @end
@@ -629,6 +633,7 @@ static void test_keyboard_backend_monitoring_lifecycle(void) {
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
+        assert([KeyboardBackend isTestingMode]);
         test_layout_x79_iso_de();
         test_hex_conversion();
         test_profile_creation_and_update();

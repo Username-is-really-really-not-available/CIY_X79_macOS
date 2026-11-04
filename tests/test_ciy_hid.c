@@ -15,6 +15,10 @@
 #include "../src/core/ciy_hid.h"
 #include "../src/layouts/ciy_layout.h"
 
+#if !defined(CIY_ENABLE_TEST_HOOKS)
+#error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
+#endif
+
 static void test_build_profile_wasd(void) {
     const int idx[] = {15, 10, 16, 22};
     uint8_t rgb[CIY_PLANAR_RGB_SIZE];
@@ -585,11 +589,21 @@ static void test_lockfile_security(void) {
 
 static void test_bus_lock_path_isolated_per_user(void) {
     char buf[1024];
+    char uid_str[32];
+    char pid_str[32];
+    snprintf(uid_str, sizeof(uid_str), "%u", (unsigned)getuid());
+    snprintf(pid_str, sizeof(pid_str), "%d", (int)getpid());
+
     // 1. Mit CIY_TESTING gesetzt: /tmp/ciy_x79_bus_%u_%d.lock
     const char *p = ciy_bus_lock_path(buf, sizeof(buf));
     assert(p != NULL);
     assert(strstr(p, "/tmp/ciy_x79_bus_") != NULL);
     assert(strstr(p, ".lock") != NULL);
+    assert(strstr(p, uid_str) != NULL);
+    assert(strstr(p, pid_str) != NULL);
+
+    // Cross-UID-Verhalten bei Fast User Switching ist bewusst akzeptiertes
+    // Restrisiko (SEC-T4-002); ein echter UID-Wechsel-Test würde Root-Rechte erfordern.
 
     // 2. NULL, 0 oder zu kleine Buffer Size abweisen (Rückgabe NULL, keine stille Trunkierung)
     assert(ciy_bus_lock_path(NULL, sizeof(buf)) == NULL);
@@ -605,6 +619,7 @@ static void test_bus_lock_path_isolated_per_user(void) {
 
     p = ciy_bus_lock_path(buf, sizeof(buf));
     assert(p != NULL);
+    assert(strstr(p, uid_str) != NULL);
     assert(ciy_bus_lock_path(tiny, sizeof(tiny)) == NULL);
 #if defined(__APPLE__) && defined(_CS_DARWIN_USER_TEMP_DIR)
     char darwin_temp[1024];
@@ -622,6 +637,7 @@ static void test_bus_lock_path_isolated_per_user(void) {
     char fallback_buf[1024];
     p = ciy_bus_lock_path(fallback_buf, sizeof(fallback_buf));
     assert(p != NULL);
+    assert(strstr(p, uid_str) != NULL);
     assert(strncmp(p, "relative/", 9) != 0); // Niemals relativen Pfad als Lockfile nutzen
 
     if (orig_tmp) {

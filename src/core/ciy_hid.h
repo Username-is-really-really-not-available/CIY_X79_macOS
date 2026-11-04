@@ -33,8 +33,10 @@ typedef struct {
 bool ciy_open(CIYDevice *d);
 void ciy_close(CIYDevice *d);
 
-/// Systemweiter Inter-Process-Lock auf den USB-Bus (verhindert Race Conditions zwischen GUI und CLI).
-/// Reentrant innerhalb desselben Threads/Prozesses und kernel-basiert via flock().
+/// Prozessübergreifender Bus-Lock pro UID (verhindert Race Conditions zwischen GUI und CLI
+/// desselben Benutzers). Reentrant innerhalb desselben Threads/Prozesses und kernel-basiert via flock().
+/// Fast User Switching wird bewusst nicht UID-übergreifend serialisiert; siehe
+/// docs/agent/hardware-protocol.md (SEC-T4-002).
 /// HINWEIS: CIYDevice-Handles und Bus-Locks dürfen NICHT über fork() geteilt werden.
 /// Im Kindprozess wird ein geerbtes Lock-File-Descriptor automatisch entwaffnet und
 /// der Lock-Status zurückgesetzt; der Kindprozess muss eigene Verbindungen und Locks öffnen.

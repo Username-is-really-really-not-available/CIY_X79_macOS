@@ -129,8 +129,8 @@ $$\text{LED\_Index} = \text{Matrix\_Slot} + 1$$
 ### D. Volatile XRAM vs. On-Board Shortcuts (`Fn + ;`)
 Custom Per-Key RGB is held in volatile **XRAM** rather than persistent flash ROM. If you cycle through animations using hardware shortcuts (`Fn + ;`), the MCU overrides the custom buffer. The macOS app and CLI allow you to restore any profile in less than 50 ms.
 
-### E. Multi-User Lockfile Security (`/tmp/ciy_x79_bus_<UID>.lock`)
-To serialize USB transfers between the Cocoa background queue (`_hwQueue`) and CLI commands (`ciy_ctl`), the driver uses user-specific lockfiles (`/tmp/ciy_x79_bus_<UID>.lock`) with permissions `0600` (readable and writable strictly by the current user) and a non-blocking 2.0-second timeout, avoiding world-readable file security issues and lock freezes.
+### E. Per-UID Lock and Fast User Switching
+To serialize USB access between the GUI event thread (`_hwQueue`) and CLI commands (`ciy_ctl`) of the same user, the driver uses a lockfile in the protected per-user temp directory from `confstr(_CS_DARWIN_USER_TEMP_DIR)` (`/var/folders/.../T/ciy_x79_bus_<UID>.lock`). The filename contains the UID, the file mode is `0600`, it is opened with `O_NOFOLLOW`, and `flock` is held with a 2.0-second timeout. Under Fast User Switching, two UIDs can theoretically interleave control transfers; this is accepted as a Low/Low residual risk because a global lock would enable local denial of service against other users' LED control. Re-applying the profile recovers from a possible XRAM buffer loss.
 
 ### F. RFC 8259 Unicode Escape Decoding (`\uXXXX`)
 Standard JSON encoders (such as Python's `json.dump` or browser tools) escape non-ASCII characters to `\uXXXX` sequences (`\u00df` for `ß`, `\u00e4` for `ä`, etc.). The built-in C JSON parser in [`ciy_hid.c`](src/core/ciy_hid.c) decodes these sequences directly into valid UTF-8, ensuring profiles containing German special characters load seamlessly.
@@ -138,8 +138,8 @@ Standard JSON encoders (such as Python's `json.dump` or browser tools) escape no
 ### G. Wide-Gamut (Display P3) Color Clamping
 On macOS systems with wide-gamut displays (P3 ColorSpace), native color pickers may yield coordinates outside `[0.0, 1.0]` in standard sRGB. The Cocoa backend strictly clamps color channels mathematically into `[0, 255]` before transmitting RGB planes, preventing integer overflow and undefined LED colors.
 
-### H. Hardware Test Isolation (`CIY_TESTING=1`)
-Continuous Integration and automated test suites run completely isolated from real hardware: exporting `CIY_TESTING=1` routes all transfers through a virtual mock HID device, verifying packets and buffers in memory without touching endpoint 0 of any connected keyboard.
+### H. Hardware Test Isolation (`CIY_TESTING=1`, test builds only)
+Continuous Integration and automated test suites run completely isolated from real hardware: `./scripts/run_tests.sh` compiles the test binaries with `-DCIY_ENABLE_TEST_HOOKS=1` and sets `CIY_TESTING=1`; only those builds contain the virtual mock HID device. Release binaries from `build_app.sh` compile the test hooks out and ignore `CIY_TESTING`.
 
 ---
 
@@ -417,8 +417,8 @@ CIY_X79_macOS/
 1. **`src/core/` (`ciy_hid.c` / `ciy_hid.h`):**
    * Pure C layer with zero UI dependencies.
    * Dispatches USB Control Requests to Interface 1 via IOKit.
-   * Per-user lockfile (`/tmp/ciy_x79_bus_<UID>.lock`, `0600`) with timeout serialization.
-   * Built-in virtual hardware mock when `CIY_TESTING` environment variable is active.
+   * Per-UID lockfile in the user temp directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, `/var/folders/.../ciy_x79_bus_<UID>.lock`, `0600`) with timeout serialization.
+   * Built-in virtual hardware mock only in test builds compiled with `-DCIY_ENABLE_TEST_HOOKS=1`; release builds compile it out.
    * Planar RGB builders and JSON parser with RFC 8259 Unicode escape decoding (`\uXXXX`).
 2. **`src/app/` (`KeyboardBackend.m` / `KeyboardBackend.h`):**
    * Cocoa singleton (`[KeyboardBackend shared]`).

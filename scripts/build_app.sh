@@ -23,6 +23,7 @@ clang -arch arm64 -arch x86_64 \
     -O2 \
     -fstack-protector-strong \
     -D_FORTIFY_SOURCE=2 \
+    -UCIY_ENABLE_TEST_HOOKS \
     -Wall -Wextra -Werror \
     -fobjc-arc \
     -framework Cocoa \
@@ -44,6 +45,7 @@ clang -arch arm64 -arch x86_64 \
     -O2 \
     -fstack-protector-strong \
     -D_FORTIFY_SOURCE=2 \
+    -UCIY_ENABLE_TEST_HOOKS \
     -Wall -Wextra -Werror \
     -framework IOKit \
     -framework CoreFoundation \
@@ -89,6 +91,13 @@ EOF
 
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${DIST_DIR}/ciy_ctl"
+
+for bin in "${MACOS_DIR}/${APP_NAME}" "${DIST_DIR}/ciy_ctl"; do
+    if strings "${bin}" | grep -qE 'CIY_TESTING|CIY_FAIL_ON_HARDWARE_IO|CIY_BATTERY_MOCK'; then
+        echo "FEHLER: Test-Hook-Strings im Release-Binary: ${bin}" >&2
+        exit 1
+    fi
+done
 
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 echo "4. Codesign (${CODESIGN_IDENTITY}, arm64 & x86_64)..."

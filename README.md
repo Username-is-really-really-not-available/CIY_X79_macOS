@@ -130,8 +130,8 @@ $$\text{LED\_Index} = \text{Matrix\_Slot} + 1$$
 ### D. Volatiler XRAM vs. Hardware-Cycling per `Fn + ;`
 Die Sinowealth MCU besitzt für Per-Key-Matrizen keinen persistenten Flash-ROM, sondern hält benutzerdefinierte Farben im flüchtigen **XRAM**. Wird an der Tastatur per Shortcut (`Fn + ;`) durch Effekte geschaltet, überschreiben die integrierten Animationsroutinen den RAM. Über die macOS-App oder das CLI-Tool kann das Wunschprofil in weniger als 50 ms per Klick wiederhergestellt werden.
 
-### E. Multi-User Lockfile-Sicherheit (`/tmp/ciy_x79_bus_<UID>.lock`)
-Um gleichzeitige Zugriffe auf den USB-Endpunkt zwischen Cocoa-Hintergrund-Queue (`_hwQueue`) und CLI-Befehlen (`ciy_ctl`) abzusichern, nutzt der Treiber dateibasierte Mutexe. Anstelle eines unsicheren globalen Lockfiles verwendet das System benutzerspezifische Lockfiles mit der User-ID (`/tmp/ciy_x79_bus_<UID>.lock`) und striktem Modus `0600` (nur der aktuelle Benutzer hat Zugriffsrechte). Ein konfigurierter 2,0-Sekunden-Timeout verhindert blockierende Endlosschleifen.
+### E. Per-UID Bus-Lock & Fast User Switching
+Um gleichzeitige Zugriffe auf den USB-Endpunkt zwischen Cocoa-Hintergrund-Queue (`_hwQueue`) und CLI-Befehlen (`ciy_ctl`) desselben Benutzers abzusichern, verwendet der Treiber ein Lockfile im geschützten Per-User-Temp-Verzeichnis aus `confstr(_CS_DARWIN_USER_TEMP_DIR)` (`/var/folders/.../T/ciy_x79_bus_<UID>.lock`). Der Dateiname enthält die UID; das Lockfile hat Modus `0600`, wird mit `O_NOFOLLOW` geöffnet und per `flock` mit 2,0-Sekunden-Timeout gehalten. Bei Fast User Switching können zwei UIDs theoretisch Control Transfers überlappen; das ist als Low/Low-Restrisiko bewusst akzeptiert, weil ein globaler Lock einen lokalen DoS gegen die LED-Steuerung anderer Benutzer ermöglichen würde. Ein erneutes Anwenden des Profils behebt einen möglichen XRAM-Pufferverlust.
 
 ### F. Robuste JSON Unicode-Escape-Dekodierung (`\uXXXX`)
 Standard-JSON-Serialisierer (z. B. Pythons `json.dump` oder Web-Generatoren) kodieren Umlaute und Sonderzeichen standardmäßig als ASCII-Fluchtsequenzen (`\u00df` für `ß`, `\u00e4` für `ä`, `\u00fc` für `ü`). Der integrierte C-Parser in [`ciy_hid.c`](src/core/ciy_hid.c) dekodiert alle `\uXXXX`-Sequenzen automatisch nach standardkonformem UTF-8. Profilnamen mit deutschen Sonderzeichen werden damit systemweit einheitlich verarbeitet.
@@ -139,8 +139,8 @@ Standard-JSON-Serialisierer (z. B. Pythons `json.dump` oder Web-Generatoren) kod
 ### G. Wide-Gamut (Display P3) Farbklemmung
 Auf modernen Macs mit Apple Liquid Retina / Display P3 Bildschirmen können native Farbwähler (`NSColorPanel`) Farbkoordinaten außerhalb des Standard-sRGB-Gamuts liefern (Kanalwerte `< 0.0` oder `> 1.0`). Die Farb-Engine klemmt alle Farbkanäle mathematisch strikt auf `[0, 255]`, bevor der planare USB-Puffer generiert wird. Dies schließt Integer-Überläufe und unvorhersehbare LED-Farben kategorisch aus.
 
-### H. Hardware-Testisolation (`CIY_TESTING=1`)
-Automatisierte Unit- und Integrationstests (CI/CD) müssen unabhängig von physisch angeschlossener Hardware reproduzierbar durchlaufen. Wird die Umgebungsvariable `CIY_TESTING=1` gesetzt, schaltet der USB-Treiber automatisch auf ein internes Mock-HID-Device um. Sämtliche Schreibbefehle (Reports `0x0A`, `0x0B`) werden rein im RAM validiert – das reale USB-Interface wird niemals angesprochen und physische Beleuchtungen bleiben unangetastet.
+### H. Hardware-Testisolation (`CIY_TESTING=1`, nur Test-Builds)
+Automatisierte Unit- und Integrationstests (CI/CD) müssen unabhängig von physisch angeschlossener Hardware reproduzierbar durchlaufen. `./scripts/run_tests.sh` kompiliert die Testbinaries mit `-DCIY_ENABLE_TEST_HOOKS=1` und setzt `CIY_TESTING=1`; nur diese Builds enthalten das interne Mock-HID-Device. Sämtliche Schreibbefehle (Reports `0x0A`, `0x0B`) werden rein im RAM validiert. Die Release-Binaries aus `build_app.sh` kompilieren die Test-Hooks aus und ignorieren `CIY_TESTING`.
 
 ---
 
@@ -469,8 +469,8 @@ Das Projekt ist modular nach dem Single-Responsibility-Prinzip in klare Schichte
 1. **`src/core/` (`ciy_hid.c` / `ciy_hid.h`):**
    * Reine C-Schicht ohne UI-Abhängigkeiten.
    * Sendet USB Control Requests an Interface 1 via IOKit.
-   * Benutzerspezifisches Lockfile (`/tmp/ciy_x79_bus_<UID>.lock`, `0600`) mit Timeout.
-   * Integrierter virtueller Hardware-Mock bei gesetzter `CIY_TESTING`-Umgebungsvariable.
+   * Benutzerspezifisches Lockfile im Per-User-Temp-Verzeichnis (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, `ciy_x79_bus_<UID>.lock`, `0600`) mit Timeout.
+   * Integrierter virtueller Hardware-Mock nur in Test-Builds mit `-DCIY_ENABLE_TEST_HOOKS=1`; Release-Binaries kompilieren ihn aus.
    * Planare Pufferbauer und JSON-Parser mit RFC 8259 Unicode-Escape-Dekodierung (`\uXXXX`).
 2. **`src/app/` (`KeyboardBackend.m` / `KeyboardBackend.h`):**
    * Cocoa-Singleton (`[KeyboardBackend shared]`).
@@ -492,7 +492,7 @@ Das Projekt ist modular nach dem Single-Responsibility-Prinzip in klare Schichte
 
 ### A. Automatisierte Test-Suiten (`scripts/run_tests.sh`)
 
-Das Projekt beinhaltet eine vollständig hardware-isolierte automatisierte Test-Batterie. Über den Guard `CIY_TESTING=1` wird sichergestellt, dass **kein Test jemals die physisch angeschlossene Tastatur beschreibt**:
+Das Projekt beinhaltet eine vollständig hardware-isolierte automatisierte Test-Batterie. Über `CIY_TESTING=1` in Verbindung mit dem Test-Build-Makro `-DCIY_ENABLE_TEST_HOOKS=1` wird sichergestellt, dass **kein Test jemals die physisch angeschlossene Tastatur beschreibt**:
 
 ```bash
 ./scripts/run_tests.sh

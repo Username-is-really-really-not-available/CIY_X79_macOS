@@ -19,7 +19,7 @@ if [ -n "${CIY_CTL_OVERRIDE:-}" ]; then
     fi
 else
     CIY_CTL="${TMP_DIR}/ciy_ctl"
-    CLANG_FLAGS=(-Wall -Wextra -Werror -mmacosx-version-min=12.0)
+    CLANG_FLAGS=(-Wall -Wextra -Werror -mmacosx-version-min=12.0 -DCIY_ENABLE_TEST_HOOKS=1)
     if [ "${CIY_SANITIZE:-0}" = "1" ]; then
         CLANG_FLAGS+=(-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer)
     fi
@@ -29,6 +29,11 @@ else
         "${PROJECT_ROOT}/src/layouts/ciy_x79_iso_de.c" \
         "${PROJECT_ROOT}/src/cli/ciy_ctl.c" \
         -o "${CIY_CTL}"
+fi
+
+if ! strings "${CIY_CTL}" | grep -q 'CIY_TESTING'; then
+    echo "FEHLER: CIY_CTL wurde ohne -DCIY_ENABLE_TEST_HOOKS=1 gebaut; Tests würden echte Hardware ansprechen."
+    exit 1
 fi
 
 echo "=== Test CLI: 1. Hilfe & Optionen ==="

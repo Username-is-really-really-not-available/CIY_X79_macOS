@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 SAN_FLAGS=(-g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+HOOK_FLAGS=(-DCIY_ENABLE_TEST_HOOKS=1)
 
 TEST_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ciy_tests.XXXXXX")"
 trap 'rm -rf "${TEST_TMP_DIR}"' EXIT INT TERM
@@ -37,6 +38,7 @@ echo "=== Test 0c: Battery & Gradient Engine Tests (ASan/UBSan, C11) ==="
 clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -framework IOKit \
     -framework CoreFoundation \
+    "${HOOK_FLAGS[@]}" \
     tests/test_ciy_battery.c \
     -o "${TEST_TMP_DIR}/test_ciy_battery"
 "${TEST_TMP_DIR}/test_ciy_battery"
@@ -51,6 +53,7 @@ echo "=== Test 1: HID & Protokoll Tests (macOS IOKit, ASan/UBSan) ==="
 clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -framework IOKit \
     -framework CoreFoundation \
+    "${HOOK_FLAGS[@]}" \
     src/core/ciy_hid.c \
     src/layouts/ciy_x79_iso_de.c \
     tests/test_ciy_hid.c \
@@ -60,6 +63,7 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
 echo "=== Test 1b: Linux hidapi Backend Tests (ASan/UBSan, C11 & C++) ==="
 clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -DCIY_BACKEND_HIDAPI -I tests/openrgb_mock -I src/core \
+    "${HOOK_FLAGS[@]}" \
     -c src/core/ciy_hid.c -o "${TEST_TMP_DIR}/ciy_hid_hidapi.o"
 clang++ -Wall -Wextra -Werror -std=c++17 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -I tests/openrgb_mock -I src/core \
@@ -75,6 +79,7 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -framework Cocoa \
     -framework IOKit \
     -framework CoreFoundation \
+    "${HOOK_FLAGS[@]}" \
     src/core/ciy_hid.c \
     src/layouts/ciy_x79_iso_de.c \
     src/app/KeyboardBackend.m \
@@ -83,6 +88,17 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     tests/test_profile_logic.m \
     -o "${TEST_TMP_DIR}/test_profile_logic"
 "${TEST_TMP_DIR}/test_profile_logic"
+
+echo "=== Test 2b: Release-Hygiene (Test-Hooks auskompiliert) ==="
+clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 -O2 \
+    -UCIY_ENABLE_TEST_HOOKS \
+    -framework IOKit -framework CoreFoundation \
+    src/core/ciy_hid.c src/layouts/ciy_x79_iso_de.c src/cli/ciy_ctl.c \
+    -o "${TEST_TMP_DIR}/ciy_ctl_release"
+if strings "${TEST_TMP_DIR}/ciy_ctl_release" | grep -qE 'CIY_TESTING|CIY_FAIL_ON_HARDWARE_IO|CIY_BATTERY_MOCK'; then
+    echo "FEHLER: Release-Binary enthält Test-Hook-Strings!" >&2
+    exit 1
+fi
 
 echo "=== Test 3: CLI ciy_ctl Tests (frisch kompiliert) ==="
 ./tests/test_ciy_ctl.sh

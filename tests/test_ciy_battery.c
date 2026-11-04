@@ -5,6 +5,10 @@
 
 #include "../src/core/ciy_battery.h"
 
+#if !defined(CIY_ENABLE_TEST_HOOKS)
+#error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
+#endif
+
 static void test_battery_color_logic(void) {
     uint8_t r = 0, g = 0, b = 0;
 
