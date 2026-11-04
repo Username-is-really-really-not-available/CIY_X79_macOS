@@ -426,7 +426,6 @@ CIY_X79_macOS/
 │   ├── CIYX79Control.app
 │   ├── ciy_ctl
 │   └── CIYX79Control-1.4.1.dmg
-├── ROADMAP.md                   # Meilensteine & OpenRGB Upstream-Planung
 ├── README.md                    # Umfassende Dokumentation & Anleitung
 ├── LICENSE                      # MIT-Lizenz
 └── .gitignore                   # Git-Ausschlussregeln
