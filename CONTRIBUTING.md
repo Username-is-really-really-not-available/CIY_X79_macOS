@@ -1,5 +1,7 @@
 # Beitrags- und Kompatibilitätsrichtlinien (Contributing Guide)
 
+**Sprachen / Languages:** [Deutsch](CONTRIBUTING.md) | [English](CONTRIBUTING_EN.md)
+
 Vielen Dank für dein Interesse, das CIY X79 RGB macOS-Projekt zu erweitern!
 
 Dieses Projekt verfolgt einen qualitäts- und sicherheitsorientierten Ansatz (**„Compatibility Foundation“**): Bevor neue Tastaturlayouts oder Geräte offiziell als kompatibel deklariert werden, müssen sie transparent, reproduzierbar und hardware-verifiziert sein.
