@@ -93,6 +93,7 @@ CIY_INLINE void ciy_battery_get_color(int percent, bool is_charging,
 
 /// Prüft, ob Test-Mocks über Umgebungsvariablen aktiv sind.
 CIY_INLINE bool ciy_battery_check_mocks(CIYBatteryInfo *out_info) {
+#if defined(CIY_ENABLE_TEST_HOOKS)
     const char *mock_p = getenv("CIY_BATTERY_MOCK_PERCENT");
     if (!mock_p || mock_p[0] == '\0') {
         return false;
@@ -119,6 +120,10 @@ CIY_INLINE bool ciy_battery_check_mocks(CIYBatteryInfo *out_info) {
         out_info->is_present = true;
     }
     return true;
+#else
+    (void)out_info;
+    return false;
+#endif
 }
 
 /// Listet alle verfügbaren Stromquellen auf (macOS, Linux oder Mock).
@@ -183,7 +188,7 @@ CIY_INLINE size_t ciy_battery_list_sources(CIYBatteryInfo *out_sources, size_t m
                 }
 
                 if (curCap >= 0 && maxCap > 0) {
-                    int p = (curCap * 100) / maxCap;
+                    int p = (int)(((int64_t)curCap * 100) / (int64_t)maxCap);
                     if (p < 0) p = 0;
                     if (p > 100) p = 100;
                     info.percent = p;

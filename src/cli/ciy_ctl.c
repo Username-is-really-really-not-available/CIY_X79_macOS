@@ -74,6 +74,18 @@ static void print_escaped_json_string(FILE *stream, const char *str) {
     }
 }
 
+static void print_sanitized_terminal_string(FILE *stream, const char *str) {
+    if (!str) return;
+    for (const char *p = str; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c == 0x7F) {
+            fputc('?', stream);
+        } else {
+            fputc(c, stream);
+        }
+    }
+}
+
 // Parst eine Ganzzahl im Bereich [min, max]; false bei Text oder Bereichsverletzung.
 static bool parse_range(const char *str, long min, long max, uint8_t *out) {
     if (!str) return false;
@@ -102,9 +114,6 @@ static volatile sig_atomic_t s_termios_saved = 0;
 static void sweep_sigint_handler(int sig) {
     (void)sig;
     s_sweep_interrupted = 1;
-    if (s_termios_saved) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &s_orig_termios);
-    }
 }
 
 static volatile sig_atomic_t s_watch_interrupted = 0;
@@ -661,7 +670,9 @@ static void print_dry_run_plan(const CIYTransferPlan *plan, bool json_mode, bool
                 printf("      \"type\": \"delay\",\n");
                 printf("      \"delay_ms\": %u,\n", s->delay_ms);
             }
-            printf("      \"description\": \"%s\"\n", s->description);
+            printf("      \"description\": \"");
+            print_escaped_json_string(stdout, s->description);
+            printf("\"\n");
             printf("    }%s\n", (i + 1 < plan->step_count) ? "," : "");
         }
         printf("  ],\n");
@@ -671,7 +682,9 @@ static void print_dry_run_plan(const CIYTransferPlan *plan, bool json_mode, bool
         printf("DRY RUN — no USB device opened; no HID transfers sent\n");
         printf("Device profile: CIY X79 (VID 0x%04X, PID 0x%04X, interface %d)\n",
                CIY_VENDOR_ID, CIY_PRODUCT_ID, CIY_INTERFACE_NUM);
-        printf("Profile: %s\n", plan->profile_name[0] ? plan->profile_name : "Custom");
+        printf("Profile: ");
+        print_sanitized_terminal_string(stdout, plan->profile_name[0] ? plan->profile_name : "Custom");
+        printf("\n");
         printf("Plan: ");
         for (size_t i = 0; i < plan->step_count; i++) {
             const CIYPlanStep *s = &plan->steps[i];
@@ -908,8 +921,10 @@ int main(int argc, char **argv) {
                 print_escaped_json_string(stdout, file_arg);
                 printf("\"\n}\n");
             } else {
-                printf("Profil '%s' ist gültig (%d Profil(e), %d Tasten-Slot(s) definiert).\n",
-                       file_arg, res.profile_count, res.total_keys_count);
+                printf("Profil '");
+                print_sanitized_terminal_string(stdout, file_arg);
+                printf("' ist gültig (%d Profil(e), %d Tasten-Slot(s) definiert).\n",
+                       res.profile_count, res.total_keys_count);
             }
             return 0;
         } else {
@@ -1019,7 +1034,9 @@ int main(int argc, char **argv) {
             char err[256] = {0};
             if (!parse_gradient_options(argc, argv, &col1_str, &col2_str, &dir, err, sizeof(err))) {
                 if (json_mode) {
-                    printf("{\n  \"success\": false,\n  \"error\": \"%s\"\n}\n", err);
+                    printf("{\n  \"success\": false,\n  \"error\": \"");
+                    print_escaped_json_string(stdout, err);
+                    printf("\"\n}\n");
                 } else {
                     fprintf(stderr, "Fehler: %s\n", err);
                 }
@@ -1564,11 +1581,15 @@ int main(int argc, char **argv) {
                     }
                     if (!json_mode) {
                         if (profile_name[0] != '\0') {
-                            printf("Wende Profil „%s“ (%d Tasten, Helligkeit %u/5) aus '%s' an...\n",
-                                   profile_name, slots_count, brightness, file_arg);
+                            printf("Wende Profil „");
+                            print_sanitized_terminal_string(stdout, profile_name);
+                            printf("“ (%d Tasten, Helligkeit %u/5) aus '", slots_count, brightness);
+                            print_sanitized_terminal_string(stdout, file_arg);
+                            printf("' an...\n");
                         } else {
-                            printf("Wende Profil (%d Tasten, Helligkeit %u/5) aus '%s' an...\n",
-                                   slots_count, brightness, file_arg);
+                            printf("Wende Profil (%d Tasten, Helligkeit %u/5) aus '", slots_count, brightness);
+                            print_sanitized_terminal_string(stdout, file_arg);
+                            printf("' an...\n");
                         }
                     }
                     if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
@@ -1797,6 +1818,9 @@ int main(int argc, char **argv) {
             }
             rc = 1;
         } else {
+            if (auto_mode) {
+                (void)ciy_bus_lock();
+            }
             CIYLightingState orig_state = {15, 0, 1, 5};
             bool had_orig_state = ciy_get_state(&dev, &orig_state);
 
@@ -1804,6 +1828,7 @@ int main(int argc, char **argv) {
             struct sigaction sa, old_sa_int, old_sa_term;
             memset(&sa, 0, sizeof(sa));
             sa.sa_handler = sweep_sigint_handler;
+            sa.sa_flags = 0;
             sigemptyset(&sa.sa_mask);
             sigaction(SIGINT, &sa, &old_sa_int);
             sigaction(SIGTERM, &sa, &old_sa_term);
@@ -1881,6 +1906,9 @@ int main(int argc, char **argv) {
 
             if (had_orig_state) {
                 ciy_set_state(&dev, orig_state);
+            }
+            if (auto_mode) {
+                ciy_bus_unlock();
             }
 
             if (json_mode) {
@@ -1994,7 +2022,9 @@ int main(int argc, char **argv) {
         char err[256] = {0};
         if (!parse_gradient_options(argc, argv, &col1_str, &col2_str, &dir, err, sizeof(err))) {
             if (json_mode) {
-                printf("{\n  \"success\": false,\n  \"error\": \"%s\"\n}\n", err);
+                printf("{\n  \"success\": false,\n  \"error\": \"");
+                print_escaped_json_string(stdout, err);
+                printf("\"\n}\n");
             } else {
                 fprintf(stderr, "Fehler: %s\n", err);
             }
@@ -2016,8 +2046,12 @@ int main(int argc, char **argv) {
         const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
         if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
-                printf("{\n  \"success\": true,\n  \"action\": \"gradient\",\n  \"color_start\": \"%s\",\n  \"color_end\": \"%s\",\n  \"direction\": \"%s\",\n  \"brightness\": %u\n}\n",
-                       col1_str, col2_str, dir == CIY_GRADIENT_VERTICAL ? "vertical" : "horizontal", br);
+                printf("{\n  \"success\": true,\n  \"action\": \"gradient\",\n  \"color_start\": \"");
+                print_escaped_json_string(stdout, col1_str);
+                printf("\",\n  \"color_end\": \"");
+                print_escaped_json_string(stdout, col2_str);
+                printf("\",\n  \"direction\": \"%s\",\n  \"brightness\": %u\n}\n",
+                       dir == CIY_GRADIENT_VERTICAL ? "vertical" : "horizontal", br);
             } else {
                 printf("Farbverlauf (%s -> %s, %s, Helligkeit %u) erfolgreich auf Tastatur übertragen.\n",
                        col1_str, col2_str, dir == CIY_GRADIENT_VERTICAL ? "vertikal" : "horizontal", br);

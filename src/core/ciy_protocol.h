@@ -70,12 +70,14 @@ typedef struct {
     char description[64];
 } CIYPlanStep;
 
+#define CIY_MAX_PLAN_STEPS     3
+
 typedef struct {
     char profile_name[64];
     int keys_count;
     uint8_t brightness;
     size_t step_count;
-    CIYPlanStep steps[3];
+    CIYPlanStep steps[CIY_MAX_PLAN_STEPS];
 } CIYTransferPlan;
 
 /// Prüft, ob alle Felder eines Beleuchtungsstatus innerhalb der Hardware-Spezifikation liegen.
@@ -101,11 +103,11 @@ CIY_INLINE bool ciy_protocol_encode_0a(CIYLightingState st, uint8_t out_buf[CIY_
     return true;
 }
 
-/// Dekodiert einen empfangenen Report 0x0A (mindestens 5 Bytes) in CIYLightingState.
+/// Dekodiert einen empfangenen Report 0x0A (exakt CIY_REPORT_0A_SIZE / 42 Bytes) in CIYLightingState.
 /// Clampt Modus, Farbe, Tempo und Helligkeit defensiv auf die gültigen Hardware-Grenzen.
 /// out_st darf NULL sein (reine Formatprüfung).
 CIY_INLINE bool ciy_protocol_decode_0a(const uint8_t *in_buf, size_t len, CIYLightingState *out_st) {
-    if (!in_buf || len < CIY_REPORT_0A_MIN_LEN || in_buf[0] != CIY_REPORT_0A_ID) {
+    if (!in_buf || len < CIY_REPORT_0A_SIZE || in_buf[0] != CIY_REPORT_0A_ID) {
         return false;
     }
     if (out_st) {

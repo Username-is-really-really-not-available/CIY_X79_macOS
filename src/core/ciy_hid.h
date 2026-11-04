@@ -35,6 +35,9 @@ void ciy_close(CIYDevice *d);
 
 /// Systemweiter Inter-Process-Lock auf den USB-Bus (verhindert Race Conditions zwischen GUI und CLI).
 /// Reentrant innerhalb desselben Threads/Prozesses und kernel-basiert via flock().
+/// HINWEIS: CIYDevice-Handles und Bus-Locks dürfen NICHT über fork() geteilt werden.
+/// Im Kindprozess wird ein geerbtes Lock-File-Descriptor automatisch entwaffnet und
+/// der Lock-Status zurückgesetzt; der Kindprozess muss eigene Verbindungen und Locks öffnen.
 bool ciy_bus_lock(void);
 void ciy_bus_unlock(void);
 

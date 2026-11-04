@@ -8,6 +8,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <errno.h>
 #include "../src/core/ciy_hid.h"
 #include "../src/layouts/ciy_layout.h"
 
@@ -38,6 +42,17 @@ static void test_build_profile_ignores_out_of_range(void) {
     uint8_t rgb[CIY_PLANAR_RGB_SIZE];
     ciy_build_profile(rgb, idx, 3, true, true, false);
     for (size_t i = 0; i < sizeof(rgb); i++) assert(rgb[i] == 0);
+}
+
+static void test_build_profile_null_checks(void) {
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    const int idx[] = {15, 10};
+    // SEC-T2-002: NULL rgb darf nicht dereferenziert werden
+    ciy_build_profile(NULL, idx, 2, true, false, true);
+    // NULL indices bei count > 0 darf nicht dereferenziert werden
+    ciy_build_profile(rgb, NULL, 4, true, false, true);
+    // NULL indices bei count == 0 darf nicht dereferenziert werden
+    ciy_build_profile(rgb, NULL, 0, true, false, false);
 }
 
 static void test_validation_without_device(void) {
@@ -1064,6 +1079,11 @@ static void test_transfer_plan(void) {
 
     invalid_plan.steps[0].length = 0;
     assert(!ciy_execute_transfer_plan(&dev, &invalid_plan, NULL, NULL));
+
+    // Ausführung mit unzulässiger Schritt-Anzahl (OOB-Schutz SEC-T2-001)
+    CIYTransferPlan oob_plan = plan;
+    oob_plan.step_count = CIY_MAX_PLAN_STEPS + 1;
+    assert(!ciy_execute_transfer_plan(&dev, &oob_plan, NULL, NULL));
 }
 
 static void test_read_text_file_validation_result_init(void) {
@@ -1234,17 +1254,160 @@ static void test_read_text_file_validation_result_init(void) {
     assert(ciy_read_text_file_with_result(path, NULL, NULL) == NULL);
 }
 
+static void test_trailing_comma_rejection(void) {
+    CIYValidationResult res;
+
+    // Trailing comma im 'slots'-Objekt (SEC-T2-010)
+    assert(!ciy_validate_profile_json("{\"slots\": {\"0\": \"#FF0000\", }}", &res));
+    assert(!res.is_valid);
+    assert(strcmp(res.error_field, "slots") == 0);
+
+    // Trailing comma im Profil-Objekt
+    assert(!ciy_validate_profile_json("{\"name\": \"P\", \"slots\": {\"0\": \"#FF0000\"}, }", &res));
+    assert(!res.is_valid);
+    assert(strcmp(res.error_field, "syntax") == 0);
+
+    // Trailing comma im Profil-Array
+    assert(!ciy_validate_profile_json("[{\"name\": \"P\", \"slots\": {\"0\": \"#FF0000\"}}, ]", &res));
+    assert(!res.is_valid);
+    assert(strcmp(res.error_field, "syntax") == 0);
+
+    // Auch ciy_parse_profile_json_with_brightness muss Trailing Commas ablehnen
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+    assert(!ciy_parse_profile_json_with_brightness("{\"slots\": {\"0\": \"#FF0000\", }}", NULL, rgb, NULL, 0, NULL, NULL));
+    assert(!ciy_parse_profile_json_with_brightness("{\"name\": \"P\", \"slots\": {\"0\": \"#FF0000\"}, }", NULL, rgb, NULL, 0, NULL, NULL));
+    assert(!ciy_parse_profile_json_with_brightness("[{\"name\": \"P\", \"slots\": {\"0\": \"#FF0000\"}}, ]", NULL, rgb, NULL, 0, NULL, NULL));
+}
+
+static volatile sig_atomic_t s_sigalrm_fired = 0;
+static void handle_sigalrm(int sig) {
+    (void)sig;
+    s_sigalrm_fired = 1;
+}
+
+static void test_transfer_plan_delay_eintr(void) {
+    CIYDevice dev = {0};
+    assert(ciy_open(&dev));
+
+    s_sigalrm_fired = 0;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_sigalrm;
+    sigaction(SIGALRM, &sa, NULL);
+
+    CIYTransferPlan plan;
+    memset(&plan, 0, sizeof(plan));
+    plan.step_count = 1;
+    plan.steps[0].type = CIY_PLAN_STEP_DELAY;
+    plan.steps[0].delay_ms = 20;
+
+    struct itimerval itv = {
+        .it_interval = {.tv_sec = 0, .tv_usec = 0},
+        .it_value = {.tv_sec = 0, .tv_usec = 2000} // Alarm nach 2 ms
+    };
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    setitimer(ITIMER_REAL, &itv, NULL);
+
+    assert(ciy_execute_transfer_plan(&dev, &plan, NULL, NULL));
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double elapsed = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+
+    assert(s_sigalrm_fired == 1);
+    assert(elapsed >= 0.018);
+
+    struct itimerval disarm;
+    memset(&disarm, 0, sizeof(disarm));
+    setitimer(ITIMER_REAL, &disarm, NULL);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGALRM, &sa, NULL);
+    ciy_close(&dev);
+}
+
+static void test_bus_lock_fork_safety(void) {
+    assert(ciy_bus_lock());
+    char parent_lock_path[PATH_MAX];
+    assert(ciy_bus_lock_path(parent_lock_path, sizeof(parent_lock_path)) != NULL);
+
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        // Kindprozess ruft ciy_bus_unlock auf: darf den Eltern-flock NICHT freigeben!
+        ciy_bus_unlock();
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(pid, &status, 0) == pid);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    // Elternprozess muss weiterhin exklusiven Lock halten
+    pid_t probe_pid = fork();
+    assert(probe_pid >= 0);
+    if (probe_pid == 0) {
+        int fd = open(parent_lock_path, O_RDWR);
+        if (fd >= 0) {
+            int r = flock(fd, LOCK_EX | LOCK_NB);
+            close(fd);
+            if (r == 0) {
+                // FEHLER: Eltern-Lock wurde fälschlicherweise freigegeben
+                _exit(1);
+            }
+        }
+        _exit(0);
+    }
+    assert(waitpid(probe_pid, &status, 0) == probe_pid);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    ciy_bus_unlock();
+}
+
+static void test_test_lockfile_atexit_cleanup(void) {
+    int fds[2];
+    assert(pipe(fds) == 0);
+
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        close(fds[0]);
+        assert(ciy_bus_lock());
+        char path[PATH_MAX];
+        assert(ciy_bus_lock_path(path, sizeof(path)) != NULL);
+        size_t len = strlen(path) + 1;
+        assert(write(fds[1], path, len) == (ssize_t)len);
+        close(fds[1]);
+        ciy_bus_unlock();
+        exit(0); // Triggert atexit(ciy_cleanup_test_lockfile)
+    }
+    close(fds[1]);
+    char child_path[PATH_MAX] = {0};
+    ssize_t n = read(fds[0], child_path, sizeof(child_path) - 1);
+    close(fds[0]);
+    assert(n > 0);
+
+    int status = 0;
+    assert(waitpid(pid, &status, 0) == pid);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    // Prüfe, dass das Test-Lockfile durch atexit aufgeräumt wurde
+    struct stat st;
+    assert(stat(child_path, &st) != 0 && errno == ENOENT);
+}
+
 int main(void) {
     if (!getenv("CIY_TESTING")) {
         setenv("CIY_TESTING", "1", 1);
     }
     test_layout_c_model();
     test_profile_validation();
+    test_trailing_comma_rejection();
     test_read_text_file_validation_result_init();
     test_transfer_plan();
+    test_transfer_plan_delay_eintr();
     test_build_profile_wasd();
     test_build_profile_yellow_no_base();
     test_build_profile_ignores_out_of_range();
+    test_build_profile_null_checks();
     test_build_all_red();
     test_build_wasd_and_arrows();
     test_validation_without_device();
@@ -1264,6 +1427,8 @@ int main(void) {
     test_parse_profile_json_brightness();
     test_fifo_profile_rejection();
     test_bus_lock_reentrancy();
+    test_bus_lock_fork_safety();
+    test_test_lockfile_atexit_cleanup();
     test_lockfile_security();
     test_bus_lock_path_isolated_per_user();
     test_lockfile_rejects_fifo();

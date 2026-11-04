@@ -10,6 +10,7 @@ import os
 import json
 import time
 import subprocess
+import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -105,9 +106,9 @@ def apply_slots(slots_dict, name="Diagnostics"):
     """Schreibt ein temporäres Profil und wendet es via ciy_ctl an."""
     if not require_ciy_ctl():
         return False
-    tmp_path = f"/tmp/ciy_diag_{os.getpid()}.json"
     data = [{"name": name, "slots": slots_dict}]
-    with open(tmp_path, "w", encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(mode="w", prefix="ciy_diag_", suffix=".json", encoding="utf-8", delete=False) as f:
+        tmp_path = f.name
         json.dump(data, f, indent=2, ensure_ascii=False)
     try:
         cmd = [CIY_CTL, "load", tmp_path, name, "--json"]
@@ -118,8 +119,10 @@ def apply_slots(slots_dict, name="Diagnostics"):
             return False
         return True
     finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 def run_rows_test():
     """Färbt die 5 Tastenreihen in 5 unterschiedlichen Regenbogenfarben."""

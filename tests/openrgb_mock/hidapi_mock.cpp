@@ -20,7 +20,13 @@ static struct hid_device_info s_mock_info = {
 
 static bool s_mock_fail_get = false;
 static bool s_mock_fail_send = false;
-static std::vector<uint8_t> s_mock_get_resp = {0x0A, 19, 0, 2, 5}; // Valid 0x0A report (Mode 19, Brightness 5)
+static std::vector<uint8_t> s_mock_get_resp = {
+    0x0A, 19, 0, 2, 5,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0
+}; // Valid 0x0A report (42 bytes: Mode 19, Brightness 5)
 static std::vector<std::vector<uint8_t>> s_mock_sent_reports;
 
 struct hid_device_ {
@@ -95,7 +101,13 @@ void hid_close(hid_device *dev) {
 void hid_mock_reset(void) {
     s_mock_fail_get = false;
     s_mock_fail_send = false;
-    s_mock_get_resp = {0x0A, 19, 0, 2, 5};
+    s_mock_get_resp = {
+        0x0A, 19, 0, 2, 5,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0
+    };
     s_mock_sent_reports.clear();
     s_mock_info.vendor_id = 0x258A;
     s_mock_info.product_id = 0x0049;

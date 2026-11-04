@@ -33,7 +33,7 @@ int main() {
     assert(dev.dev != nullptr);
 
     // 4. ciy_get_state über hidapi
-    uint8_t resp[] = {0x0A, 15, 3, 2, 4}; // Mode 15 (Static), Color 3 (Grün), Wire Speed 2, Brightness 4
+    uint8_t resp[CIY_REPORT_0A_SIZE] = {0x0A, 15, 3, 2, 4}; // Mode 15 (Static), Color 3 (Grün), Wire Speed 2, Brightness 4, zero-padded to 42 bytes
     hid_mock_set_feature_report_response(resp, sizeof(resp));
     CIYLightingState st;
     assert(ciy_get_state(&dev, &st));

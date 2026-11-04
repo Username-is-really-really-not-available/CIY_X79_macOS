@@ -683,4 +683,13 @@ if [ "${RC}" -eq 0 ]; then
 fi
 echo "${GRAD_ERR_JSON}" | grep -q "Fehlende Hex-Farben"
 
+# 8.5 JSON-Escaping von Sonderzeichen in Fehlermeldungen (SEC-T2-003)
+GRAD_QUOTE_ERR="$("${CIY_CTL}" gradient --dir 'bad"quote' '#000000' '#FFFFFF' --json --dry-run 2>/dev/null)" && RC=0 || RC=$?
+if [ "${RC}" -eq 0 ]; then
+    echo "FEHLER: gradient --dir 'bad\"quote' hätte fehlschlagen müssen!"
+    exit 1
+fi
+echo "${GRAD_QUOTE_ERR}" | grep -q '"success": false'
+echo "${GRAD_QUOTE_ERR}" | grep -q 'bad\\"quote'
+
 echo "=== CLI-Tests erfolgreich bestanden! ==="

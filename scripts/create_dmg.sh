@@ -9,7 +9,7 @@ VERSION="${VERSION#v}"
 DIST_DIR="${PROJECT_ROOT}/dist"
 APP_BUNDLE="${DIST_DIR}/${APP_NAME}.app"
 DMG_NAME="${DIST_DIR}/${APP_NAME}-${VERSION}.dmg"
-STAGING_DIR="/tmp/ciy_dmg_staging_$$"
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ciy_dmg_staging.XXXXXX")"
 
 trap 'rm -rf "${STAGING_DIR}"' EXIT INT TERM
 
@@ -23,8 +23,6 @@ fi
 
 # 2. Bereite Staging-Verzeichnis vor
 echo "1. Bereite DMG-Inhalt vor..."
-rm -rf "${STAGING_DIR}"
-mkdir -p "${STAGING_DIR}"
 
 cp -R "${APP_BUNDLE}" "${STAGING_DIR}/"
 cp "${DIST_DIR}/ciy_ctl" "${STAGING_DIR}/"

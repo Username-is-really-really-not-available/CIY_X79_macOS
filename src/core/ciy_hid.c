@@ -13,7 +13,9 @@
 #include <time.h>
 #include <errno.h>
 
+#if defined(CIY_ENABLE_TEST_HOOKS)
 #define CIY_TESTING_MOCK_DEV ((void *)(uintptr_t)1)
+#endif
 
 #if defined(CIY_BACKEND_HIDAPI) || (!defined(__APPLE__) && !defined(CIY_BACKEND_IOKIT))
 #include "ciy_hid_hidapi.c"
@@ -25,6 +27,7 @@ bool ciy_open(CIYDevice *d) {
     if (!d) return false;
     d->dev = NULL;
 
+#if defined(CIY_ENABLE_TEST_HOOKS)
     if (getenv("CIY_FAIL_ON_HARDWARE_IO") != NULL) {
         fprintf(stderr, "SECURITY GUARD ASSERTION: ciy_open called while CIY_FAIL_ON_HARDWARE_IO is set!\n");
         abort();
@@ -34,16 +37,33 @@ bool ciy_open(CIYDevice *d) {
         d->dev = (void *)CIY_TESTING_MOCK_DEV;
         return true;
     }
+#endif
 
     return ciy_backend_open(d);
 }
 
 void ciy_close(CIYDevice *d) {
     if (d && d->dev) {
+#if defined(CIY_ENABLE_TEST_HOOKS)
         if (d->dev != (void *)CIY_TESTING_MOCK_DEV) {
             ciy_backend_close(d);
         }
+#else
+        ciy_backend_close(d);
+#endif
         d->dev = NULL;
+    }
+}
+
+static void ciy_nanosleep_uninterrupted(long ns) {
+    if (ns <= 0) return;
+    struct timespec req = {
+        .tv_sec = (time_t)(ns / 1000000000L),
+        .tv_nsec = ns % 1000000000L
+    };
+    struct timespec rem;
+    while (nanosleep(&req, &rem) == -1 && errno == EINTR) {
+        req = rem;
     }
 }
 
@@ -52,16 +72,63 @@ static int s_bus_lock_fd = -1;
 static _Atomic int s_bus_lock_depth = 0;
 static pthread_t s_bus_lock_owner;
 static _Atomic bool s_bus_has_owner = false;
+#if defined(CIY_ENABLE_TEST_HOOKS)
+static char s_test_lock_path[PATH_MAX > 1024 ? PATH_MAX : 1024] = {0};
+
+static void ciy_cleanup_test_lockfile(void) {
+    if (s_test_lock_path[0] != '\0') {
+        (void)unlink(s_test_lock_path);
+        s_test_lock_path[0] = '\0';
+    }
+}
+#endif
+
+static void ciy_atfork_child(void) {
+    // 1. Schließe vererbten Deskriptor OHNE flock(LOCK_UN) aufzurufen!
+    if (s_bus_lock_fd >= 0) {
+        close(s_bus_lock_fd);
+        s_bus_lock_fd = -1;
+    }
+    // 2. Setze Reentrancy-Zustand zurück
+    atomic_store_explicit(&s_bus_lock_depth, 0, memory_order_release);
+    atomic_store_explicit(&s_bus_has_owner, false, memory_order_release);
+
+#if defined(CIY_ENABLE_TEST_HOOKS)
+    // 3. Test-Lockfile-Pfad im Kind leeren, damit atexit das Eltern-Lockfile nicht löscht
+    s_test_lock_path[0] = '\0';
+#endif
+
+    // 4. Mutex für den Kindprozess sauber neu initialisieren
+    pthread_mutexattr_t attr;
+    if (pthread_mutexattr_init(&attr) == 0) {
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&s_bus_mutex, &attr);
+        pthread_mutexattr_destroy(&attr);
+    }
+}
+
+static pthread_once_t s_bus_lock_init_once = PTHREAD_ONCE_INIT;
+
+static void ciy_bus_lock_init_handlers(void) {
+    pthread_atfork(NULL, NULL, ciy_atfork_child);
+#if defined(CIY_ENABLE_TEST_HOOKS)
+    if (getenv("CIY_TESTING") != NULL) {
+        atexit(ciy_cleanup_test_lockfile);
+    }
+#endif
+}
 
 const char *ciy_bus_lock_path(char *buf, size_t bufsize) {
     if (!buf || bufsize == 0) return NULL;
     int r = -1;
+#if defined(CIY_ENABLE_TEST_HOOKS)
     if (getenv("CIY_TESTING") != NULL) {
         r = snprintf(buf, bufsize, "/tmp/ciy_x79_bus_%u_%d.lock", (unsigned)getuid(), (int)getpid());
         if (r > 0 && (size_t)r < bufsize) return buf;
         buf[0] = '\0';
         return NULL;
     }
+#endif
 #if defined(__APPLE__) && defined(_CS_DARWIN_USER_TEMP_DIR)
     char temp_dir[1024];
     size_t n = confstr(_CS_DARWIN_USER_TEMP_DIR, temp_dir, sizeof(temp_dir));
@@ -110,6 +177,12 @@ static int ciy_open_lock_file(void) {
     if (fd < 0) {
         return -1;
     }
+#if defined(CIY_ENABLE_TEST_HOOKS)
+    if (getenv("CIY_TESTING") != NULL) {
+        strncpy(s_test_lock_path, user_path, sizeof(s_test_lock_path) - 1);
+        s_test_lock_path[sizeof(s_test_lock_path) - 1] = '\0';
+    }
+#endif
     struct stat st;
     if (fstat(fd, &st) != 0 || st.st_uid != getuid() || !S_ISREG(st.st_mode)) {
         close(fd);
@@ -120,10 +193,13 @@ static int ciy_open_lock_file(void) {
 }
 
 bool ciy_bus_lock(void) {
+#if defined(CIY_ENABLE_TEST_HOOKS)
     if (getenv("CIY_FAIL_ON_HARDWARE_IO") != NULL) {
         fprintf(stderr, "SECURITY GUARD ASSERTION: ciy_bus_lock called while CIY_FAIL_ON_HARDWARE_IO is set!\n");
         abort();
     }
+#endif
+    pthread_once(&s_bus_lock_init_once, ciy_bus_lock_init_handlers);
     pthread_mutex_lock(&s_bus_mutex);
     if (atomic_load_explicit(&s_bus_lock_depth, memory_order_acquire) == 0) {
         s_bus_lock_fd = ciy_open_lock_file();
@@ -153,18 +229,19 @@ bool ciy_bus_lock(void) {
                 pthread_mutex_unlock(&s_bus_mutex);
                 return false;
             }
-            struct timespec req = {0, 5000000}, rem;
-            nanosleep(&req, &rem); // 5 ms Pause, handles EINTR via rem
+            ciy_nanosleep_uninterrupted(5000000L); // 5 ms Pause, guarantees full duration under EINTR
         }
-        if (getenv("CIY_TESTING") == NULL) {
+#if defined(CIY_ENABLE_TEST_HOOKS)
+        if (getenv("CIY_TESTING") == NULL)
+#endif
+        {
             struct timespec last_ts = {0, 0}, now_ts = {0, 0};
             if (pread(s_bus_lock_fd, &last_ts, sizeof(last_ts), 0) == (ssize_t)sizeof(last_ts)) {
                 clock_gettime(CLOCK_MONOTONIC, &now_ts);
                 if (now_ts.tv_sec >= last_ts.tv_sec && (now_ts.tv_sec - last_ts.tv_sec) <= 1) {
                     long diff_ns = (now_ts.tv_sec - last_ts.tv_sec) * 1000000000L + (now_ts.tv_nsec - last_ts.tv_nsec);
                     if (diff_ns > 0 && diff_ns < 50000000L) {
-                        struct timespec sleep_req = {0, 50000000L - diff_ns}, sleep_rem;
-                        nanosleep(&sleep_req, &sleep_rem);
+                        ciy_nanosleep_uninterrupted(50000000L - diff_ns);
                     }
                 }
             }
@@ -198,6 +275,7 @@ void ciy_bus_unlock(void) {
 
 static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t reportId, uint8_t *buf, uint16_t len,
                         uint32_t *done) {
+#if defined(CIY_ENABLE_TEST_HOOKS)
     if (getenv("CIY_FAIL_ON_HARDWARE_IO") != NULL) {
         fprintf(stderr, "SECURITY GUARD ASSERTION: ciy_request called while CIY_FAIL_ON_HARDWARE_IO is set!\n");
         abort();
@@ -205,7 +283,8 @@ static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t report
     if (!d || !d->dev) return false;
     if (d->dev == (void *)CIY_TESTING_MOCK_DEV) {
         if (!out && getenv("CIY_TESTING_FAIL_GET_REPORTS") != NULL) return false;
-        if (!out && reportId == 0x0A && buf && len >= 5) {
+        if (!out && reportId == 0x0A && buf && len >= CIY_REPORT_0A_SIZE) {
+            memset(buf, 0, len);
             buf[0] = 0x0A;
             buf[1] = 19;
             buf[2] = 0;
@@ -215,6 +294,9 @@ static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t report
         if (done) *done = len;
         return true;
     }
+#else
+    if (!d || !d->dev) return false;
+#endif
     return ciy_backend_request(d, out, bRequest, reportId, buf, len, done);
 }
 
@@ -255,7 +337,7 @@ bool ciy_send_planar_rgb(CIYDevice *d, const uint8_t *rgb, size_t length) {
 
 bool ciy_execute_transfer_plan(CIYDevice *d, const CIYTransferPlan *plan,
                                CIYCancelCheck cancel_check, void *cancel_ctx) {
-    if (!d || !d->dev || !plan || plan->step_count == 0) return false;
+    if (!d || !d->dev || !plan || plan->step_count == 0 || plan->step_count > CIY_MAX_PLAN_STEPS) return false;
     if (cancel_check && cancel_check(cancel_ctx)) return false;
     if (!ciy_bus_lock()) return false;
 
@@ -281,8 +363,7 @@ bool ciy_execute_transfer_plan(CIYDevice *d, const CIYTransferPlan *plan,
             uint32_t ms = step->delay_ms;
             uint32_t chunks = (ms + 4) / 5;
             for (uint32_t c = 0; c < chunks; c++) {
-                struct timespec req = {0, 5 * 1000 * 1000};
-                nanosleep(&req, NULL);
+                ciy_nanosleep_uninterrupted(5 * 1000 * 1000L);
                 if (cancel_check && cancel_check(cancel_ctx)) {
                     ok = false;
                     break;
@@ -319,14 +400,17 @@ static void ciy_build_profile_apply(uint8_t rgb[CIY_PLANAR_RGB_SIZE], const int 
 
 void ciy_build_profile(uint8_t rgb[CIY_PLANAR_RGB_SIZE], const int *indices, int count,
                        bool red, bool green, bool baseBlue) {
+    if (!rgb) return;
     memset(rgb, 0, CIY_PLANAR_RGB_SIZE);
     ciy_build_profile_apply(rgb, indices, count, red, green, baseBlue);
 }
 
 static void ciy_build_profile_apply(uint8_t rgb[CIY_PLANAR_RGB_SIZE], const int *indices, int count,
                                     bool red, bool green, bool baseBlue) {
+    if (!rgb) return;
     uint8_t *r = &rgb[0], *g = &rgb[CIY_LED_COUNT], *b = &rgb[2 * CIY_LED_COUNT];
     if (baseBlue) memset(b, 0xFF, CIY_LED_COUNT);
+    if (!indices || count <= 0) return;
     for (int k = 0; k < count; k++) {
         int idx = indices[k];
         if (idx < 0 || idx >= CIY_LED_COUNT) continue;
@@ -766,7 +850,16 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
                     }
 
                     p = skip_ws(p);
-                    if (*p == ',') p = skip_ws(p + 1);
+                    if (*p == ',') {
+                        p = skip_ws(p + 1);
+                        if (*p == '}') {
+                            if (out_res) {
+                                snprintf(out_res->error_field, sizeof(out_res->error_field), "slots");
+                                snprintf(out_res->error_message, sizeof(out_res->error_message), "Trailing comma im 'slots'-Objekt unzulässig");
+                            }
+                            return false;
+                        }
+                    }
                 }
                 if (*p != '}') {
                     if (out_res) {
@@ -828,7 +921,16 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
             }
 
             p = skip_ws(p);
-            if (*p == ',') p = skip_ws(p + 1);
+            if (*p == ',') {
+                p = skip_ws(p + 1);
+                if (*p == '}') {
+                    if (out_res) {
+                        snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
+                        snprintf(out_res->error_message, sizeof(out_res->error_message), "Trailing comma im Profil-Objekt unzulässig");
+                    }
+                    return false;
+                }
+            }
         }
 
         if (*p != '}') {
@@ -853,7 +955,16 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
         if (!in_array) break;
 
         p = skip_ws(p);
-        if (*p == ',') p = skip_ws(p + 1);
+        if (*p == ',') {
+            p = skip_ws(p + 1);
+            if (*p == ']') {
+                if (out_res) {
+                    snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
+                    snprintf(out_res->error_message, sizeof(out_res->error_message), "Trailing comma im Profil-Array unzulässig");
+                }
+                return false;
+            }
+        }
     }
 
     p = skip_ws(p);
@@ -1099,7 +1210,10 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
                         }
 
                         p = skip_ws(p);
-                        if (*p == ',') p = skip_ws(p + 1);
+                        if (*p == ',') {
+                            p = skip_ws(p + 1);
+                            if (*p == '}') return false;
+                        }
                     }
                     if (*p == '}') p = skip_ws(p + 1);
                 }
@@ -1133,7 +1247,10 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
             }
 
             p = skip_ws(p);
-            if (*p == ',') p = skip_ws(p + 1);
+            if (*p == ',') {
+                p = skip_ws(p + 1);
+                if (*p == '}') return false;
+            }
         }
 
         if (*p == '}') p = skip_ws(p + 1);
@@ -1153,6 +1270,14 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
             }
         }
 
+        if (in_array) {
+            p = skip_ws(p);
+            if (*p == ',') {
+                p = skip_ws(p + 1);
+                if (*p == ']') return false;
+            }
+        }
+
         if (match && valid_count > 0) {
             memcpy(rgb, temp_rgb, CIY_PLANAR_RGB_SIZE);
             if (out_name && max_name_len > 0) {
@@ -1166,9 +1291,6 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
         }
 
         if (!in_array) break;
-
-        p = skip_ws(p);
-        if (*p == ',') p = skip_ws(p + 1);
     }
 
     return found_target;

@@ -25,24 +25,64 @@ static bool ciy_backend_open(CIYDevice *d) {
     if (IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iter) != KERN_SUCCESS || !iter) {
         return false;
     }
-    io_service_t service = IOIteratorNext(iter);
+    io_service_t service = 0;
+    bool found = false;
+
+    while ((service = IOIteratorNext(iter)) != 0) {
+        IOCFPlugInInterface **plugIn = NULL;
+        SInt32 score = 0;
+        kern_return_t kr = IOCreatePlugInInterfaceForService(service, kIOUSBDeviceUserClientTypeID,
+                                                             kIOCFPlugInInterfaceID, &plugIn, &score);
+        IOObjectRelease(service);
+        if (kr != KERN_SUCCESS || !plugIn) {
+            continue;
+        }
+
+        IOUSBDeviceInterface **dev = NULL;
+        HRESULT qr = (*plugIn)->QueryInterface(plugIn, CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID), (LPVOID *)&dev);
+        (*plugIn)->Release(plugIn);
+        if (qr != S_OK || !dev) {
+            continue;
+        }
+
+        // Prüfe, ob das Gerät Vendor-Interface 1 (CIY_INTERFACE_NUM) besitzt
+        IOUSBFindInterfaceRequest ifReq = {
+            .bInterfaceClass = kIOUSBFindInterfaceDontCare,
+            .bInterfaceSubClass = kIOUSBFindInterfaceDontCare,
+            .bInterfaceProtocol = kIOUSBFindInterfaceDontCare,
+            .bAlternateSetting = kIOUSBFindInterfaceDontCare
+        };
+
+        io_iterator_t ifIter = 0;
+        bool has_target_interface = false;
+        if ((*dev)->CreateInterfaceIterator(dev, &ifReq, &ifIter) == kIOReturnSuccess && ifIter != 0) {
+            io_service_t ifService = 0;
+            while ((ifService = IOIteratorNext(ifIter)) != 0) {
+                CFNumberRef ifNumRef = (CFNumberRef)IORegistryEntryCreateCFProperty(
+                    ifService, CFSTR("bInterfaceNumber"), kCFAllocatorDefault, 0);
+                if (ifNumRef) {
+                    int ifNum = -1;
+                    if (CFNumberGetValue(ifNumRef, kCFNumberIntType, &ifNum) && ifNum == CIY_INTERFACE_NUM) {
+                        has_target_interface = true;
+                    }
+                    CFRelease(ifNumRef);
+                }
+                IOObjectRelease(ifService);
+            }
+            IOObjectRelease(ifIter);
+        }
+
+        if (has_target_interface) {
+            d->dev = dev;
+            found = true;
+            break;
+        }
+
+        (*dev)->Release(dev);
+    }
+
     IOObjectRelease(iter);
-    if (!service) return false;
-
-    IOCFPlugInInterface **plugIn = NULL;
-    SInt32 score = 0;
-    kern_return_t kr = IOCreatePlugInInterfaceForService(service, kIOUSBDeviceUserClientTypeID,
-                                                         kIOCFPlugInInterfaceID, &plugIn, &score);
-    IOObjectRelease(service);
-    if (kr != KERN_SUCCESS || !plugIn) return false;
-
-    IOUSBDeviceInterface **dev = NULL;
-    HRESULT qr = (*plugIn)->QueryInterface(plugIn, CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID), (LPVOID *)&dev);
-    (*plugIn)->Release(plugIn);
-    if (qr != S_OK || !dev) return false;
-
-    d->dev = dev;
-    return true;
+    return found;
 }
 
 static void ciy_backend_close(CIYDevice *d) {

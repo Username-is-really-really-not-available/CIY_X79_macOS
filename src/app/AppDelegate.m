@@ -71,6 +71,9 @@ static NSString * const kBatterySourceKey = @"CIYX79BatterySource_v1";
 static NSString * const kBatteryTargetKey = @"CIYX79BatteryTarget_v1";
 static NSString * const kBatteryCustomSlotsKey = @"CIYX79BatteryCustomSlots_v1";
 
+static const NSUInteger kMaxProfilesCount = 64;
+static const NSUInteger kMaxAppMetadataLength = 256;
+
 static NSArray<NSNumber *> *SlotsForZone(NSInteger tag) {
     switch (tag) {
         case 0: // WASD
@@ -130,6 +133,18 @@ static NSString *TruncateProfileName(NSString *name, NSUInteger maxUnits) {
         s = [s substringToIndex:last.location];
     }
     return s;
+}
+
+static NSString *SanitizeAppMetadata(id raw) {
+    if (![raw isKindOfClass:[NSString class]]) return nil;
+    NSString *str = (NSString *)raw;
+    NSString *cleaned = [[str componentsSeparatedByCharactersInSet:[NSCharacterSet controlCharacterSet]] componentsJoinedByString:@""];
+    NSString *trimmed = [cleaned stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) return nil;
+    if (trimmed.length > kMaxAppMetadataLength) {
+        trimmed = TruncateProfileName(trimmed, kMaxAppMetadataLength);
+    }
+    return trimmed.length > 0 ? trimmed : nil;
 }
 
 @implementation AppDelegate
@@ -555,10 +570,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)loadProfiles {
     NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:kCustomProfilesKey];
     if (saved && [saved isKindOfClass:[NSArray class]] && saved.count > 0) {
-        _profiles = [NSMutableArray arrayWithCapacity:saved.count];
+        _profiles = [NSMutableArray arrayWithCapacity:MIN(saved.count, kMaxProfilesCount)];
         NSMutableSet<NSString *> *seenIds = [NSMutableSet set];
         NSMutableSet<NSString *> *seenBundleIds = [NSMutableSet set];
         for (id item in saved) {
+            if (_profiles.count >= kMaxProfilesCount) break;
             if (![item isKindOfClass:[NSDictionary class]]) continue;
             NSDictionary *dict = (NSDictionary *)item;
             if (![dict[@"slots"] isKindOfClass:[NSDictionary class]]) continue;
@@ -582,10 +598,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             }
             prof[@"name"] = name;
 
-            id bundleId = prof[@"appBundleId"];
-            if ([bundleId isKindOfClass:[NSString class]] && [(NSString *)bundleId length] > 0 && ![seenBundleIds containsObject:bundleId]) {
+            NSString *bundleId = SanitizeAppMetadata(prof[@"appBundleId"]);
+            if (bundleId.length > 0 && ![seenBundleIds containsObject:bundleId]) {
                 [seenBundleIds addObject:bundleId];
-                if (![prof[@"appName"] isKindOfClass:[NSString class]] || [(NSString *)prof[@"appName"] length] == 0) {
+                prof[@"appBundleId"] = bundleId;
+                NSString *appName = SanitizeAppMetadata(prof[@"appName"]);
+                if (appName.length > 0) {
+                    prof[@"appName"] = appName;
+                } else {
                     [prof removeObjectForKey:@"appName"];
                 }
             } else {
@@ -843,10 +863,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK && panel.URL) {
             NSBundle *appBundle = [NSBundle bundleWithURL:panel.URL];
-            NSString *bundleId = appBundle.bundleIdentifier;
-            NSString *appName = [panel.URL.lastPathComponent stringByDeletingPathExtension];
+            NSString *rawAppName = [panel.URL.lastPathComponent stringByDeletingPathExtension];
+            NSString *appName = SanitizeAppMetadata(rawAppName) ?: @"App";
+            NSString *bundleId = SanitizeAppMetadata(appBundle.bundleIdentifier);
             if (!bundleId || bundleId.length == 0) {
-                bundleId = [NSString stringWithFormat:@"local.%@", appName];
+                bundleId = SanitizeAppMetadata([NSString stringWithFormat:@"local.%@", appName]) ?: @"local.App";
             }
 
             NSMutableDictionary *prof = self->_profiles[(NSUInteger)idx];
@@ -1066,6 +1087,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onNewProfile:(id)sender {
     (void)sender;
+    if (_profiles.count >= kMaxProfilesCount) {
+        NSAlert *limitAlert = [[NSAlert alloc] init];
+        limitAlert.messageText = @"Profillimit erreicht";
+        limitAlert.informativeText = [NSString stringWithFormat:@"Es können maximal %lu Profile gespeichert werden. Bitte löschen Sie zuerst ein nicht benötigtes Profil.", (unsigned long)kMaxProfilesCount];
+        [limitAlert addButtonWithTitle:@"OK"];
+        [limitAlert beginSheetModalForWindow:self.window completionHandler:nil];
+        return;
+    }
+
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Neues Beleuchtungsprofil anlegen";
     alert.informativeText = @"Geben Sie einen Namen für das neue Profil ein:";
@@ -1080,6 +1110,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse returnCode) {
         if (returnCode == NSAlertFirstButtonReturn) {
+            if (self->_profiles.count >= kMaxProfilesCount) return;
             NSString *name = [input.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (name.length == 0) {
                 name = [NSString stringWithFormat:@"Profil %lu", (unsigned long)(self->_profiles.count + 1)];
@@ -1682,16 +1713,39 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     panel.nameFieldStringValue = @"CIYX79_Profile.json";
     panel.allowedContentTypes = @[UTTypeJSON];
 
+    NSButton *includeAppsCheckbox = [NSButton checkboxWithTitle:@"App-Verknüpfungen (Auto-Trigger) mitexportieren" target:nil action:nil];
+    includeAppsCheckbox.state = NSControlStateValueOn;
+    [includeAppsCheckbox sizeToFit];
+    NSRect cbFrame = includeAppsCheckbox.frame;
+    NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, cbFrame.size.width + 24, cbFrame.size.height + 16)];
+    includeAppsCheckbox.frame = NSMakeRect(12, 8, cbFrame.size.width, cbFrame.size.height);
+    [accessory addSubview:includeAppsCheckbox];
+    panel.accessoryView = accessory;
+
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK && panel.URL) {
+            BOOL includeAppMetadata = (includeAppsCheckbox.state == NSControlStateValueOn);
+            NSMutableArray<NSDictionary *> *exportList = [NSMutableArray arrayWithCapacity:self->_profiles.count];
+            for (NSDictionary *prof in self->_profiles) {
+                NSMutableDictionary *copyProf = [prof mutableCopy];
+                if ([prof[@"slots"] isKindOfClass:[NSDictionary class]]) {
+                    copyProf[@"slots"] = [prof[@"slots"] mutableCopy];
+                }
+                if (!includeAppMetadata) {
+                    [copyProf removeObjectForKey:@"appBundleId"];
+                    [copyProf removeObjectForKey:@"appName"];
+                }
+                [exportList addObject:copyProf];
+            }
+
             NSError *err = nil;
-            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:self->_profiles
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:exportList
                                                                options:NSJSONWritingPrettyPrinted
                                                                  error:&err];
             if (jsonData && !err) {
                 BOOL ok = [jsonData writeToURL:panel.URL atomically:YES];
                 if (ok) {
-                    self->_statusLabel.stringValue = [NSString stringWithFormat:@"● %lu Profil(e) exportiert", (unsigned long)self->_profiles.count];
+                    self->_statusLabel.stringValue = [NSString stringWithFormat:@"● %lu Profil(e) exportiert", (unsigned long)exportList.count];
                     self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
                     return;
                 }
@@ -1706,6 +1760,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onImportProfiles:(id)sender {
     (void)sender;
+    if (_profiles.count >= kMaxProfilesCount) {
+        [self showImportError:[NSString stringWithFormat:@"Das Limit von maximal %lu Profilen ist bereits erreicht. Bitte löschen Sie zuerst nicht benötigte Profile.", (unsigned long)kMaxProfilesCount]];
+        return;
+    }
+
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.title = @"CIY X79 Beleuchtungsprofile importieren";
     panel.prompt = @"Importieren";
@@ -1715,6 +1774,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK && panel.URL) {
+            if (self->_profiles.count >= kMaxProfilesCount) {
+                [self showImportError:[NSString stringWithFormat:@"Das Limit von maximal %lu Profilen ist bereits erreicht.", (unsigned long)kMaxProfilesCount]];
+                return;
+            }
             NSError *err = nil;
             NSNumber *fileSize = nil;
             if (![panel.URL getResourceValue:&fileSize forKey:NSURLFileSizeKey error:&err] ||
@@ -1744,8 +1807,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             }
 
             NSUInteger importedCount = 0;
+            BOOL limitReached = NO;
             NSString *lastId = nil;
             for (id item in items) {
+                if (self->_profiles.count >= kMaxProfilesCount) {
+                    limitReached = YES;
+                    break;
+                }
                 if ([item isKindOfClass:[NSDictionary class]]) {
                     NSDictionary *dict = (NSDictionary *)item;
                     NSString *name = @"Importiertes Profil";
@@ -1787,8 +1855,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                         newProf[@"id"] = newId;
                         newProf[@"name"] = name;
                         newProf[@"slots"] = fullSlots;
-                        if ([dict[@"appBundleId"] isKindOfClass:[NSString class]] && [dict[@"appBundleId"] length] > 0) {
-                            NSString *importedBundleId = dict[@"appBundleId"];
+                        NSString *importedBundleId = SanitizeAppMetadata(dict[@"appBundleId"]);
+                        if (importedBundleId.length > 0) {
                             // Bestehende Verknüpfung bei anderen Profilen lösen, um Konflikte zu vermeiden:
                             for (NSMutableDictionary *existing in self->_profiles) {
                                 if ([existing[@"appBundleId"] isEqualToString:importedBundleId]) {
@@ -1797,8 +1865,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                 }
                             }
                             newProf[@"appBundleId"] = importedBundleId;
-                            if ([dict[@"appName"] isKindOfClass:[NSString class]] && [dict[@"appName"] length] > 0) {
-                                newProf[@"appName"] = dict[@"appName"];
+                            NSString *importedAppName = SanitizeAppMetadata(dict[@"appName"]);
+                            if (importedAppName.length > 0) {
+                                newProf[@"appName"] = importedAppName;
                             }
                         }
                         [self->_profiles addObject:newProf];
@@ -1820,6 +1889,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
                 self->_statusLabel.stringValue = [NSString stringWithFormat:@"● %lu Profil(e) erfolgreich importiert", (unsigned long)importedCount];
                 self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
+                if (limitReached) {
+                    [self showImportError:[NSString stringWithFormat:@"Es wurden %lu Profil(e) importiert. Weitere Profile wurden übersprungen, da das Maximum von %lu Profilen erreicht ist.", (unsigned long)importedCount, (unsigned long)kMaxProfilesCount]];
+                }
             } else {
                 [self showImportError:@"Keine gültigen Beleuchtungsprofile in der Datei gefunden."];
             }

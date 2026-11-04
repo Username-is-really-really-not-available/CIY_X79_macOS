@@ -268,6 +268,14 @@ static void test_app_trigger_profile_attributes(void) {
     assert(parsed.count == 1);
     assert([parsed[0][@"appBundleId"] isEqualToString:@"com.valvesoftware.steam"]);
     assert([parsed[0][@"appName"] isEqualToString:@"Steam"]);
+
+    // Export ohne App-Verknüpfungen (SEC-T4-009): tiefe Kopie ohne appBundleId / appName
+    NSMutableDictionary *stripped = [prof mutableCopy];
+    [stripped removeObjectForKey:@"appBundleId"];
+    [stripped removeObjectForKey:@"appName"];
+    assert(stripped[@"appBundleId"] == nil);
+    assert(stripped[@"appName"] == nil);
+    assert([prof[@"appBundleId"] isEqualToString:@"com.valvesoftware.steam"]);
 }
 
 static void test_menu_item_titles(void) {

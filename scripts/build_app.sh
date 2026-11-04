@@ -90,9 +90,10 @@ EOF
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${DIST_DIR}/ciy_ctl"
 
-echo "4. Ad-hoc Codesign (arm64 & x86_64)..."
-codesign --force --deep --options runtime --sign - "${APP_BUNDLE}"
-codesign --force --options runtime --sign - "${DIST_DIR}/ciy_ctl"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+echo "4. Codesign (${CODESIGN_IDENTITY}, arm64 & x86_64)..."
+codesign --force --deep --options runtime --sign "${CODESIGN_IDENTITY}" "${APP_BUNDLE}"
+codesign --force --options runtime --sign "${CODESIGN_IDENTITY}" "${DIST_DIR}/ciy_ctl"
 
 # Praktische Symlinks im Root-Verzeichnis aktualisieren
 ln -sfn "dist/${APP_NAME}.app" "${PROJECT_ROOT}/${APP_NAME}.app"

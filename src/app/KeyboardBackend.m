@@ -46,10 +46,15 @@ static bool KeyboardBackendCancelCheck(void *ctx) {
 
 + (BOOL)isTestingMode {
     @synchronized ([KeyboardBackend class]) {
+#if defined(CIY_ENABLE_TEST_HOOKS)
         if (sTestingMode) {
             return YES;
         }
         return (getenv("CIY_TESTING") != NULL);
+#else
+        (void)sTestingMode;
+        return NO;
+#endif
     }
 }
 
@@ -252,7 +257,9 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
         if (!_device.dev && ![self connect]) return NO;
         KeyboardLightingState st;
         if (!ciy_get_state(&_device, &st)) {
-            return NO;
+            [self invalidateDevice];
+            if (![self connect]) return NO;
+            return YES;
         }
         self.currentState = st;
         return YES;
@@ -269,6 +276,7 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             return NO;
         }
 
+#if defined(CIY_ENABLE_TEST_HOOKS)
         if ([KeyboardBackend isTestingMode]) {
             // Test-Hook: simuliert die 50-ms-Phase, damit In-Flight-Cancel testbar ist.
             const char *delayEnv = getenv("CIY_TESTING_APPLY_DELAY_MS");
@@ -298,6 +306,7 @@ static void HotplugCallback(void *refCon, io_iterator_t iterator) {
             self.currentState = st;
             return YES;
         }
+#endif
 
         if (_device.dev == NULL && ![self connect]) return NO;
         BOOL ok = ciy_apply_custom_profile_with_brightness_cancelable(

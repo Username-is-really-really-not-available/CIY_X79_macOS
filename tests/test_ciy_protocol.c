@@ -118,8 +118,11 @@ static void test_decode_report_0a(void) {
     assert(!ciy_protocol_decode_0a(raw, sizeof(raw), &decoded));
     raw[0] = 0x0A;
 
-    // Fehler: Zu kurz
+    // Fehler: Zu kurz (SEC-T3-001: Berichte < 42 Bytes werden strikt abgelehnt)
     assert(!ciy_protocol_decode_0a(raw, 4, &decoded));
+    assert(!ciy_protocol_decode_0a(raw, 5, &decoded));
+    assert(!ciy_protocol_decode_0a(raw, 41, &decoded));
+    assert(ciy_protocol_decode_0a(raw, 42, &decoded));
 
     // Fehler: NULL-Puffer
     assert(!ciy_protocol_decode_0a(NULL, 42, &decoded));

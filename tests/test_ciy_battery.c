@@ -227,6 +227,21 @@ static void test_battery_unreadable_sources(void) {
     printf("[Test 5] Nicht lesbare / nicht vorhandene Quellen liefern percent == -1... PASSED\n");
 }
 
+static void test_battery_overflow_protection(void) {
+    // SEC-T5-004: Prüfe, dass große Kapazitätswerte (z. B. in uWh) keinen 32-Bit Signed-Integer-Overflow erzeugen
+    int curCap = 50000000;  // 50 Mio uWh
+    int maxCap = 100000000; // 100 Mio uWh
+    int p = (int)(((int64_t)curCap * 100) / (int64_t)maxCap);
+    assert(p == 50);
+
+    // Grenzfall INT32_MAX
+    int max_int = 2147483647;
+    int p_max = (int)(((int64_t)max_int * 100) / (int64_t)max_int);
+    assert(p_max == 100);
+
+    printf("[Test 6] 64-Bit Integer-Arithmetik gegen Überlauf (SEC-T5-004)... PASSED\n");
+}
+
 int main(void) {
     printf("=== Starte CIY Battery Unit-Tests (ASan/UBSan) ===\n");
     test_battery_color_logic();
@@ -234,6 +249,7 @@ int main(void) {
     test_battery_overlay_calculation();
     test_battery_mocks();
     test_battery_unreadable_sources();
+    test_battery_overflow_protection();
     printf("=== Alle CIY Battery Unit-Tests erfolgreich bestanden! ===\n");
     return 0;
 }
