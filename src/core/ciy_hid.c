@@ -1017,7 +1017,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
         return NULL;
     }
 
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) {
         if (out_res) {
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");

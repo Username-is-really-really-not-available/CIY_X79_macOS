@@ -1178,7 +1178,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(strstr(res.error_message, "keine reguläre Datei") != NULL);
     unlink(path);
 
-    // 6. Zyklischen Symlink abweisen
+    // 6. Zyklischen Symlink sowie Symlink auf reguläre Datei abweisen (O_NOFOLLOW)
     snprintf(path, sizeof(path), "/tmp/ciy_symloop_%d.json", (int)getpid());
     unlink(path);
     assert(symlink(path, path) == 0);
@@ -1192,6 +1192,31 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(strcmp(res.error_field, "file") == 0);
     unlink(path);
+
+    char target_path[128];
+    snprintf(target_path, sizeof(target_path), "/tmp/ciy_symtarget_%d.json", (int)getpid());
+    snprintf(path, sizeof(path), "/tmp/ciy_symlink_reg_%d.json", (int)getpid());
+    unlink(target_path);
+    unlink(path);
+    FILE *tf = fopen(target_path, "w");
+    assert(tf != NULL);
+    fprintf(tf, "{\"name\": \"Target\", \"slots\": {\"1\": \"#FF0000\"}}");
+    fclose(tf);
+    assert(symlink(target_path, path) == 0);
+    memset(&res, 0xAA, sizeof(res));
+    out_size = 999;
+    buf = ciy_read_text_file_with_result(path, &out_size, &res);
+    assert(buf == NULL);
+    assert(out_size == 0);
+    assert(res.is_valid == false);
+    assert(strcmp(res.error_field, "file") == 0);
+    assert(!ciy_validate_profile_file(path, &res));
+    uint8_t sym_rgb[CIY_PLANAR_RGB_SIZE];
+    char sym_name[64];
+    int sym_count = 0;
+    assert(!ciy_load_profile_file(path, NULL, sym_rgb, sym_name, sizeof(sym_name), &sym_count));
+    unlink(path);
+    unlink(target_path);
 
     // 7. Datei mit Null-Bytes abweisen (Binärdatei-Schutz)
     snprintf(path, sizeof(path), "/tmp/ciy_nullbyte_%d.json", (int)getpid());

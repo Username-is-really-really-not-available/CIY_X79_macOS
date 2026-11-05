@@ -1,5 +1,6 @@
 #import "AppDelegate.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <stdlib.h>
 #import "../core/ciy_battery.h"
 #import "../core/ciy_gradient.h"
 #import "CIYBatteryMonitor.h"
@@ -1637,10 +1638,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [[CIYBatteryMonitor sharedMonitor] stopMonitoring];
     // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
     [[KeyboardBackend shared] requestCancel];
-    [self updateConnectionStatus];
-    dispatch_async(_hwQueue, ^{
+    if (_hwQueue) {
+        dispatch_sync(_hwQueue, ^{
+            [[KeyboardBackend shared] disconnect];
+        });
+    } else {
         [[KeyboardBackend shared] disconnect];
-    });
+    }
+    [self updateConnectionStatus];
 }
 
 - (void)onSystemDidWake:(NSNotification *)note {
@@ -1714,7 +1719,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     panel.allowedContentTypes = @[UTTypeJSON];
 
     NSButton *includeAppsCheckbox = [NSButton checkboxWithTitle:@"App-Verknüpfungen (Auto-Trigger) mitexportieren" target:nil action:nil];
-    includeAppsCheckbox.state = NSControlStateValueOn;
+    includeAppsCheckbox.state = NSControlStateValueOff;
     [includeAppsCheckbox sizeToFit];
     NSRect cbFrame = includeAppsCheckbox.frame;
     NSView *accessory = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, cbFrame.size.width + 24, cbFrame.size.height + 16)];
@@ -1778,18 +1783,19 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [self showImportError:[NSString stringWithFormat:@"Das Limit von maximal %lu Profilen ist bereits erreicht.", (unsigned long)kMaxProfilesCount]];
                 return;
             }
+            size_t rawSize = 0;
+            CIYValidationResult valRes;
+            char *rawBuf = ciy_read_text_file_with_result([panel.URL.path fileSystemRepresentation], &rawSize, &valRes);
+            if (!rawBuf || rawSize == 0 || rawSize > 512 * 1024) {
+                if (rawBuf) free(rawBuf);
+                NSString *errMsg = (valRes.error_message[0] != '\0')
+                    ? [NSString stringWithUTF8String:valRes.error_message]
+                    : @"Datei konnte nicht sicher gelesen werden.";
+                [self showImportError:errMsg ?: @"Datei konnte nicht sicher gelesen werden."];
+                return;
+            }
+            NSData *data = [NSData dataWithBytesNoCopy:rawBuf length:rawSize freeWhenDone:YES];
             NSError *err = nil;
-            NSNumber *fileSize = nil;
-            if (![panel.URL getResourceValue:&fileSize forKey:NSURLFileSizeKey error:&err] ||
-                (fileSize && fileSize.unsignedLongLongValue > 512 * 1024)) {
-                [self showImportError:@"Datei ist zu groß (maximal 512 KB erlaubt) oder nicht lesbar."];
-                return;
-            }
-            NSData *data = [NSData dataWithContentsOfURL:panel.URL options:0 error:&err];
-            if (!data || err || data.length > 512 * 1024) {
-                [self showImportError:@"Datei konnte nicht gelesen werden."];
-                return;
-            }
             id json = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&err];
             if (!json || err) {
                 [self showImportError:@"Ungültiges JSON-Format."];

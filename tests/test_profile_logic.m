@@ -273,10 +273,13 @@ static void test_app_trigger_profile_attributes(void) {
     assert([parsed[0][@"appBundleId"] isEqualToString:@"com.valvesoftware.steam"]);
     assert([parsed[0][@"appName"] isEqualToString:@"Steam"]);
 
-    // Export ohne App-Verknüpfungen (SEC-T4-009): tiefe Kopie ohne appBundleId / appName
+    // Export ohne App-Verknüpfungen (SEC-T4-009) entfernt Metadaten bei deaktivierter Checkbox.
+    BOOL includeAppMetadata = NO;
     NSMutableDictionary *stripped = [prof mutableCopy];
-    [stripped removeObjectForKey:@"appBundleId"];
-    [stripped removeObjectForKey:@"appName"];
+    if (!includeAppMetadata) {
+        [stripped removeObjectForKey:@"appBundleId"];
+        [stripped removeObjectForKey:@"appName"];
+    }
     assert(stripped[@"appBundleId"] == nil);
     assert(stripped[@"appName"] == nil);
     assert([prof[@"appBundleId"] isEqualToString:@"com.valvesoftware.steam"]);
