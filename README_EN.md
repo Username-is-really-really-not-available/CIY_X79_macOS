@@ -279,6 +279,12 @@ Written in native Objective-C/Cocoa without external dependencies or heavy runti
   * **Resilient Default Fallback:** Automatically reverts to your designated default profile (e.g. Clean White) when returning to desktop or unassigned apps. Stale or invalid fallback IDs are automatically repaired on launch.
   * **Clean Teardown (`applicationWillTerminate:`):** Fully deregisters and destroys IOKit notification ports and USB handles upon exit.
 
+### Language / Sprache:
+* **English is the default for new installations**; existing installations with saved profiles keep German.
+* Switch languages at any time via **Language / Sprache** in the app or status menu (`English` / `Deutsch`).
+* The change takes effect after manually restarting the app; existing profiles are not renamed.
+* The selection is stored under `CIYX79Language_v1` in `NSUserDefaults`. The `ciy_ctl` CLI remains language-neutral.
+
 ---
 
 ## 8. The Command Line Tool (`ciy_ctl`)

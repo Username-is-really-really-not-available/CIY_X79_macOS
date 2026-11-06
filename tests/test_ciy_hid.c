@@ -542,6 +542,7 @@ static void test_fifo_profile_rejection(void) {
     assert(!valid);
     assert(strcmp(res.error_field, "file") == 0);
     assert(strstr(res.error_message, "keine reguläre Datei") != NULL);
+    assert(res.read_error == CIYFileReadErrorNotRegularFile);
 
     // Auch ohne out_res muss es sofort false zurückgeben
     assert(!ciy_validate_profile_file(fifo_path, NULL));
@@ -1040,6 +1041,7 @@ static void test_profile_validation(void) {
 
     assert(!ciy_validate_profile_file("tests/fixtures/non_existent_file.json", &res));
     assert(!res.is_valid);
+    assert(res.read_error == CIYFileReadErrorOpenFailed);
 }
 
 static void test_transfer_plan(void) {
@@ -1119,6 +1121,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(res.error_message[0] != '\0');
     assert(strcmp(res.error_field, "file") == 0);
+    assert(res.read_error == CIYFileReadErrorOpenFailed);
 
     // 2. NULL-Dateipfad
     memset(&res, 0xAA, sizeof(res));
@@ -1131,11 +1134,12 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(res.error_message[0] != '\0');
     assert(strcmp(res.error_field, "file") == 0);
+    assert(res.read_error == CIYFileReadErrorNullPath);
 
     // 3. Verzeichnis abweisen
     memset(&res, 0xAA, sizeof(res));
     out_size = 999;
-    buf = ciy_read_text_file_with_result("/tmp", &out_size, &res);
+    buf = ciy_read_text_file_with_result(".", &out_size, &res);
     assert(buf == NULL);
     assert(out_size == 0);
     assert(res.is_valid == false);
@@ -1143,6 +1147,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(res.error_message[0] != '\0');
     assert(strcmp(res.error_field, "file") == 0);
+    assert(res.read_error == CIYFileReadErrorNotRegularFile);
 
     // 4. Leere Datei abweisen
     snprintf(path, sizeof(path), "/tmp/ciy_empty_%d.txt", (int)getpid());
@@ -1160,6 +1165,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(res.error_message[0] != '\0');
     assert(strcmp(res.error_field, "file") == 0);
+    assert(res.read_error == CIYFileReadErrorEmptyFile);
     unlink(path);
 
     // 5. FIFO abweisen (nicht-blockierend)
@@ -1176,6 +1182,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(strcmp(res.error_field, "file") == 0);
     assert(strstr(res.error_message, "keine reguläre Datei") != NULL);
+    assert(res.read_error == CIYFileReadErrorNotRegularFile);
     unlink(path);
 
     // 6. Zyklischen Symlink sowie Symlink auf reguläre Datei abweisen (O_NOFOLLOW)
@@ -1191,6 +1198,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.profile_count == 0);
     assert(res.total_keys_count == 0);
     assert(strcmp(res.error_field, "file") == 0);
+    assert(res.read_error == CIYFileReadErrorSymlinkRejected);
     unlink(path);
 
     char target_path[128];
@@ -1210,6 +1218,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(out_size == 0);
     assert(res.is_valid == false);
     assert(strcmp(res.error_field, "file") == 0);
+    assert(res.read_error == CIYFileReadErrorSymlinkRejected);
     assert(!ciy_validate_profile_file(path, &res));
     uint8_t sym_rgb[CIY_PLANAR_RGB_SIZE];
     char sym_name[64];
@@ -1236,6 +1245,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(strcmp(res.error_field, "syntax") == 0);
     assert(strstr(res.error_message, "Null-Bytes") != NULL);
+    assert(res.read_error == CIYFileReadErrorReadFailed);
     unlink(path);
 
     // 8. Datei > 512 KB abweisen
@@ -1256,6 +1266,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(strcmp(res.error_field, "file") == 0);
     assert(strstr(res.error_message, "512 KB") != NULL);
+    assert(res.read_error == CIYFileReadErrorTooLarge);
     unlink(path);
 
     // 9. Erfolgreiches Lesen initialisiert out_res sauber (keine 0xAA Dummy-Werte)
@@ -1277,6 +1288,7 @@ static void test_read_text_file_validation_result_init(void) {
     assert(res.total_keys_count == 0);
     assert(res.error_message[0] == '\0');
     assert(res.error_field[0] == '\0');
+    assert(res.read_error == CIYFileReadErrorNone);
     free(buf);
 
     // 10. Convenience-Funktion ciy_read_text_file testen

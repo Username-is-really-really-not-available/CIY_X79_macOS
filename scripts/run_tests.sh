@@ -89,7 +89,24 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -o "${TEST_TMP_DIR}/test_profile_logic"
 "${TEST_TMP_DIR}/test_profile_logic"
 
-echo "=== Test 2b: Release-Hygiene (Test-Hooks auskompiliert) ==="
+echo "=== Test 2b: Localization Tests (ASan/UBSan) ==="
+# de.lproj neben das Test-Binary legen, damit der produktive
+# [NSBundle mainBundle]-Pfad ohne Test-Hook aufgelöst werden kann.
+cp -R resources/de.lproj "${TEST_TMP_DIR}/"
+clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    -fobjc-arc \
+    -framework Foundation \
+    "${HOOK_FLAGS[@]}" \
+    src/app/CIYLocalization.m \
+    tests/test_ciy_localization.m \
+    -o "${TEST_TMP_DIR}/test_ciy_localization"
+"${TEST_TMP_DIR}/test_ciy_localization"
+
+echo "=== Test 2c: Localization Resource Lint ==="
+plutil -lint resources/en.lproj/Localizable.strings
+plutil -lint resources/de.lproj/Localizable.strings
+
+echo "=== Test 2d: Release-Hygiene (Test-Hooks auskompiliert) ==="
 clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 -O2 \
     -UCIY_ENABLE_TEST_HOOKS \
     -framework IOKit -framework CoreFoundation \

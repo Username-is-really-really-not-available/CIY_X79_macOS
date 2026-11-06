@@ -92,12 +92,28 @@ void ciy_build_solid_color_profile(uint8_t rgb[CIY_PLANAR_RGB_SIZE], uint8_t r, 
 /// Parst einen Hex-Farbstring (#RRGGBB, RRGGBB, #RGB oder RGB). Gibt false bei ungültigem Format zurück.
 bool ciy_parse_hex_color(const char *str, uint8_t *r, uint8_t *g, uint8_t *b);
 
+/// Grund, warum ciy_read_text_file_with_result fehlgeschlagen ist (0 = kein Lesefehler).
+/// Dient der GUI fuer lokalisierte Meldungen; error_message bleibt deutscher Diagnosetext.
+typedef enum {
+    CIYFileReadErrorNone = 0,
+    CIYFileReadErrorNullPath,
+    CIYFileReadErrorOpenFailed,
+    CIYFileReadErrorSymlinkRejected,
+    CIYFileReadErrorNotRegularFile,
+    CIYFileReadErrorEmptyFile,
+    CIYFileReadErrorTooLarge,
+    CIYFileReadErrorStreamFailed,
+    CIYFileReadErrorOutOfMemory,
+    CIYFileReadErrorReadFailed
+} CIYFileReadError;
+
 typedef struct {
     bool is_valid;
     int profile_count;
     int total_keys_count;
     char error_field[64];
     char error_message[256];
+    CIYFileReadError read_error;
 } CIYValidationResult;
 
 /// Validiert ein Profil oder Profil-Array hardwarefrei gegen das JSON-Schema und Hardware-Grenzen.
@@ -112,6 +128,8 @@ bool ciy_validate_profile_file(const char *path, CIYValidationResult *out_res);
 char *ciy_read_text_file(const char *path, size_t *out_size);
 
 /// Liest eine Text-/JSON-Datei sicher von der Festplatte ein und füllt im Fehlerfall out_res.
+/// Setzt bei Fehlern zusätzlich out_res->read_error für die GUI-Lokalisierung; error_message
+/// bleibt als unveränderter deutscher Diagnosetext für CLI/Logs erhalten.
 char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYValidationResult *out_res);
 
 /// Parst ein JSON-Profil (Array oder Objekt mit "slots") und befüllt den Planar-Puffer.

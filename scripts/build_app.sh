@@ -39,6 +39,7 @@ clang -arch arm64 -arch x86_64 \
     src/app/KeyboardBackend.m \
     src/app/CIYKeyboardView.m \
     src/app/CIYBatteryMonitor.m \
+    src/app/CIYLocalization.m \
     src/app/AppDelegate.m \
     src/app/main.m \
     -o "${MACOS_DIR}/${APP_NAME}"
@@ -58,23 +59,46 @@ clang -arch arm64 -arch x86_64 \
     src/cli/ciy_ctl.c \
     -o "${DIST_DIR}/ciy_ctl"
 
-echo "3. Kopiere AppIcon, Dokumentation & erstelle Info.plist..."
+echo "3. Kopiere AppIcon, Dokumentation, Lokalisierung & erstelle Info.plist..."
 if [ -f "resources/AppIcon.icns" ]; then
     cp "resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 fi
-cp README*.md "${RESOURCES_DIR}/" 2>/dev/null || true
+for doc in README.md README_EN.md; do
+    if [ ! -f "${doc}" ]; then
+        echo "FEHLER: ${doc} fehlt." >&2
+        exit 1
+    fi
+    cp "${doc}" "${RESOURCES_DIR}/"
+done
+
+for lproj in en de; do
+    strings_file="resources/${lproj}.lproj/Localizable.strings"
+    if [ ! -f "${strings_file}" ]; then
+        echo "FEHLER: ${strings_file} fehlt." >&2
+        exit 1
+    fi
+    rm -rf "${RESOURCES_DIR}/${lproj}.lproj"
+    cp -R "resources/${lproj}.lproj" "${RESOURCES_DIR}/"
+done
 
 cat << EOF > "${APP_BUNDLE}/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
     <key>CFBundleExecutable</key>
     <string>CIYX79Control</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.juliengenau.ciy-x79-control</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>de</string>
+    </array>
     <key>CFBundleName</key>
     <string>CIY X79 Control</string>
     <key>CFBundlePackageType</key>

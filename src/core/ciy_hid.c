@@ -1011,6 +1011,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     }
     if (!path) {
         if (out_res) {
+            out_res->read_error = CIYFileReadErrorNullPath;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Dateipfad ist NULL");
         }
@@ -1020,6 +1021,8 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) {
         if (out_res) {
+            out_res->read_error = (errno == ELOOP) ? CIYFileReadErrorSymlinkRejected
+                                                   : CIYFileReadErrorOpenFailed;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' existiert nicht oder konnte nicht geöffnet werden", path);
         }
@@ -1030,6 +1033,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         close(fd);
         if (out_res) {
+            out_res->read_error = CIYFileReadErrorNotRegularFile;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' ist keine reguläre Datei", path);
         }
@@ -1038,6 +1042,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     if (st.st_size <= 0) {
         close(fd);
         if (out_res) {
+            out_res->read_error = CIYFileReadErrorEmptyFile;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' ist leer (0 Bytes)", path);
         }
@@ -1046,6 +1051,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     if (st.st_size > 512 * 1024) {
         close(fd);
         if (out_res) {
+            out_res->read_error = CIYFileReadErrorTooLarge;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' überschreitet maximale Größe (512 KB)", path);
         }
@@ -1056,6 +1062,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     if (!f) {
         close(fd);
         if (out_res) {
+            out_res->read_error = CIYFileReadErrorStreamFailed;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "file");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei '%s' konnte nicht geöffnet werden", path);
         }
@@ -1066,6 +1073,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     if (!buf) {
         fclose(f);
         if (out_res) {
+            out_res->read_error = CIYFileReadErrorOutOfMemory;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "memory");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Speicherallokationsfehler");
         }
@@ -1077,6 +1085,7 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
     if (read_bytes != (size_t)st.st_size || memchr(buf, '\0', read_bytes) != NULL) {
         free(buf);
         if (out_res) {
+            out_res->read_error = CIYFileReadErrorReadFailed;
             snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
             snprintf(out_res->error_message, sizeof(out_res->error_message), "Datei enthält ungültige Null-Bytes oder Lesefehler");
         }

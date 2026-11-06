@@ -315,6 +315,12 @@ Die native macOS-Anwendung wurde in Objective-C/Cocoa geschrieben und benötigt 
    * **Resilienter Standard-Fallback:** Wird zu einer nicht verknüpften App gewechselt, stellt die App automatisch das definierte Standard-Profil (z. B. *Büro / Clean Weiß*) wieder her. Ungültige oder verwaiste Fallback-IDs werden beim Start automatisch erkannt und geheilt.
    * **Sauberer Teardown (`applicationWillTerminate:`):** Beim Beenden werden alle IOKit-Monitoring-Ports und Benachrichtigungen vollständig deregistriert und freigegeben.
 
+### Sprache / Language:
+* **Englisch ist der Default für Neuinstallationen**; bestehende Installationen mit gespeicherten Profilen behalten Deutsch.
+* Die Sprache lässt sich jederzeit über **Language / Sprache** im App- oder Statusmenü umschalten (`English` / `Deutsch`).
+* Die Änderung wird erst nach einem manuellen Neustart der App wirksam; bestehende Profile werden nicht umbenannt.
+* Die Auswahl wird unter `CIYX79Language_v1` in `NSUserDefaults` gespeichert. Das CLI-Tool `ciy_ctl` bleibt sprachunabhängig.
+
 ---
 
 ## 8. Das Terminal-Tool (`ciy_ctl`)

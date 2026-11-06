@@ -4,6 +4,7 @@
 #import "../core/ciy_battery.h"
 #import "../core/ciy_gradient.h"
 #import "CIYBatteryMonitor.h"
+#import "CIYLocalization.h"
 
 @interface AppDelegate () {
     NSTextField *_statusLabel;
@@ -74,6 +75,48 @@ static NSString * const kBatteryCustomSlotsKey = @"CIYX79BatteryCustomSlots_v1";
 
 static const NSUInteger kMaxProfilesCount = 64;
 static const NSUInteger kMaxAppMetadataLength = 256;
+static const NSInteger kLanguageMenuTag = 0x4C4E47;
+
+static void CIYUpdateLanguageMenuStates(NSMenu *menu, CIYLanguage preferred) {
+    if (!menu) return;
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.tag == kLanguageMenuTag && item.submenu) {
+            for (NSMenuItem *langItem in item.submenu.itemArray) {
+                langItem.state = (langItem.tag == preferred)
+                    ? NSControlStateValueOn : NSControlStateValueOff;
+            }
+        }
+        if (item.submenu) {
+            CIYUpdateLanguageMenuStates(item.submenu, preferred);
+        }
+    }
+}
+
+static NSString *CIYLocalizedFileReadErrorMessage(CIYFileReadError error) {
+    switch (error) {
+        case CIYFileReadErrorNullPath:
+            return CIYL(@"The file path is invalid.");
+        case CIYFileReadErrorOpenFailed:
+            return CIYL(@"The selected file could not be opened. It may not exist or you may lack the required permissions.");
+        case CIYFileReadErrorSymlinkRejected:
+            return CIYL(@"Symbolic links cannot be imported for security reasons.");
+        case CIYFileReadErrorNotRegularFile:
+            return CIYL(@"The selected path is not a regular file.");
+        case CIYFileReadErrorEmptyFile:
+            return CIYL(@"The selected file is empty.");
+        case CIYFileReadErrorTooLarge:
+            return CIYL(@"The selected file exceeds the maximum size of 512 KB.");
+        case CIYFileReadErrorStreamFailed:
+            return CIYL(@"The file could not be opened for reading.");
+        case CIYFileReadErrorOutOfMemory:
+            return CIYL(@"Not enough memory to read the file.");
+        case CIYFileReadErrorReadFailed:
+            return CIYL(@"The file contains invalid binary data or could not be read completely.");
+        case CIYFileReadErrorNone:
+        default:
+            return CIYL(@"The file could not be read safely.");
+    }
+}
 
 static NSArray<NSNumber *> *SlotsForZone(NSInteger tag) {
     switch (tag) {
@@ -152,21 +195,16 @@ static NSString *SanitizeAppMetadata(id raw) {
 
 /// Gemeinsame Farbpalette für Tastenbuttons (Reihenfolge = Button-Tag).
 static NSArray<NSDictionary *> *KeyPalette(void) {
-    static NSArray<NSDictionary *> *palette;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        palette = @[
-            @{@"name": @"Rot",  @"c": [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0]},
-            @{@"name": @"Grün", @"c": [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0]},
-            @{@"name": @"Blau", @"c": [NSColor colorWithSRGBRed:0.0 green:0.4 blue:1.0 alpha:1.0]},
-            @{@"name": @"Gelb", @"c": [NSColor colorWithSRGBRed:1.0 green:0.9 blue:0.0 alpha:1.0]},
-            @{@"name": @"Lila", @"c": [NSColor colorWithSRGBRed:0.9 green:0.0 blue:0.9 alpha:1.0]},
-            @{@"name": @"Cyan", @"c": [NSColor colorWithSRGBRed:0.0 green:1.0 blue:1.0 alpha:1.0]},
-            @{@"name": @"Weiß", @"c": [NSColor colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:1.0]},
-            @{@"name": @"Aus",  @"c": [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0]}
-        ];
-    });
-    return palette;
+    return @[
+        @{@"name": CIYL(@"Red"),    @"c": [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0]},
+        @{@"name": CIYL(@"Green"),  @"c": [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0]},
+        @{@"name": CIYL(@"Blue"),   @"c": [NSColor colorWithSRGBRed:0.0 green:0.4 blue:1.0 alpha:1.0]},
+        @{@"name": CIYL(@"Yellow"), @"c": [NSColor colorWithSRGBRed:1.0 green:0.9 blue:0.0 alpha:1.0]},
+        @{@"name": CIYL(@"Purple"), @"c": [NSColor colorWithSRGBRed:0.9 green:0.0 blue:0.9 alpha:1.0]},
+        @{@"name": CIYL(@"Cyan"),   @"c": [NSColor colorWithSRGBRed:0.0 green:1.0 blue:1.0 alpha:1.0]},
+        @{@"name": CIYL(@"White"),  @"c": [NSColor colorWithSRGBRed:1.0 green:1.0 blue:1.0 alpha:1.0]},
+        @{@"name": CIYL(@"Off"),    @"c": [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0]}
+    ];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
@@ -176,6 +214,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _currentBrightness = 5;    // Standard: Maximale Helligkeit (1..5)
     _hasUnsavedEdits = NO;
 
+    [self loadLanguagePreference];
     [self setupMainMenu];
 
     // Hauptfenster einrichten
@@ -188,7 +227,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
 
-    self.window.title = @"CIY X79 RGB Tastatur-Steuerung (macOS)";
+    self.window.title = CIYL(@"CIY X79 RGB Keyboard Control (macOS)");
     self.window.minSize = NSMakeSize(940, 600);
     self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.window.releasedWhenClosed = NO;
@@ -266,25 +305,25 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     CGFloat y = container.bounds.size.height;
 
     // Header Title
-    NSTextField *titleLabel = [self labelWithText:@"CIY X79 Mechanical Keyboard" fontSize:18 weight:NSFontWeightBold];
+    NSTextField *titleLabel = [self labelWithText:CIYL(@"CIY X79 Mechanical Keyboard") fontSize:18 weight:NSFontWeightBold];
     titleLabel.frame = NSMakeRect(24, y - 44, 380, 24);
     titleLabel.autoresizingMask = NSViewMinYMargin;
     [container addSubview:titleLabel];
 
-    NSTextField *subtitleLabel = [self labelWithText:@"ISO-DE 65% Layout • Profil-Zentrierte RGB-Steuerung" fontSize:12 weight:NSFontWeightRegular];
+    NSTextField *subtitleLabel = [self labelWithText:CIYL(@"ISO-DE 65% Layout • Profile-focused RGB control") fontSize:12 weight:NSFontWeightRegular];
     subtitleLabel.textColor = [NSColor secondaryLabelColor];
     subtitleLabel.frame = NSMakeRect(24, y - 64, 380, 18);
     subtitleLabel.autoresizingMask = NSViewMinYMargin;
     [container addSubview:subtitleLabel];
 
     // Status Indicator (oben rechts)
-    _statusLabel = [self labelWithText:@"● Verbindung wird geprüft..." fontSize:12 weight:NSFontWeightMedium];
+    _statusLabel = [self labelWithText:CIYL(@"● Connection is being checked...") fontSize:12 weight:NSFontWeightMedium];
     _statusLabel.frame = NSMakeRect(container.bounds.size.width - 340, y - 44, 316, 20);
     _statusLabel.alignment = NSTextAlignmentRight;
     _statusLabel.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
     [container addSubview:_statusLabel];
 
-    NSButton *reconnectBtn = [NSButton buttonWithTitle:@"Neu verbinden" target:self action:@selector(onReconnect:)];
+    NSButton *reconnectBtn = [NSButton buttonWithTitle:CIYL(@"Reconnect") target:self action:@selector(onReconnect:)];
     reconnectBtn.frame = NSMakeRect(container.bounds.size.width - 130, y - 70, 106, 24);
     reconnectBtn.bezelStyle = NSBezelStyleRounded;
     reconnectBtn.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
@@ -300,14 +339,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     CGFloat profBoxH = 104;
     CGFloat profBoxY = y - 78 - profBoxH - 8;
     NSBox *boxProfile = [[NSBox alloc] initWithFrame:NSMakeRect(24, profBoxY, container.bounds.size.width - 48, profBoxH)];
-    boxProfile.title = @"Profil-Verwaltung & Hardware-Übertragung";
+    boxProfile.title = CIYL(@"Profile management & hardware transmission");
     boxProfile.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
     [container addSubview:boxProfile];
 
     NSView *profView = boxProfile.contentView;
 
     // Zeile 1: Profil-Auswahl und Aktionen (y = 44)
-    NSTextField *lblProf = [self labelWithText:@"Aktives Profil:" fontSize:12 weight:NSFontWeightMedium];
+    NSTextField *lblProf = [self labelWithText:CIYL(@"Active profile:") fontSize:12 weight:NSFontWeightMedium];
     lblProf.frame = NSMakeRect(16, 46, 84, 20);
     [profView addSubview:lblProf];
 
@@ -316,83 +355,83 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _profilesPopUp.action = @selector(onSelectProfile:);
     [profView addSubview:_profilesPopUp];
 
-    _applyProfileBtn = [NSButton buttonWithTitle:@"Senden (↵)" target:self action:@selector(onApplyProfileClicked:)];
-    _applyProfileBtn.toolTip = @"Ausgewähltes Profil sofort auf die Tastatur übertragen (Modus 19 Customize)";
+    _applyProfileBtn = [NSButton buttonWithTitle:CIYL(@"Apply (↵)") target:self action:@selector(onApplyProfileClicked:)];
+    _applyProfileBtn.toolTip = CIYL(@"Applies selected profile immediately to the keyboard (Mode 19 Customize)");
     _applyProfileBtn.frame = NSMakeRect(306, 44, 128, 26);
     _applyProfileBtn.bezelStyle = NSBezelStyleRounded;
     _applyProfileBtn.keyEquivalent = @"\r"; // Enter-Taste aktiviert Senden
     [profView addSubview:_applyProfileBtn];
 
-    _saveProfileBtn = [NSButton buttonWithTitle:@"Speichern & Senden" target:self action:@selector(onSaveAndSendProfile:)];
-    _saveProfileBtn.toolTip = @"Aktuelle Farbanpassungen im Profil sichern und direkt an die Tastatur senden";
+    _saveProfileBtn = [NSButton buttonWithTitle:CIYL(@"Save & Send") target:self action:@selector(onSaveAndSendProfile:)];
+    _saveProfileBtn.toolTip = CIYL(@"Saves current color adjustments in the profile and sends them directly to the keyboard");
     _saveProfileBtn.frame = NSMakeRect(440, 44, 134, 26);
     _saveProfileBtn.bezelStyle = NSBezelStyleRounded;
     [profView addSubview:_saveProfileBtn];
 
-    NSButton *newProfileBtn = [NSButton buttonWithTitle:@"+ Neu..." target:self action:@selector(onNewProfile:)];
-    newProfileBtn.toolTip = @"Aktuelle Tastenfarben als neues Profil anlegen und speichern";
+    NSButton *newProfileBtn = [NSButton buttonWithTitle:CIYL(@"+ New...") target:self action:@selector(onNewProfile:)];
+    newProfileBtn.toolTip = CIYL(@"Create and save a new profile from the current key colors");
     newProfileBtn.frame = NSMakeRect(580, 44, 60, 26);
     newProfileBtn.bezelStyle = NSBezelStyleRounded;
     [profView addSubview:newProfileBtn];
 
-    _renameProfileBtn = [NSButton buttonWithTitle:@"Umbenennen" target:self action:@selector(onRenameProfile:)];
-    _renameProfileBtn.toolTip = @"Ausgewähltes Profil umbenennen";
+    _renameProfileBtn = [NSButton buttonWithTitle:CIYL(@"Rename") target:self action:@selector(onRenameProfile:)];
+    _renameProfileBtn.toolTip = CIYL(@"Rename selected profile");
     _renameProfileBtn.frame = NSMakeRect(646, 44, 84, 26);
     _renameProfileBtn.bezelStyle = NSBezelStyleRounded;
     [profView addSubview:_renameProfileBtn];
 
-    _deleteProfileBtn = [NSButton buttonWithTitle:@"Löschen" target:self action:@selector(onDeleteProfile:)];
-    _deleteProfileBtn.toolTip = @"Ausgewähltes Profil entfernen";
+    _deleteProfileBtn = [NSButton buttonWithTitle:CIYL(@"Delete") target:self action:@selector(onDeleteProfile:)];
+    _deleteProfileBtn.toolTip = CIYL(@"Remove selected profile");
     _deleteProfileBtn.frame = NSMakeRect(736, 44, 64, 26);
     _deleteProfileBtn.bezelStyle = NSBezelStyleRounded;
     [profView addSubview:_deleteProfileBtn];
 
     NSPopUpButton *actionsBtn = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(806, 44, 66, 26) pullsDown:YES];
-    [actionsBtn addItemWithTitle:@"Mehr ▾"];
-    NSMenuItem *exportItem = [[NSMenuItem alloc] initWithTitle:@"Profile exportieren..." action:@selector(onExportProfiles:) keyEquivalent:@"e"];
+    [actionsBtn addItemWithTitle:CIYL(@"More ▾")];
+    NSMenuItem *exportItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Export profiles...") action:@selector(onExportProfiles:) keyEquivalent:@"e"];
     exportItem.target = self;
     [actionsBtn.menu addItem:exportItem];
-    NSMenuItem *importItem = [[NSMenuItem alloc] initWithTitle:@"Profile importieren..." action:@selector(onImportProfiles:) keyEquivalent:@"o"];
+    NSMenuItem *importItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Import profiles...") action:@selector(onImportProfiles:) keyEquivalent:@"o"];
     importItem.target = self;
     [actionsBtn.menu addItem:importItem];
     [actionsBtn.menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *fallbackItem = [[NSMenuItem alloc] initWithTitle:@"Als Standard-Fallback festlegen" action:@selector(onSetDefaultFallback:) keyEquivalent:@""];
+    NSMenuItem *fallbackItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Set as default fallback") action:@selector(onSetDefaultFallback:) keyEquivalent:@""];
     fallbackItem.target = self;
     [actionsBtn.menu addItem:fallbackItem];
-    NSMenuItem *resetItem = [[NSMenuItem alloc] initWithTitle:@"Auf Standard zurücksetzen" action:@selector(onResetProfiles:) keyEquivalent:@""];
+    NSMenuItem *resetItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Reset to defaults") action:@selector(onResetProfiles:) keyEquivalent:@""];
     resetItem.target = self;
     [actionsBtn.menu addItem:resetItem];
     [profView addSubview:actionsBtn];
 
     // Zeile 2: Auto-Trigger bei App-Fokus (y = 10)
-    _autoTriggerCheckbox = [NSButton checkboxWithTitle:@"⚡ Auto-Trigger bei App-Fokus" target:self action:@selector(onToggleAutoTrigger:)];
+    _autoTriggerCheckbox = [NSButton checkboxWithTitle:CIYL(@"⚡ Auto-Trigger on app focus") target:self action:@selector(onToggleAutoTrigger:)];
     _autoTriggerCheckbox.frame = NSMakeRect(16, 11, 206, 22);
-    _autoTriggerCheckbox.toolTip = @"Wechselt Profile automatisch, sobald verknüpfte Spiele oder Anwendungen aktiv werden (ohne Keylogger, 100% unprivilegiert)";
+    _autoTriggerCheckbox.toolTip = CIYL(@"Switches profiles automatically when linked games or apps become active (no keylogger, 100% unprivileged)");
     [profView addSubview:_autoTriggerCheckbox];
 
-    NSTextField *lblLink = [self labelWithText:@"Verknüpfte App:" fontSize:12 weight:NSFontWeightMedium];
+    NSTextField *lblLink = [self labelWithText:CIYL(@"Linked app:") fontSize:12 weight:NSFontWeightMedium];
     lblLink.frame = NSMakeRect(228, 13, 96, 18);
     [profView addSubview:lblLink];
 
-    _linkedAppLabel = [self labelWithText:@"Keine App verknüpft (Manuell)" fontSize:12 weight:NSFontWeightRegular];
+    _linkedAppLabel = [self labelWithText:CIYL(@"No app linked (Manual)") fontSize:12 weight:NSFontWeightRegular];
     _linkedAppLabel.frame = NSMakeRect(326, 13, 240, 18);
     _linkedAppLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     [profView addSubview:_linkedAppLabel];
 
-    _assignAppBtn = [NSButton buttonWithTitle:@"App wählen..." target:self action:@selector(onAssignApp:)];
-    _assignAppBtn.toolTip = @"Eine Applikation (z. B. aus /Applications) mit diesem Profil verknüpfen";
+    _assignAppBtn = [NSButton buttonWithTitle:CIYL(@"Select app...") target:self action:@selector(onAssignApp:)];
+    _assignAppBtn.toolTip = CIYL(@"Link an application (e.g. from /Applications) to this profile");
     _assignAppBtn.frame = NSMakeRect(572, 9, 106, 26);
     _assignAppBtn.bezelStyle = NSBezelStyleRounded;
     [profView addSubview:_assignAppBtn];
 
-    _clearAppBtn = [NSButton buttonWithTitle:@"✕ Lösen" target:self action:@selector(onClearApp:)];
-    _clearAppBtn.toolTip = @"App-Verknüpfung für dieses Profil entfernen";
+    _clearAppBtn = [NSButton buttonWithTitle:CIYL(@"✕ Unlink") target:self action:@selector(onClearApp:)];
+    _clearAppBtn.toolTip = CIYL(@"Remove app link for this profile");
     _clearAppBtn.frame = NSMakeRect(682, 9, 74, 26);
     _clearAppBtn.bezelStyle = NSBezelStyleRounded;
     [profView addSubview:_clearAppBtn];
 
-    _setDefaultBtn = [NSButton buttonWithTitle:@"☆ Fallback" target:self action:@selector(onSetDefaultFallback:)];
-    _setDefaultBtn.toolTip = @"Dieses Profil als Standard-Fallback verwenden, wenn eine nicht verknüpfte App im Fokus ist";
+    _setDefaultBtn = [NSButton buttonWithTitle:CIYL(@"☆ Fallback") target:self action:@selector(onSetDefaultFallback:)];
+    _setDefaultBtn.toolTip = CIYL(@"Use this profile as the default fallback when an unlinked app is focused");
     _setDefaultBtn.frame = NSMakeRect(760, 9, 112, 26);
     _setDefaultBtn.bezelStyle = NSBezelStyleRounded;
     [profView addSubview:_setDefaultBtn];
@@ -401,19 +440,19 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     CGFloat kbBoxY = 44;
     CGFloat kbBoxH = profBoxY - kbBoxY - 8;
     NSBox *boxKeyboard = [[NSBox alloc] initWithFrame:NSMakeRect(24, kbBoxY, container.bounds.size.width - 48, kbBoxH)];
-    boxKeyboard.title = @"Tasten-Editor (65% ISO-DE Layout)";
+    boxKeyboard.title = CIYL(@"Key editor (65% ISO-DE layout)");
     boxKeyboard.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [container addSubview:boxKeyboard];
 
     NSView *kbView = boxKeyboard.contentView;
 
     // Farb- und Tasten-Leiste
-    _selectedKeyLabel = [self labelWithText:@"Ausgewählte Taste: [ W ] (Slot 14)" fontSize:12 weight:NSFontWeightBold];
+    _selectedKeyLabel = [self labelWithText:CIYL(@"Selected key: [ W ] (Slot 14)") fontSize:12 weight:NSFontWeightBold];
     _selectedKeyLabel.frame = NSMakeRect(16, kbBoxH - 46, 168, 22);
     _selectedKeyLabel.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:_selectedKeyLabel];
 
-    NSTextField *lblColorPick = [self labelWithText:@"Farbe:" fontSize:12 weight:NSFontWeightMedium];
+    NSTextField *lblColorPick = [self labelWithText:CIYL(@"Color:") fontSize:12 weight:NSFontWeightMedium];
     lblColorPick.frame = NSMakeRect(188, kbBoxH - 46, 40, 22);
     lblColorPick.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:lblColorPick];
@@ -433,14 +472,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // Farbrad / Farbwähler (NSColorWell)
     _colorWell = [[NSColorWell alloc] initWithFrame:NSMakeRect(btnX + 2, kbBoxH - 47, 32, 22)];
     _colorWell.color = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0];
-    _colorWell.toolTip = @"Eigene Farbe wählen (macOS Farbrad)...";
+    _colorWell.toolTip = CIYL(@"Choose a custom color (macOS color picker)...");
     _colorWell.target = self;
     _colorWell.action = @selector(onColorWellChanged:);
     _colorWell.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:_colorWell];
 
-    NSButton *fillAllBtn = [NSButton buttonWithTitle:@"Alle..." target:self action:@selector(onFillAllKeys:)];
-    fillAllBtn.toolTip = @"Alle 69 Tasten im Editor mit einer Basisfarbe füllen";
+    NSButton *fillAllBtn = [NSButton buttonWithTitle:CIYL(@"All...") target:self action:@selector(onFillAllKeys:)];
+    fillAllBtn.toolTip = CIYL(@"Fill all 69 keys in the editor with a base color");
     fillAllBtn.frame = NSMakeRect(btnX + 38, kbBoxH - 48, 52, 24);
     fillAllBtn.bezelStyle = NSBezelStyleRounded;
     fillAllBtn.autoresizingMask = NSViewMinYMargin;
@@ -448,33 +487,33 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     // Zonen-Auswahl (v1.4)
     _zonePopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(btnX + 94, kbBoxH - 48, 76, 24) pullsDown:YES];
-    [_zonePopUp addItemWithTitle:@"Zone ▾"];
-    NSMenuItem *wasdItem = [[NSMenuItem alloc] initWithTitle:@"WASD" action:@selector(onApplyZone:) keyEquivalent:@""];
+    [_zonePopUp addItemWithTitle:CIYL(@"Zone ▾")];
+    NSMenuItem *wasdItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"WASD") action:@selector(onApplyZone:) keyEquivalent:@""];
     wasdItem.target = self;
     wasdItem.tag = 0;
     [_zonePopUp.menu addItem:wasdItem];
 
-    NSMenuItem *arrowsItem = [[NSMenuItem alloc] initWithTitle:@"Pfeiltasten" action:@selector(onApplyZone:) keyEquivalent:@""];
+    NSMenuItem *arrowsItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Arrow keys") action:@selector(onApplyZone:) keyEquivalent:@""];
     arrowsItem.target = self;
     arrowsItem.tag = 1;
     [_zonePopUp.menu addItem:arrowsItem];
 
-    NSMenuItem *numItem = [[NSMenuItem alloc] initWithTitle:@"Zahlen 1–0" action:@selector(onApplyZone:) keyEquivalent:@""];
+    NSMenuItem *numItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Numbers 1–0") action:@selector(onApplyZone:) keyEquivalent:@""];
     numItem.target = self;
     numItem.tag = 2;
     [_zonePopUp.menu addItem:numItem];
 
-    NSMenuItem *modItem = [[NSMenuItem alloc] initWithTitle:@"Modifikatoren" action:@selector(onApplyZone:) keyEquivalent:@""];
+    NSMenuItem *modItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Modifiers") action:@selector(onApplyZone:) keyEquivalent:@""];
     modItem.target = self;
     modItem.tag = 3;
     [_zonePopUp.menu addItem:modItem];
 
-    NSMenuItem *alphaItem = [[NSMenuItem alloc] initWithTitle:@"Buchstaben (Alpha)" action:@selector(onApplyZone:) keyEquivalent:@""];
+    NSMenuItem *alphaItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Letters (Alpha)") action:@selector(onApplyZone:) keyEquivalent:@""];
     alphaItem.target = self;
     alphaItem.tag = 4;
     [_zonePopUp.menu addItem:alphaItem];
 
-    NSMenuItem *navZoneItem = [[NSMenuItem alloc] initWithTitle:@"Nav-Spalte" action:@selector(onApplyZone:) keyEquivalent:@""];
+    NSMenuItem *navZoneItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Nav column") action:@selector(onApplyZone:) keyEquivalent:@""];
     navZoneItem.target = self;
     navZoneItem.tag = 5;
     [_zonePopUp.menu addItem:navZoneItem];
@@ -483,8 +522,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [kbView addSubview:_zonePopUp];
 
     // Verlauf-Generator (v1.4)
-    _gradientBtn = [NSButton buttonWithTitle:@"Verlauf..." target:self action:@selector(onOpenGradientSheet:)];
-    _gradientBtn.toolTip = @"2-Farben-Linear-Farbverlauf über U-Koordinaten oder Reihen generieren";
+    _gradientBtn = [NSButton buttonWithTitle:CIYL(@"Gradient...") target:self action:@selector(onOpenGradientSheet:)];
+    _gradientBtn.toolTip = CIYL(@"Generate a two-color linear gradient across U coordinates or rows");
     _gradientBtn.frame = NSMakeRect(btnX + 174, kbBoxH - 48, 72, 24);
     _gradientBtn.bezelStyle = NSBezelStyleRounded;
     _gradientBtn.autoresizingMask = NSViewMinYMargin;
@@ -505,7 +544,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _brightnessSlider.continuous = NO; // Verhindert mehrfaches Queueing beim Ziehen
     _brightnessSlider.target = self;
     _brightnessSlider.action = @selector(onBrightnessChanged:);
-    _brightnessSlider.toolTip = @"Helligkeit des Profils (1 bis 5)";
+    _brightnessSlider.toolTip = CIYL(@"Profile brightness (1 to 5)");
     _brightnessSlider.autoresizingMask = NSViewMinYMargin;
     [kbView addSubview:_brightnessSlider];
 
@@ -518,7 +557,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [kbView addSubview:_keyboardView];
 
     // Fußzeile mit Akku-Spiegelung (v1.4)
-    NSTextField *footer = [self labelWithText:@"CIY X79 Controller • Profil-Zentrierte IOKit USB Ansteuerung" fontSize:11 weight:NSFontWeightRegular];
+    NSTextField *footer = [self labelWithText:CIYL(@"CIY X79 Controller • Profile-focused IOKit USB control") fontSize:11 weight:NSFontWeightRegular];
     footer.textColor = [NSColor tertiaryLabelColor];
     footer.frame = NSMakeRect(24, 16, 320, 18);
     [container addSubview:footer];
@@ -532,13 +571,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [container addSubview:_batteryStatusLabel];
 
     _batteryTargetPopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(rightEdge - 90 - 118, 12, 114, 24) pullsDown:NO];
-    [_batteryTargetPopUp addItemWithTitle:@"Zahlen 1–0"];
+    [_batteryTargetPopUp addItemWithTitle:CIYL(@"Numbers 1–0")];
     _batteryTargetPopUp.lastItem.tag = 0;
-    [_batteryTargetPopUp addItemWithTitle:@"Leertaste"];
+    [_batteryTargetPopUp addItemWithTitle:CIYL(@"Space bar")];
     _batteryTargetPopUp.lastItem.tag = 1;
-    [_batteryTargetPopUp addItemWithTitle:@"Nav-Spalte"];
+    [_batteryTargetPopUp addItemWithTitle:CIYL(@"Nav column")];
     _batteryTargetPopUp.lastItem.tag = 2;
-    [_batteryTargetPopUp addItemWithTitle:@"Eigene..."];
+    [_batteryTargetPopUp addItemWithTitle:CIYL(@"Custom...")];
     _batteryTargetPopUp.lastItem.tag = 3;
     _batteryTargetPopUp.target = self;
     _batteryTargetPopUp.action = @selector(onBatteryTargetChanged:);
@@ -546,23 +585,23 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [container addSubview:_batteryTargetPopUp];
 
     _batterySourcePopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(rightEdge - 90 - 118 - 124, 12, 120, 24) pullsDown:NO];
-    [_batterySourcePopUp addItemWithTitle:@"Intern (Mac)"];
+    [_batterySourcePopUp addItemWithTitle:CIYL(@"Internal (Mac)")];
     _batterySourcePopUp.lastItem.tag = 0;
-    [_batterySourcePopUp addItemWithTitle:@"Peripherie (BT)"];
+    [_batterySourcePopUp addItemWithTitle:CIYL(@"Peripheral (BT)")];
     _batterySourcePopUp.lastItem.tag = 1;
-    [_batterySourcePopUp addItemWithTitle:@"USV"];
+    [_batterySourcePopUp addItemWithTitle:CIYL(@"UPS")];
     _batterySourcePopUp.lastItem.tag = 2;
-    [_batterySourcePopUp addItemWithTitle:@"Alle Quellen"];
+    [_batterySourcePopUp addItemWithTitle:CIYL(@"All sources")];
     _batterySourcePopUp.lastItem.tag = 3;
     _batterySourcePopUp.target = self;
     _batterySourcePopUp.action = @selector(onBatterySourceChanged:);
     _batterySourcePopUp.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
     [container addSubview:_batterySourcePopUp];
 
-    _batteryMirrorCheckbox = [NSButton checkboxWithTitle:@"⚡ Akku spiegeln" target:self action:@selector(onToggleBatteryMirror:)];
+    _batteryMirrorCheckbox = [NSButton checkboxWithTitle:CIYL(@"⚡ Mirror battery") target:self action:@selector(onToggleBatteryMirror:)];
     _batteryMirrorCheckbox.frame = NSMakeRect(rightEdge - 90 - 118 - 124 - 120, 14, 116, 20);
     _batteryMirrorCheckbox.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
-    _batteryMirrorCheckbox.toolTip = @"Spiegelt den Ladestand flüchtig auf die CIY X79 (ohne das Profil zu überschreiben)";
+    _batteryMirrorCheckbox.toolTip = CIYL(@"Temporarily mirrors the battery level to the CIY X79 (without overwriting the profile)");
     [container addSubview:_batteryMirrorCheckbox];
 }
 
@@ -593,9 +632,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             NSString *name = prof[@"name"];
             if ([name isKindOfClass:[NSString class]]) {
                 NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                name = (trimmed.length > 0) ? TruncateProfileName(trimmed, 40) : @"Unbenannt";
+                name = (trimmed.length > 0) ? TruncateProfileName(trimmed, 40) : CIYL(@"Unnamed");
             } else {
-                name = @"Unbenannt";
+                name = CIYL(@"Unnamed");
             }
             prof[@"name"] = name;
 
@@ -670,49 +709,49 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)addDefaultProfiles {
     // 1. WASD Gaming (Rot / Blau)
-    [self addBuiltinProfileNamed:@"🎮 WASD Gaming (Rot / Basis Blau)"
+    [self addBuiltinProfileNamed:CIYL(@"🎮 WASD Gaming (Red / Base Blue)")
                          baseHex:@"#0066FF"
                         wasdHex:@"#FF0000"
                        arrowHex:@"#0066FF"];
 
     // 2. WASD Stealth (Grün / Aus)
-    [self addBuiltinProfileNamed:@"🎮 WASD Stealth (Grün / Basis Aus)"
+    [self addBuiltinProfileNamed:CIYL(@"🎮 WASD Stealth (Green / Base Off)")
                          baseHex:@"#000000"
                         wasdHex:@"#00FF00"
                        arrowHex:@"#000000"];
 
     // 3. Pfeiltasten (Gelb / Blau)
-    [self addBuiltinProfileNamed:@"🎯 Pfeiltasten (Gelb / Basis Blau)"
+    [self addBuiltinProfileNamed:CIYL(@"🎯 Arrow keys (Yellow / Base Blue)")
                          baseHex:@"#0066FF"
                         wasdHex:@"#0066FF"
                        arrowHex:@"#FFFF00"];
 
     // 4. WASD + Pfeile (Rot & Gelb / Blau)
-    [self addBuiltinProfileNamed:@"🕹 WASD + Pfeile (Rot & Gelb / Blau)"
+    [self addBuiltinProfileNamed:CIYL(@"🕹 WASD + Arrows (Red & Yellow / Blue)")
                          baseHex:@"#0066FF"
                         wasdHex:@"#FF0000"
                        arrowHex:@"#FFFF00"];
 
     // 5. Vollrot (Alles Rot)
-    [self addBuiltinProfileNamed:@"🔴 Vollrot (Alles Rot)"
+    [self addBuiltinProfileNamed:CIYL(@"🔴 Full red (All red)")
                          baseHex:@"#FF0000"
                         wasdHex:@"#FF0000"
                        arrowHex:@"#FF0000"];
 
     // 6. Cyberpunk (Cyan / Lila)
-    [self addBuiltinProfileNamed:@"🌌 Cyberpunk (Cyan / Lila)"
+    [self addBuiltinProfileNamed:CIYL(@"🌌 Cyberpunk (Cyan / Purple)")
                          baseHex:@"#990099"
                         wasdHex:@"#00FFFF"
                        arrowHex:@"#FFFF00"];
 
     // 7. Büro / Clean (Dezent Weiß)
-    [self addBuiltinProfileNamed:@"💼 Büro / Clean (Dezent Weiß)"
+    [self addBuiltinProfileNamed:CIYL(@"💼 Office / Clean (Subtle White)")
                          baseHex:@"#CCCCCC"
                         wasdHex:@"#FFFFFF"
                        arrowHex:@"#FFFFFF"];
 
     // 8. Beleuchtung Aus
-    [self addBuiltinProfileNamed:@"⚫ Beleuchtung Aus"
+    [self addBuiltinProfileNamed:CIYL(@"⚫ Lighting off")
                          baseHex:@"#000000"
                         wasdHex:@"#000000"
                        arrowHex:@"#000000"];
@@ -750,7 +789,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)refreshProfilesPopUp {
     [_profilesPopUp removeAllItems];
     for (NSDictionary *prof in _profiles) {
-        NSString *name = prof[@"name"] ?: @"Unbenannt";
+        NSString *name = prof[@"name"] ?: CIYL(@"Unnamed");
         [_profilesPopUp addItemWithTitle:name];
     }
 }
@@ -780,18 +819,18 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
         if (appName.length > 0 || bundleId.length > 0) {
             NSString *display = appName.length > 0 ? appName : bundleId;
-            _linkedAppLabel.stringValue = [NSString stringWithFormat:@"%@%@ (%@)", isFallback ? @"[★ Fallback] " : @"", display, bundleId ?: @""];
+            _linkedAppLabel.stringValue = [NSString stringWithFormat:@"%@%@ (%@)", isFallback ? CIYL(@"[★ Fallback] ") : @"", display, bundleId ?: @""];
             _linkedAppLabel.textColor = [NSColor controlAccentColor];
             _clearAppBtn.enabled = YES;
         } else {
-            _linkedAppLabel.stringValue = isFallback ? @"[★ Standard-Fallback] Keine App verknüpft" : @"Keine App verknüpft (Manuell)";
+            _linkedAppLabel.stringValue = isFallback ? CIYL(@"[★ Standard Fallback] No app linked") : CIYL(@"No app linked (Manual)");
             _linkedAppLabel.textColor = isFallback ? [NSColor systemYellowColor] : [NSColor secondaryLabelColor];
             _clearAppBtn.enabled = NO;
         }
 
         _assignAppBtn.enabled = YES;
         _setDefaultBtn.enabled = !isFallback;
-        _setDefaultBtn.title = isFallback ? @"★ Fallback" : @"☆ Als Fallback";
+        _setDefaultBtn.title = isFallback ? CIYL(@"★ Fallback") : CIYL(@"☆ Set as fallback");
     } else {
         _linkedAppLabel.stringValue = @"-";
         _assignAppBtn.enabled = NO;
@@ -809,7 +848,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self updateAppTriggerUI];
 
     if (_autoTriggerEnabled) {
-        _statusLabel.stringValue = @"● Auto-Trigger aktiv (wechselt Profil bei App-Fokus)";
+        _statusLabel.stringValue = CIYL(@"● Auto-trigger active (switches profile on app focus)");
         _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
         NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
         if (frontApp && frontApp.bundleIdentifier) {
@@ -819,7 +858,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         }
     } else {
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
-        _statusLabel.stringValue = @"● Auto-Trigger deaktiviert (Manuelle Profilwahl)";
+        _statusLabel.stringValue = CIYL(@"● Auto-trigger disabled (manual profile selection)");
         _statusLabel.textColor = [NSColor secondaryLabelColor];
     }
 }
@@ -832,7 +871,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self updateAppTriggerUI];
 
     if (_autoTriggerEnabled) {
-        _statusLabel.stringValue = @"● Auto-Trigger aktiv (wechselt Profil bei App-Fokus)";
+        _statusLabel.stringValue = CIYL(@"● Auto-trigger active (switches profile on app focus)");
         _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
         NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
         if (frontApp && frontApp.bundleIdentifier) {
@@ -842,7 +881,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         }
     } else {
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
-        _statusLabel.stringValue = @"● Auto-Trigger deaktiviert (Manuelle Profilwahl)";
+        _statusLabel.stringValue = CIYL(@"● Auto-trigger disabled (manual profile selection)");
         _statusLabel.textColor = [NSColor secondaryLabelColor];
     }
 }
@@ -853,8 +892,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
 
     NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.title = @"Anwendung auswählen für automatisches Profil";
-    panel.prompt = @"Verknüpfen";
+    panel.title = CIYL(@"Select application for automatic profile");
+    panel.prompt = CIYL(@"Link");
     panel.allowsMultipleSelection = NO;
     panel.canChooseDirectories = NO;
     panel.canChooseFiles = YES;
@@ -865,7 +904,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         if (result == NSModalResponseOK && panel.URL) {
             NSBundle *appBundle = [NSBundle bundleWithURL:panel.URL];
             NSString *rawAppName = [panel.URL.lastPathComponent stringByDeletingPathExtension];
-            NSString *appName = SanitizeAppMetadata(rawAppName) ?: @"App";
+            NSString *appName = SanitizeAppMetadata(rawAppName) ?: CIYL(@"App");
             NSString *bundleId = SanitizeAppMetadata(appBundle.bundleIdentifier);
             if (!bundleId || bundleId.length == 0) {
                 bundleId = SanitizeAppMetadata([NSString stringWithFormat:@"local.%@", appName]) ?: @"local.App";
@@ -887,7 +926,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self saveProfilesToDefaults];
             [self updateAppTriggerUI];
 
-            self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Profil „%@“ mit App „%@“ verknüpft", prof[@"name"] ?: @"", appName];
+            self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile “%@” linked to app “%@”"), prof[@"name"] ?: @"", appName];
             self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
         }
     }];
@@ -905,7 +944,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self saveProfilesToDefaults];
     [self updateAppTriggerUI];
 
-    _statusLabel.stringValue = [NSString stringWithFormat:@"● App-Verknüpfung für Profil „%@“ gelöst", prof[@"name"] ?: @""];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● App link removed for profile “%@”"), prof[@"name"] ?: @""];
     _statusLabel.textColor = [NSColor secondaryLabelColor];
 }
 
@@ -920,7 +959,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 
     [self updateAppTriggerUI];
-    _statusLabel.stringValue = [NSString stringWithFormat:@"● Profil „%@“ als Standard-Fallback festgelegt", prof[@"name"] ?: @""];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile “%@” set as default fallback"), prof[@"name"] ?: @""];
     _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
 }
 
@@ -958,7 +997,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     // Ungespeicherte Bearbeitungen des Benutzers im Editor niemals automatisch überschreiben!
     if (_hasUnsavedEdits) {
-        _statusLabel.stringValue = [NSString stringWithFormat:@"● Auto-Trigger pausiert: Profil „%@“ hat ungespeicherte Änderungen", [self currentProfileName]];
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Auto-trigger paused: profile “%@” has unsaved changes"), [self currentProfileName]];
         _statusLabel.textColor = [NSColor systemOrangeColor];
         return;
     }
@@ -995,16 +1034,16 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self activateProfileAtIndex:targetIdx];
 
     NSString *name = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:@"● Auto-Trigger: „%@“ aktiv (%@)", name, _pendingAppName ?: @"App"];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Auto-trigger: “%@” active (%@)"), name, _pendingAppName ?: CIYL(@"App")];
     _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
 }
 
 - (NSString *)currentProfileName {
     NSInteger idx = _profilesPopUp.indexOfSelectedItem;
     if (idx >= 0 && (NSUInteger)idx < _profiles.count) {
-        return _profiles[(NSUInteger)idx][@"name"] ?: @"Profil";
+        return _profiles[(NSUInteger)idx][@"name"] ?: CIYL(@"Profile");
     }
-    return @"Profil";
+    return CIYL(@"Profile");
 }
 
 - (void)loadProfileIntoView:(NSDictionary *)prof {
@@ -1065,7 +1104,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
 
     NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
-    NSString *name = prof[@"name"] ?: @"Profil";
+    NSString *name = prof[@"name"] ?: CIYL(@"Profile");
 
     // Aktuelle Editor-Farben im ausgewählten Profil speichern
     NSDictionary<NSNumber *, NSColor *> *allColors = [_keyboardView allKeyColors];
@@ -1082,7 +1121,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // Sofort an Tastatur übertragen
     [self sendCurrentProfileToHardware];
 
-    _statusLabel.stringValue = [NSString stringWithFormat:@"● Profil „%@“ gespeichert & gesendet", name];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile “%@” saved & sent"), name];
     _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
 }
 
@@ -1090,21 +1129,21 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     (void)sender;
     if (_profiles.count >= kMaxProfilesCount) {
         NSAlert *limitAlert = [[NSAlert alloc] init];
-        limitAlert.messageText = @"Profillimit erreicht";
-        limitAlert.informativeText = [NSString stringWithFormat:@"Es können maximal %lu Profile gespeichert werden. Bitte löschen Sie zuerst ein nicht benötigtes Profil.", (unsigned long)kMaxProfilesCount];
-        [limitAlert addButtonWithTitle:@"OK"];
+        limitAlert.messageText = CIYL(@"Profile limit reached");
+        limitAlert.informativeText = [NSString stringWithFormat:CIYL(@"A maximum of %lu profiles can be stored. Please delete an unneeded profile first."), (unsigned long)kMaxProfilesCount];
+        [limitAlert addButtonWithTitle:CIYL(@"OK")];
         [limitAlert beginSheetModalForWindow:self.window completionHandler:nil];
         return;
     }
 
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Neues Beleuchtungsprofil anlegen";
-    alert.informativeText = @"Geben Sie einen Namen für das neue Profil ein:";
-    [alert addButtonWithTitle:@"Speichern & Senden"];
-    [alert addButtonWithTitle:@"Abbrechen"];
+    alert.messageText = CIYL(@"Create new lighting profile");
+    alert.informativeText = CIYL(@"Enter a name for the new profile:");
+    [alert addButtonWithTitle:CIYL(@"Save & Send")];
+    [alert addButtonWithTitle:CIYL(@"Cancel")];
 
     NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 240, 24)];
-    input.placeholderString = @"z. B. Coding, Cyberpunk, CS:GO";
+    input.placeholderString = CIYL(@"e.g. Coding, Cyberpunk, CS:GO");
     input.stringValue = @"";
     alert.accessoryView = input;
     [alert.window setInitialFirstResponder:input];
@@ -1114,7 +1153,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             if (self->_profiles.count >= kMaxProfilesCount) return;
             NSString *name = [input.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (name.length == 0) {
-                name = [NSString stringWithFormat:@"Profil %lu", (unsigned long)(self->_profiles.count + 1)];
+                name = [NSString stringWithFormat:CIYL(@"Profile %lu"), (unsigned long)(self->_profiles.count + 1)];
             } else if (name.length > 40) {
                 name = TruncateProfileName(name, 40);
             }
@@ -1154,10 +1193,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     NSString *currentName = prof[@"name"] ?: @"";
 
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Profil umbenennen";
-    alert.informativeText = @"Geben Sie den neuen Namen für dieses Profil ein:";
-    [alert addButtonWithTitle:@"Umbenennen"];
-    [alert addButtonWithTitle:@"Abbrechen"];
+    alert.messageText = CIYL(@"Rename profile");
+    alert.informativeText = CIYL(@"Enter the new name for this profile:");
+    [alert addButtonWithTitle:CIYL(@"Rename")];
+    [alert addButtonWithTitle:CIYL(@"Cancel")];
 
     NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 240, 24)];
     input.stringValue = currentName;
@@ -1173,7 +1212,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [self saveProfilesToDefaults];
                 [self refreshProfilesPopUp];
                 [self->_profilesPopUp selectItemAtIndex:idx];
-                self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Profil umbenannt in „%@“", name];
+                self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile renamed to “%@”"), name];
                 self->_statusLabel.textColor = [NSColor secondaryLabelColor];
             }
         }
@@ -1187,21 +1226,21 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     if (_profiles.count <= 1) {
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Profil kann nicht gelöscht werden";
-        alert.informativeText = @"Es muss mindestens ein Profil erhalten bleiben.";
-        [alert addButtonWithTitle:@"OK"];
+        alert.messageText = CIYL(@"Profile cannot be deleted");
+        alert.informativeText = CIYL(@"At least one profile must remain.");
+        [alert addButtonWithTitle:CIYL(@"OK")];
         [alert beginSheetModalForWindow:self.window completionHandler:nil];
         return;
     }
 
     NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
-    NSString *name = prof[@"name"] ?: @"Profil";
+    NSString *name = prof[@"name"] ?: CIYL(@"Profile");
 
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = [NSString stringWithFormat:@"Profil „%@“ löschen?", name];
-    alert.informativeText = @"Möchten Sie dieses Beleuchtungsprofil wirklich endgültig löschen?";
-    [alert addButtonWithTitle:@"Löschen"];
-    [alert addButtonWithTitle:@"Abbrechen"];
+    alert.messageText = [NSString stringWithFormat:CIYL(@"Delete profile “%@”?"), name];
+    alert.informativeText = CIYL(@"Do you really want to permanently delete this lighting profile?");
+    [alert addButtonWithTitle:CIYL(@"Delete")];
+    [alert addButtonWithTitle:CIYL(@"Cancel")];
     alert.alertStyle = NSAlertStyleCritical;
 
     [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse returnCode) {
@@ -1241,10 +1280,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         popLocation = NSMakePoint(0, 0);
     }
 
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Alle Tasten färben"];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:CIYL(@"Color all keys")];
     NSArray<NSDictionary *> *colors = KeyPalette();
     for (NSDictionary *cDict in colors) {
-        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Alle Tasten: %@", cDict[@"name"]]
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:CIYL(@"All keys: %@"), cDict[@"name"]]
                                                       action:@selector(onFillAllWithColorItem:)
                                                keyEquivalent:@""];
         item.target = self;
@@ -1263,7 +1302,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self updateButtonsState];
 
     NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:@"● Alle Tasten gefärbt (Profil „%@“ ungespeichert)", profName];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● All keys colored (profile “%@” unsaved)"), profName];
     _statusLabel.textColor = [NSColor systemOrangeColor];
     // WICHTIG: Kein USB-Senden bei Zwischenschritten im Editor
 }
@@ -1272,7 +1311,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)keyboardViewDidSelectKey:(int)slot label:(NSString *)label {
     _currentSelectedSlot = slot;
-    _selectedKeyLabel.stringValue = [NSString stringWithFormat:@"Ausgewählte Taste: [ %@ ] (Slot %d)", label, slot];
+    _selectedKeyLabel.stringValue = [NSString stringWithFormat:CIYL(@"Selected key: [ %@ ] (Slot %d)"), label, slot];
     NSColor *c = [_keyboardView allKeyColors][@(slot)];
     if (c && _colorWell) {
         _colorWell.color = c;
@@ -1291,7 +1330,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [self updateButtonsState];
 
         NSString *profName = [self currentProfileName];
-        _statusLabel.stringValue = [NSString stringWithFormat:@"● Taste bearbeitet (Profil „%@“ ungespeichert)", profName];
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Key edited (profile “%@” unsaved)"), profName];
         _statusLabel.textColor = [NSColor systemOrangeColor];
         // WICHTIG: Kein USB-Senden bei Zwischenschritten im Editor!
     }
@@ -1305,13 +1344,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self updateButtonsState];
 
     NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:@"● Eigene Farbe gewählt (Profil „%@“ ungespeichert)", profName];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Custom color selected (profile “%@” unsaved)"), profName];
     _statusLabel.textColor = [NSColor systemOrangeColor];
 }
 
 - (void)onBrightnessChanged:(NSSlider *)sender {
     _currentBrightness = (uint8_t)sender.integerValue;
-    sender.toolTip = [NSString stringWithFormat:@"Helligkeit: %d / 5", _currentBrightness];
+    sender.toolTip = [NSString stringWithFormat:CIYL(@"Brightness: %d / 5"), _currentBrightness];
     [self sendCurrentProfileToHardware];
 }
 
@@ -1326,7 +1365,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self updateButtonsState];
 
     NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:@"● Zone „%@“ eingefärbt (Profil „%@“ ungespeichert)", sender.title, profName];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Zone “%@” colored (profile “%@” unsaved)"), sender.title, profName];
     _statusLabel.textColor = [NSColor systemOrangeColor];
 }
 
@@ -1336,11 +1375,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                                  styleMask:(NSWindowStyleMaskTitled)
                                                    backing:NSBackingStoreBuffered
                                                      defer:NO];
-    _gradientSheet.title = @"Farbverlauf-Generator (Linear Gradient)";
+    _gradientSheet.title = CIYL(@"Gradient generator (linear gradient)");
 
     NSView *content = _gradientSheet.contentView;
 
-    NSTextField *lblStart = [self labelWithText:@"Startfarbe:" fontSize:12 weight:NSFontWeightMedium];
+    NSTextField *lblStart = [self labelWithText:CIYL(@"Start color:") fontSize:12 weight:NSFontWeightMedium];
     lblStart.frame = NSMakeRect(24, 162, 90, 20);
     [content addSubview:lblStart];
 
@@ -1348,7 +1387,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _gradStartWell.color = [NSColor colorWithSRGBRed:0.0 green:0.9 blue:1.0 alpha:1.0]; // Cyan
     [content addSubview:_gradStartWell];
 
-    NSTextField *lblEnd = [self labelWithText:@"Endfarbe:" fontSize:12 weight:NSFontWeightMedium];
+    NSTextField *lblEnd = [self labelWithText:CIYL(@"End color:") fontSize:12 weight:NSFontWeightMedium];
     lblEnd.frame = NSMakeRect(24, 122, 90, 20);
     [content addSubview:lblEnd];
 
@@ -1356,27 +1395,27 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _gradEndWell.color = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.8 alpha:1.0]; // Magenta
     [content addSubview:_gradEndWell];
 
-    NSTextField *lblDir = [self labelWithText:@"Richtung:" fontSize:12 weight:NSFontWeightMedium];
+    NSTextField *lblDir = [self labelWithText:CIYL(@"Direction:") fontSize:12 weight:NSFontWeightMedium];
     lblDir.frame = NSMakeRect(24, 82, 90, 20);
     [content addSubview:lblDir];
 
     _gradDirPopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, 80, 230, 26) pullsDown:NO];
-    [_gradDirPopUp addItemWithTitle:@"Horizontal (Links → Rechts)"];
-    [_gradDirPopUp addItemWithTitle:@"Vertikal (Oben → Unten)"];
+    [_gradDirPopUp addItemWithTitle:CIYL(@"Horizontal (left → right)")];
+    [_gradDirPopUp addItemWithTitle:CIYL(@"Vertical (top → bottom)")];
     [content addSubview:_gradDirPopUp];
 
-    NSButton *applyBtn = [NSButton buttonWithTitle:@"Auf Tastatur anwenden" target:self action:@selector(onApplyGradient:)];
+    NSButton *applyBtn = [NSButton buttonWithTitle:CIYL(@"Apply to keyboard") target:self action:@selector(onApplyGradient:)];
     applyBtn.frame = NSMakeRect(190, 20, 166, 32);
     applyBtn.bezelStyle = NSBezelStyleRounded;
     applyBtn.keyEquivalent = @"\r";
     [content addSubview:applyBtn];
 
-    NSButton *copyBtn = [NSButton buttonWithTitle:@"ciy_ctl kopieren" target:self action:@selector(onCopyGradientCommand:)];
+    NSButton *copyBtn = [NSButton buttonWithTitle:CIYL(@"Copy ciy_ctl command") target:self action:@selector(onCopyGradientCommand:)];
     copyBtn.frame = NSMakeRect(80, 20, 106, 32);
     copyBtn.bezelStyle = NSBezelStyleRounded;
     [content addSubview:copyBtn];
 
-    NSButton *cancelBtn = [NSButton buttonWithTitle:@"Abbrechen" target:self action:@selector(onCancelGradientSheet:)];
+    NSButton *cancelBtn = [NSButton buttonWithTitle:CIYL(@"Cancel") target:self action:@selector(onCancelGradientSheet:)];
     cancelBtn.frame = NSMakeRect(16, 20, 60, 32);
     cancelBtn.bezelStyle = NSBezelStyleRounded;
     [content addSubview:cancelBtn];
@@ -1436,7 +1475,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     NSString *cmdStr = [NSString stringWithFormat:@"ciy_ctl gradient %@ %@ --dir %@ -b 5\n", hex1, hex2, dirStr];
     [[NSPasteboard generalPasteboard] clearContents];
     [[NSPasteboard generalPasteboard] setString:cmdStr forType:NSPasteboardTypeString];
-    _statusLabel.stringValue = @"● Verlauf-Befehl in Zwischenablage kopiert";
+    _statusLabel.stringValue = CIYL(@"● Gradient command copied to clipboard");
     _statusLabel.textColor = [NSColor systemCyanColor];
 }
 
@@ -1476,13 +1515,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)onBatteryTargetChanged:(NSPopUpButton *)sender {
     if (sender.selectedItem.tag == 3) {
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Benutzerdefinierte Akku-Tastenfolge";
-        alert.informativeText = @"Geben Sie die Matrix-Slots kommagetrennt ein (z. B. 14,9,15,21 für WASD oder 88,83,89,95 für Pfeile):";
+        alert.messageText = CIYL(@"Custom battery key sequence");
+        alert.informativeText = CIYL(@"Enter the matrix slots separated by commas (e.g. 14,9,15,21 for WASD or 88,83,89,95 for arrows):");
         NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 240, 24)];
         input.stringValue = _customBatterySlots ?: @"14,9,15,21";
         alert.accessoryView = input;
-        [alert addButtonWithTitle:@"Übernehmen"];
-        [alert addButtonWithTitle:@"Abbrechen"];
+        [alert addButtonWithTitle:CIYL(@"Apply")];
+        [alert addButtonWithTitle:CIYL(@"Cancel")];
         if ([alert runModal] == NSAlertFirstButtonReturn) {
             NSString *val = [input.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (val.length > 0) {
@@ -1578,14 +1617,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             if (ok) {
                 NSString *profName = [self currentProfileName];
                 if (self->_hasUnsavedEdits) {
-                    self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Vorschau „%@“ (ungespeichert) auf Tastatur", profName];
+                    self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Preview “%@” (unsaved) on keyboard"), profName];
                     self->_statusLabel.textColor = [NSColor systemOrangeColor];
                 } else {
-                    self->_statusLabel.stringValue = [NSString stringWithFormat:@"● Profil „%@“ aktiv auf Tastatur", profName];
+                    self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile “%@” active on keyboard"), profName];
                     self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
                 }
             } else if (![KeyboardBackend shared].lastOperationWasCancelled) {
-                self->_statusLabel.stringValue = @"● Senden fehlgeschlagen (USB prüfen)";
+                self->_statusLabel.stringValue = CIYL(@"● Send failed (check USB)");
                 self->_statusLabel.textColor = [NSColor systemRedColor];
             }
             if (self->_sendDirty && [KeyboardBackend shared].isConnected) {
@@ -1699,10 +1738,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)updateConnectionStatus {
     BOOL connected = [KeyboardBackend shared].isConnected;
     if (connected) {
-        _statusLabel.stringValue = @"● CIY X79 Verbunden (VID: 0x258A / PID: 0x0049)";
+        _statusLabel.stringValue = CIYL(@"● CIY X79 connected (VID: 0x258A / PID: 0x0049)");
         _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
     } else {
-        _statusLabel.stringValue = @"● Tastatur nicht gefunden (USB prüfen)";
+        _statusLabel.stringValue = CIYL(@"● Keyboard not found (check USB)");
         _statusLabel.textColor = [NSColor systemRedColor];
     }
     [self updateStatusItemMenu];
@@ -1713,12 +1752,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)onExportProfiles:(id)sender {
     (void)sender;
     NSSavePanel *panel = [NSSavePanel savePanel];
-    panel.title = @"CIY X79 Beleuchtungsprofile exportieren";
-    panel.prompt = @"Exportieren";
+    panel.title = CIYL(@"Export CIY X79 lighting profiles");
+    panel.prompt = CIYL(@"Export");
     panel.nameFieldStringValue = @"CIYX79_Profile.json";
     panel.allowedContentTypes = @[UTTypeJSON];
 
-    NSButton *includeAppsCheckbox = [NSButton checkboxWithTitle:@"App-Verknüpfungen (Auto-Trigger) mitexportieren" target:nil action:nil];
+    NSButton *includeAppsCheckbox = [NSButton checkboxWithTitle:CIYL(@"Also export app links (auto-trigger)") target:nil action:nil];
     includeAppsCheckbox.state = NSControlStateValueOff;
     [includeAppsCheckbox sizeToFit];
     NSRect cbFrame = includeAppsCheckbox.frame;
@@ -1750,14 +1789,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             if (jsonData && !err) {
                 BOOL ok = [jsonData writeToURL:panel.URL atomically:YES];
                 if (ok) {
-                    self->_statusLabel.stringValue = [NSString stringWithFormat:@"● %lu Profil(e) exportiert", (unsigned long)exportList.count];
+                    self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● %lu profile(s) exported"), (unsigned long)exportList.count];
                     self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
                     return;
                 }
             }
             NSAlert *errAlert = [[NSAlert alloc] init];
-            errAlert.messageText = @"Export fehlgeschlagen";
-            errAlert.informativeText = err.localizedDescription ?: @"Die Datei konnte nicht geschrieben werden.";
+            errAlert.messageText = CIYL(@"Export failed");
+            errAlert.informativeText = err.localizedDescription ?: CIYL(@"The file could not be written.");
             [errAlert beginSheetModalForWindow:self.window completionHandler:nil];
         }
     }];
@@ -1766,13 +1805,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)onImportProfiles:(id)sender {
     (void)sender;
     if (_profiles.count >= kMaxProfilesCount) {
-        [self showImportError:[NSString stringWithFormat:@"Das Limit von maximal %lu Profilen ist bereits erreicht. Bitte löschen Sie zuerst nicht benötigte Profile.", (unsigned long)kMaxProfilesCount]];
+        [self showImportError:[NSString stringWithFormat:CIYL(@"The limit of %lu profiles has already been reached. Please delete unneeded profiles first."), (unsigned long)kMaxProfilesCount]];
         return;
     }
 
     NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.title = @"CIY X79 Beleuchtungsprofile importieren";
-    panel.prompt = @"Importieren";
+    panel.title = CIYL(@"Import CIY X79 lighting profiles");
+    panel.prompt = CIYL(@"Import");
     panel.allowedContentTypes = @[UTTypeJSON];
     panel.allowsMultipleSelection = NO;
     panel.canChooseDirectories = NO;
@@ -1780,7 +1819,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK && panel.URL) {
             if (self->_profiles.count >= kMaxProfilesCount) {
-                [self showImportError:[NSString stringWithFormat:@"Das Limit von maximal %lu Profilen ist bereits erreicht.", (unsigned long)kMaxProfilesCount]];
+                [self showImportError:[NSString stringWithFormat:CIYL(@"The limit of %lu profiles has already been reached."), (unsigned long)kMaxProfilesCount]];
                 return;
             }
             size_t rawSize = 0;
@@ -1788,17 +1827,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             char *rawBuf = ciy_read_text_file_with_result([panel.URL.path fileSystemRepresentation], &rawSize, &valRes);
             if (!rawBuf || rawSize == 0 || rawSize > 512 * 1024) {
                 if (rawBuf) free(rawBuf);
-                NSString *errMsg = (valRes.error_message[0] != '\0')
-                    ? [NSString stringWithUTF8String:valRes.error_message]
-                    : @"Datei konnte nicht sicher gelesen werden.";
-                [self showImportError:errMsg ?: @"Datei konnte nicht sicher gelesen werden."];
+                NSLog(@"CIY X79: import read failed (%s): %s", valRes.error_field, valRes.error_message);
+                [self showImportError:CIYLocalizedFileReadErrorMessage(valRes.read_error)];
                 return;
             }
             NSData *data = [NSData dataWithBytesNoCopy:rawBuf length:rawSize freeWhenDone:YES];
             NSError *err = nil;
             id json = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&err];
             if (!json || err) {
-                [self showImportError:@"Ungültiges JSON-Format."];
+                [self showImportError:CIYL(@"Invalid JSON format.")];
                 return;
             }
 
@@ -1808,7 +1845,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             } else if ([json isKindOfClass:[NSDictionary class]]) {
                 items = @[json];
             } else {
-                [self showImportError:@"JSON enthält keine Profile."];
+                [self showImportError:CIYL(@"JSON contains no profiles.")];
                 return;
             }
 
@@ -1822,7 +1859,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 }
                 if ([item isKindOfClass:[NSDictionary class]]) {
                     NSDictionary *dict = (NSDictionary *)item;
-                    NSString *name = @"Importiertes Profil";
+                    NSString *name = CIYL(@"Imported profile");
                     if ([dict[@"name"] isKindOfClass:[NSString class]]) {
                         NSString *trimmed = [dict[@"name"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                         if (trimmed.length > 0) {
@@ -1893,13 +1930,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [self updateButtonsState];
                 [self sendCurrentProfileToHardware];
 
-                self->_statusLabel.stringValue = [NSString stringWithFormat:@"● %lu Profil(e) erfolgreich importiert", (unsigned long)importedCount];
+                self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● %lu profile(s) imported successfully"), (unsigned long)importedCount];
                 self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
                 if (limitReached) {
-                    [self showImportError:[NSString stringWithFormat:@"Es wurden %lu Profil(e) importiert. Weitere Profile wurden übersprungen, da das Maximum von %lu Profilen erreicht ist.", (unsigned long)importedCount, (unsigned long)kMaxProfilesCount]];
+                    [self showImportError:[NSString stringWithFormat:CIYL(@"%lu profile(s) were imported. Additional profiles were skipped because the maximum of %lu profiles has been reached."), (unsigned long)importedCount, (unsigned long)kMaxProfilesCount]];
                 }
             } else {
-                [self showImportError:@"Keine gültigen Beleuchtungsprofile in der Datei gefunden."];
+                [self showImportError:CIYL(@"No valid lighting profiles found in the file.")];
             }
         }
     }];
@@ -1907,7 +1944,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)showImportError:(NSString *)msg {
     NSAlert *errAlert = [[NSAlert alloc] init];
-    errAlert.messageText = @"Import fehlgeschlagen";
+    errAlert.messageText = CIYL(@"Import failed");
     errAlert.informativeText = msg;
     [errAlert beginSheetModalForWindow:self.window completionHandler:nil];
 }
@@ -1915,10 +1952,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)onResetProfiles:(id)sender {
     (void)sender;
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Profile auf Werkseinstellungen zurücksetzen?";
-    alert.informativeText = @"Alle benutzerdefinierten Profile werden durch die vorkonfigurierten Standard-Profile ersetzt.";
-    [alert addButtonWithTitle:@"Zurücksetzen"];
-    [alert addButtonWithTitle:@"Abbrechen"];
+    alert.messageText = CIYL(@"Reset profiles to factory defaults?");
+    alert.informativeText = CIYL(@"All custom profiles will be replaced by the built-in default profiles.");
+    [alert addButtonWithTitle:CIYL(@"Reset")];
+    [alert addButtonWithTitle:CIYL(@"Cancel")];
     alert.alertStyle = NSAlertStyleWarning;
 
     [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse returnCode) {
@@ -1936,7 +1973,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self updateButtonsState];
             [self sendCurrentProfileToHardware];
 
-            self->_statusLabel.stringValue = @"● Profile auf Standardwerte zurückgesetzt";
+            self->_statusLabel.stringValue = CIYL(@"● Profiles reset to defaults");
             self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
         }
     }];
@@ -1944,17 +1981,26 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onOpenHelp:(id)sender {
     (void)sender;
-    NSString *readmePath = [[NSBundle mainBundle] pathForResource:@"README" ofType:@"md"];
-    if (!readmePath || ![[NSFileManager defaultManager] fileExistsAtPath:readmePath]) {
-        NSString *bundleDir = [[NSBundle mainBundle] bundlePath];
-        readmePath = [[bundleDir stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"README.md"];
+    BOOL german = ([CIYLocalization effectiveLanguage] == CIYLanguageGerman);
+    NSArray<NSString *> *candidates = german
+        ? @[@"README", @"README_EN"]
+        : @[@"README_EN", @"README"];
+
+    NSString *readmePath = nil;
+    for (NSString *name in candidates) {
+        readmePath = [[NSBundle mainBundle] pathForResource:name ofType:@"md"];
+        if (readmePath) break;
+    }
+    if (!readmePath) {
+        readmePath = [[[NSBundle mainBundle] resourcePath]
+                      stringByAppendingPathComponent:@"README.md"];
     }
     if ([[NSFileManager defaultManager] fileExistsAtPath:readmePath]) {
         [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:readmePath]];
     } else {
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"CIY X79 RGB Steuerung (macOS)";
-        alert.informativeText = @"Weitere Informationen und Hardware-Details finden Sie in der beiliegenden Dokumentation README.md.";
+        alert.messageText = CIYL(@"CIY X79 RGB Control (macOS)");
+        alert.informativeText = CIYL(@"Further information and hardware details can be found in the included README.md documentation.");
         [alert beginSheetModalForWindow:self.window completionHandler:nil];
     }
 }
@@ -1967,79 +2013,153 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // 1. App Menü (CIY X79 Control)
     NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
     NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"CIY X79 Control"];
-    [appMenu addItemWithTitle:@"Über CIY X79 Control" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItemWithTitle:CIYL(@"About CIY X79 Control") action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *hideItem = [[NSMenuItem alloc] initWithTitle:@"CIY X79 Control ausblenden" action:@selector(hide:) keyEquivalent:@"h"];
+    NSMenuItem *hideItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Hide CIY X79 Control") action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItem:hideItem];
 
-    NSMenuItem *hideOthers = [[NSMenuItem alloc] initWithTitle:@"Andere ausblenden" action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
+    NSMenuItem *hideOthers = [[NSMenuItem alloc] initWithTitle:CIYL(@"Hide Others") action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
     hideOthers.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagCommand;
     [appMenu addItem:hideOthers];
 
-    [appMenu addItemWithTitle:@"Alle einblenden" action:@selector(unhideAllApplications:) keyEquivalent:@""];
+    [appMenu addItemWithTitle:CIYL(@"Show All") action:@selector(unhideAllApplications:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"CIY X79 Control beenden" action:@selector(terminate:) keyEquivalent:@"q"];
+    NSMenuItem *languageItem = [[NSMenuItem alloc] initWithTitle:@"Language / Sprache" action:nil keyEquivalent:@""];
+    languageItem.tag = kLanguageMenuTag;
+    languageItem.submenu = [self buildLanguageMenu];
+    [appMenu addItem:languageItem];
+
+    [appMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Quit CIY X79 Control") action:@selector(terminate:) keyEquivalent:@"q"];
     [appMenu addItem:quitItem];
     appMenuItem.submenu = appMenu;
     [mainMenu addItem:appMenuItem];
 
     // 2. Ablage (File)
     NSMenuItem *fileMenuItem = [[NSMenuItem alloc] init];
-    NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"Ablage"];
-    [fileMenu addItemWithTitle:@"Neues Profil..." action:@selector(onNewProfile:) keyEquivalent:@"n"];
-    [fileMenu addItemWithTitle:@"Profil speichern & senden" action:@selector(onSaveAndSendProfile:) keyEquivalent:@"s"];
+    NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:CIYL(@"File")];
+    [fileMenu addItemWithTitle:CIYL(@"New profile...") action:@selector(onNewProfile:) keyEquivalent:@"n"];
+    [fileMenu addItemWithTitle:CIYL(@"Save & send profile") action:@selector(onSaveAndSendProfile:) keyEquivalent:@"s"];
     [fileMenu addItem:[NSMenuItem separatorItem]];
-    [fileMenu addItemWithTitle:@"Profile exportieren..." action:@selector(onExportProfiles:) keyEquivalent:@"e"];
-    [fileMenu addItemWithTitle:@"Profile importieren..." action:@selector(onImportProfiles:) keyEquivalent:@"o"];
+    [fileMenu addItemWithTitle:CIYL(@"Export profiles...") action:@selector(onExportProfiles:) keyEquivalent:@"e"];
+    [fileMenu addItemWithTitle:CIYL(@"Import profiles...") action:@selector(onImportProfiles:) keyEquivalent:@"o"];
     [fileMenu addItem:[NSMenuItem separatorItem]];
-    [fileMenu addItemWithTitle:@"Fenster schließen" action:@selector(performClose:) keyEquivalent:@"w"];
+    [fileMenu addItemWithTitle:CIYL(@"Close window") action:@selector(performClose:) keyEquivalent:@"w"];
     fileMenuItem.submenu = fileMenu;
     [mainMenu addItem:fileMenuItem];
 
     // 3. Bearbeiten (Edit)
     NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
-    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Bearbeiten"];
-    [editMenu addItemWithTitle:@"Alle Tasten füllen..." action:@selector(onFillAllKeys:) keyEquivalent:@""];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:CIYL(@"Edit")];
+    [editMenu addItemWithTitle:CIYL(@"Fill all keys...") action:@selector(onFillAllKeys:) keyEquivalent:@""];
     editMenuItem.submenu = editMenu;
     [mainMenu addItem:editMenuItem];
 
     // 4. Tastatur (Hardware)
     NSMenuItem *hwMenuItem = [[NSMenuItem alloc] init];
-    NSMenu *hwMenu = [[NSMenu alloc] initWithTitle:@"Tastatur"];
-    [hwMenu addItemWithTitle:@"Aktives Profil an Tastatur senden" action:@selector(onApplyProfileClicked:) keyEquivalent:@"r"];
-    [hwMenu addItemWithTitle:@"Neu verbinden" action:@selector(onReconnect:) keyEquivalent:@"u"];
+    NSMenu *hwMenu = [[NSMenu alloc] initWithTitle:CIYL(@"Keyboard")];
+    [hwMenu addItemWithTitle:CIYL(@"Send active profile to keyboard") action:@selector(onApplyProfileClicked:) keyEquivalent:@"r"];
+    [hwMenu addItemWithTitle:CIYL(@"Reconnect") action:@selector(onReconnect:) keyEquivalent:@"u"];
     [hwMenu addItem:[NSMenuItem separatorItem]];
-    [hwMenu addItemWithTitle:@"Auto-Trigger bei App-Fokus umschalten" action:@selector(toggleAutoTriggerMenu:) keyEquivalent:@"t"];
-    [hwMenu addItemWithTitle:@"App mit aktuellem Profil verknüpfen..." action:@selector(onAssignApp:) keyEquivalent:@""];
-    [hwMenu addItemWithTitle:@"App-Verknüpfung entfernen" action:@selector(onClearApp:) keyEquivalent:@""];
-    [hwMenu addItemWithTitle:@"Aktuelles Profil als Standard-Fallback setzen" action:@selector(onSetDefaultFallback:) keyEquivalent:@""];
+    [hwMenu addItemWithTitle:CIYL(@"Toggle auto-trigger on app focus") action:@selector(toggleAutoTriggerMenu:) keyEquivalent:@"t"];
+    [hwMenu addItemWithTitle:CIYL(@"Link app to current profile...") action:@selector(onAssignApp:) keyEquivalent:@""];
+    [hwMenu addItemWithTitle:CIYL(@"Remove app link") action:@selector(onClearApp:) keyEquivalent:@""];
+    [hwMenu addItemWithTitle:CIYL(@"Set current profile as default fallback") action:@selector(onSetDefaultFallback:) keyEquivalent:@""];
     hwMenuItem.submenu = hwMenu;
     [mainMenu addItem:hwMenuItem];
 
     // 5. Fenster (Window)
     NSMenuItem *windowMenuItem = [[NSMenuItem alloc] init];
-    NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Fenster"];
-    NSMenuItem *openWinItem = [[NSMenuItem alloc] initWithTitle:@"Hauptfenster öffnen" action:@selector(onOpenMainWindow:) keyEquivalent:@""];
+    NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:CIYL(@"Window")];
+    NSMenuItem *openWinItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Open main window") action:@selector(onOpenMainWindow:) keyEquivalent:@""];
     openWinItem.target = self;
     [windowMenu addItem:openWinItem];
     [windowMenu addItem:[NSMenuItem separatorItem]];
-    [windowMenu addItemWithTitle:@"Minimieren" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
-    [windowMenu addItemWithTitle:@"Zoomen" action:@selector(performZoom:) keyEquivalent:@""];
+    [windowMenu addItemWithTitle:CIYL(@"Minimize") action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+    [windowMenu addItemWithTitle:CIYL(@"Zoom") action:@selector(performZoom:) keyEquivalent:@""];
     windowMenuItem.submenu = windowMenu;
     [mainMenu addItem:windowMenuItem];
     [NSApp setWindowsMenu:windowMenu];
 
     // 6. Hilfe (Help)
     NSMenuItem *helpMenuItem = [[NSMenuItem alloc] init];
-    NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:@"Hilfe"];
-    [helpMenu addItemWithTitle:@"Dokumentation & Anleitung" action:@selector(onOpenHelp:) keyEquivalent:@"?"];
+    NSMenu *helpMenu = [[NSMenu alloc] initWithTitle:CIYL(@"Help")];
+    [helpMenu addItemWithTitle:CIYL(@"Documentation & guide") action:@selector(onOpenHelp:) keyEquivalent:@"?"];
     helpMenuItem.submenu = helpMenu;
     [mainMenu addItem:helpMenuItem];
     [NSApp setHelpMenu:helpMenu];
 
     [NSApp setMainMenu:mainMenu];
+    [self refreshLanguageMenuStates];
+}
+
+- (NSMenu *)buildLanguageMenu {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Language / Sprache"];
+
+    NSMenuItem *englishItem = [[NSMenuItem alloc] initWithTitle:@"English"
+                                                         action:@selector(onSelectLanguage:)
+                                                  keyEquivalent:@""];
+    englishItem.tag = CIYLanguageEnglish;
+    englishItem.target = self;
+    [menu addItem:englishItem];
+
+    NSMenuItem *germanItem = [[NSMenuItem alloc] initWithTitle:@"Deutsch"
+                                                        action:@selector(onSelectLanguage:)
+                                                 keyEquivalent:@""];
+    germanItem.tag = CIYLanguageGerman;
+    germanItem.target = self;
+    [menu addItem:germanItem];
+
+    CIYLanguage preferred = [CIYLocalization preferredLanguage];
+    englishItem.state = (preferred == CIYLanguageEnglish) ? NSControlStateValueOn : NSControlStateValueOff;
+    germanItem.state = (preferred == CIYLanguageGerman) ? NSControlStateValueOn : NSControlStateValueOff;
+    return menu;
+}
+
+- (void)refreshLanguageMenuStates {
+    CIYLanguage preferred = [CIYLocalization preferredLanguage];
+    CIYUpdateLanguageMenuStates([NSApp mainMenu], preferred);
+    CIYUpdateLanguageMenuStates(_statusItem.menu, preferred);
+}
+
+- (void)loadLanguagePreference {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *storedCode = [defaults stringForKey:CIYLanguagePreferenceKey];
+    NSArray *savedProfiles = [defaults arrayForKey:kCustomProfilesKey];
+    BOOL hasProfiles = [savedProfiles isKindOfClass:[NSArray class]] && savedProfiles.count > 0;
+
+    CIYLanguage language = [CIYLocalization resolveLanguageFromStoredCode:storedCode
+                                                      hasStoredProfiles:hasProfiles];
+    [CIYLocalization setPreferredLanguage:language];
+    [CIYLocalization loadEffectiveLanguage];
+}
+
+- (void)onSelectLanguage:(NSMenuItem *)sender {
+    CIYLanguage selected = (sender.tag == CIYLanguageGerman) ? CIYLanguageGerman : CIYLanguageEnglish;
+    if (selected == [CIYLocalization preferredLanguage]) {
+        return;
+    }
+
+    [CIYLocalization setPreferredLanguage:selected];
+    [self refreshLanguageMenuStates];
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = CIYL(@"Language change requires restart");
+    NSString *info = CIYL(@"The UI language will change after restarting the app.");
+    if (_hasUnsavedEdits) {
+        info = [info stringByAppendingFormat:@"\n\n%@", CIYL(@"Unsaved key edits will be lost if you restart now.")];
+    }
+    alert.informativeText = info;
+    [alert addButtonWithTitle:CIYL(@"OK")];
+
+    if (self.window.isVisible) {
+        [alert beginSheetModalForWindow:self.window completionHandler:nil];
+    } else {
+        [alert runModal];
+    }
 }
 
 #pragma mark - Menüleisten-Statusobjekt (Tray Icon)
@@ -2073,7 +2193,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     // 1. Verbindungs-Status Header (nicht auswählbar)
     BOOL connected = [KeyboardBackend shared].isConnected;
-    NSString *statusTitle = connected ? @"CIY X79: Verbunden" : @"CIY X79: Getrennt (USB prüfen)";
+    NSString *statusTitle = connected ? CIYL(@"CIY X79: Connected") : CIYL(@"CIY X79: Disconnected (check USB)");
     NSMenuItem *statusHeader = [[NSMenuItem alloc] initWithTitle:statusTitle action:nil keyEquivalent:@""];
     statusHeader.enabled = NO;
     [menu addItem:statusHeader];
@@ -2081,20 +2201,20 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [menu addItem:[NSMenuItem separatorItem]];
 
     // 2. Fenster öffnen
-    NSMenuItem *openWindowItem = [[NSMenuItem alloc] initWithTitle:@"Hauptfenster öffnen..." action:@selector(onOpenMainWindow:) keyEquivalent:@""];
+    NSMenuItem *openWindowItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Open main window...") action:@selector(onOpenMainWindow:) keyEquivalent:@""];
     openWindowItem.target = self;
     [menu addItem:openWindowItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
     // 3. Profile
-    NSMenuItem *profHeader = [[NSMenuItem alloc] initWithTitle:@"Profile:" action:nil keyEquivalent:@""];
+    NSMenuItem *profHeader = [[NSMenuItem alloc] initWithTitle:CIYL(@"Profiles:") action:nil keyEquivalent:@""];
     profHeader.enabled = NO;
     [menu addItem:profHeader];
 
     for (NSUInteger i = 0; i < _profiles.count; i++) {
         NSDictionary *prof = _profiles[i];
-        NSString *name = prof[@"name"] ?: [NSString stringWithFormat:@"Profil %lu", (unsigned long)(i + 1)];
+        NSString *name = prof[@"name"] ?: [NSString stringWithFormat:CIYL(@"Profile %lu"), (unsigned long)(i + 1)];
         NSString *profId = prof[@"id"];
         BOOL isActive = (profId && [profId isEqualToString:_currentActiveProfileId]);
 
@@ -2116,19 +2236,27 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [menu addItem:[NSMenuItem separatorItem]];
 
     // 4. Auto-Trigger Toggle
-    NSMenuItem *triggerItem = [[NSMenuItem alloc] initWithTitle:@"⚡ Auto-Trigger (App-Fokus)" action:@selector(toggleAutoTriggerMenu:) keyEquivalent:@""];
+    NSMenuItem *triggerItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"⚡ Auto-Trigger (app focus)") action:@selector(toggleAutoTriggerMenu:) keyEquivalent:@""];
     triggerItem.target = self;
     triggerItem.state = _autoTriggerEnabled ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:triggerItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
+    NSMenuItem *languageItem = [[NSMenuItem alloc] initWithTitle:@"Language / Sprache" action:nil keyEquivalent:@""];
+    languageItem.tag = kLanguageMenuTag;
+    languageItem.submenu = [self buildLanguageMenu];
+    [menu addItem:languageItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+
     // 5. Beenden
-    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"CIY X79 Control beenden" action:@selector(terminate:) keyEquivalent:@"q"];
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Quit CIY X79 Control") action:@selector(terminate:) keyEquivalent:@"q"];
     quitItem.target = NSApp;
     [menu addItem:quitItem];
 
     _statusItem.menu = menu;
+    [self refreshLanguageMenuStates];
 }
 
 - (void)onOpenMainWindow:(id)sender {
