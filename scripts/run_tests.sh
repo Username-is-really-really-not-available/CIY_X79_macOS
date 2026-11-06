@@ -5,11 +5,35 @@ export CIY_SANITIZE=1
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
+TEST_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ciy_tests.XXXXXX")"
+TEST_LOCK_DIR="${TMPDIR:-/tmp}/ciy_x79_test_suite_$(id -u).lock"
+TEST_LOCK_OWNED=0
+cleanup() {
+    rm -rf "${TEST_TMP_DIR}" || true
+    if [ "${TEST_LOCK_OWNED}" -eq 1 ]; then
+        rmdir "${TEST_LOCK_DIR}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
+
+if command -v pgrep >/dev/null 2>&1; then
+    if pgrep -x CIYX79Control >/dev/null 2>&1 || pgrep -f 'CIYX79Control.app/Contents/MacOS/CIYX79Control' >/dev/null 2>&1; then
+        echo "FEHLER: CIYX79Control läuft. Bitte zuerst beenden; der hidapi-Test nutzt den produktiven Bus-Lock." >&2
+        exit 1
+    fi
+fi
+
+if ! mkdir "${TEST_LOCK_DIR}" 2>/dev/null; then
+    echo "FEHLER: Eine andere Testsuite läuft bereits." >&2
+    echo "Lock: ${TEST_LOCK_DIR}" >&2
+    echo "Wenn sicher kein Test läuft: rm -rf '${TEST_LOCK_DIR}'" >&2
+    exit 1
+fi
+TEST_LOCK_OWNED=1
+
 SAN_FLAGS=(-g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
 HOOK_FLAGS=(-DCIY_ENABLE_TEST_HOOKS=1)
-
-TEST_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ciy_tests.XXXXXX")"
-trap 'rm -rf "${TEST_TMP_DIR}"' EXIT INT TERM
 
 echo "=== Test 0: Standalone Protocol & Zero-OS-Lock-in Tests (ASan/UBSan, C11 & C++) ==="
 clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
