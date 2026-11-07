@@ -12,6 +12,7 @@
 #include "../layouts/ciy_layout.h"
 #include "../core/ciy_battery.h"
 #include "../core/ciy_gradient.h"
+#include "../core/ciy_brightness.h"
 
 // Sw_mode to effect names (from our verified ROM dump)
 static const char *EFFECT_NAMES[] = {
@@ -561,6 +562,138 @@ static bool extract_brightness_option(int *argc, char **argv, uint8_t *out_brigh
     return true;
 }
 
+typedef struct {
+    uint8_t percent[CIY_BRIGHTNESS_SLOT_COUNT];
+    bool slot_set[CIY_BRIGHTNESS_SLOT_COUNT];
+    size_t count;
+} CIYKeyBrightnessSpec;
+
+// Extrahiert --key-brightness <slot> <percent> oder --key-brightness=<slot>:<percent> aus argv.
+// Entfernt gefundene Flags aus argv und aktualisiert *argc.
+static bool extract_key_brightness_options(int *argc, char **argv, CIYKeyBrightnessSpec *out, char *err_buf, size_t err_size) {
+    memset(out, 0, sizeof(*out));
+    for (size_t s = 0; s < CIY_BRIGHTNESS_SLOT_COUNT; s++) {
+        out->percent[s] = 100;
+    }
+
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+
+    for (int i = 1; i < *argc; i++) {
+        if (strcmp(argv[i], "--key-brightness") == 0) {
+            if (i + 2 >= *argc) {
+                snprintf(err_buf, err_size, "Fehlende Argumente für --key-brightness. Verwendung: --key-brightness <slot 0..124> <percent 0..100>");
+                return false;
+            }
+            int slot = 0;
+            if (!parse_int_range(argv[i + 1], 0, CIY_MAX_MATRIX_SLOT, &slot)) {
+                snprintf(err_buf, err_size, "Ungültiger Matrix-Slot '%s' für --key-brightness (erlaubt: 0..124)", argv[i + 1]);
+                return false;
+            }
+            if (!layout || !ciy_layout_find_key_by_slot(layout, slot)) {
+                snprintf(err_buf, err_size, "Matrix-Slot %d besitzt keine physische Taste im ISO-DE Layout", slot);
+                return false;
+            }
+            int pct = 0;
+            if (!parse_int_range(argv[i + 2], 0, CIY_BRIGHTNESS_PERCENT_MAX, &pct)) {
+                snprintf(err_buf, err_size, "Ungültiger Prozentwert '%s' für --key-brightness (erlaubt: 0..100)", argv[i + 2]);
+                return false;
+            }
+
+            if (!out->slot_set[slot]) {
+                out->slot_set[slot] = true;
+                out->count++;
+            }
+            out->percent[slot] = (uint8_t)pct;
+
+            for (int j = i; j + 3 < *argc; j++) {
+                argv[j] = argv[j + 3];
+            }
+            *argc -= 3;
+            i--;
+        } else if (strncmp(argv[i], "--key-brightness=", 17) == 0) {
+            const char *val = argv[i] + 17;
+            char *colon = strchr(val, ':');
+            if (!colon) {
+                snprintf(err_buf, err_size, "Ungültiges Format für --key-brightness=%s (erwartet: <slot>:<percent>)", val);
+                return false;
+            }
+            char slot_str[32] = {0};
+            size_t slot_len = (size_t)(colon - val);
+            if (slot_len >= sizeof(slot_str)) {
+                snprintf(err_buf, err_size, "Ungültiger Slot in '%s'", val);
+                return false;
+            }
+            memcpy(slot_str, val, slot_len);
+            slot_str[slot_len] = '\0';
+            const char *pct_str = colon + 1;
+
+            int slot = 0;
+            if (!parse_int_range(slot_str, 0, CIY_MAX_MATRIX_SLOT, &slot)) {
+                snprintf(err_buf, err_size, "Ungültiger Matrix-Slot '%s' für --key-brightness (erlaubt: 0..124)", slot_str);
+                return false;
+            }
+            if (!layout || !ciy_layout_find_key_by_slot(layout, slot)) {
+                snprintf(err_buf, err_size, "Matrix-Slot %d besitzt keine physische Taste im ISO-DE Layout", slot);
+                return false;
+            }
+            int pct = 0;
+            if (!parse_int_range(pct_str, 0, CIY_BRIGHTNESS_PERCENT_MAX, &pct)) {
+                snprintf(err_buf, err_size, "Ungültiger Prozentwert '%s' für --key-brightness (erlaubt: 0..100)", pct_str);
+                return false;
+            }
+
+            if (!out->slot_set[slot]) {
+                out->slot_set[slot] = true;
+                out->count++;
+            }
+            out->percent[slot] = (uint8_t)pct;
+
+            for (int j = i; j + 1 < *argc; j++) {
+                argv[j] = argv[j + 1];
+            }
+            (*argc)--;
+            i--;
+        }
+    }
+    return true;
+}
+
+static bool apply_key_brightness(uint8_t rgb[CIY_PLANAR_RGB_SIZE], const CIYKeyBrightnessSpec *kb, bool json_mode) {
+    if (!kb || kb->count == 0) {
+        return true;
+    }
+    if (!ciy_brightness_apply_slots(rgb, kb->percent)) {
+        if (json_mode) {
+            printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Anwenden der individuellen Tasten-Helligkeit\"\n}\n");
+        } else {
+            fprintf(stderr, "Fehler beim Anwenden der individuellen Tasten-Helligkeit.\n");
+        }
+        return false;
+    }
+    return true;
+}
+
+static void print_key_brightness_json_field(const CIYKeyBrightnessSpec *kb) {
+    if (!kb || kb->count == 0) return;
+    printf(",\n  \"key_brightness\": [\n");
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    size_t printed = 0;
+    for (int s = 0; s <= CIY_MAX_MATRIX_SLOT; s++) {
+        if (!kb->slot_set[s]) continue;
+        const CIYLogicalKey *k = layout ? ciy_layout_find_key_by_slot(layout, s) : NULL;
+        printf("    {\n");
+        printf("      \"slot\": %d,\n", s);
+        printf("      \"led_index\": %d,\n", k ? k->led_index : -1);
+        printf("      \"key\": \"");
+        print_escaped_json_string(stdout, k ? k->name : "");
+        printf("\",\n");
+        printf("      \"percent\": %u\n", kb->percent[s]);
+        printed++;
+        printf("    }%s\n", (printed < kb->count) ? "," : "");
+    }
+    printf("  ]");
+}
+
 static void print_export_layout_json(const CIYKeyboardLayout *layout) {
     if (!layout) return;
     printf("{\n");
@@ -626,7 +759,7 @@ static void print_export_layout_text(const CIYKeyboardLayout *layout) {
     printf("\n");
 }
 
-static void print_dry_run_plan(const CIYTransferPlan *plan, bool json_mode, bool dump_bytes) {
+static void print_dry_run_plan(const CIYTransferPlan *plan, bool json_mode, bool dump_bytes, const CIYKeyBrightnessSpec *kb) {
     if (json_mode) {
         printf("{\n");
         printf("  \"dry_run\": true,\n");
@@ -676,6 +809,25 @@ static void print_dry_run_plan(const CIYTransferPlan *plan, bool json_mode, bool
             printf("    }%s\n", (i + 1 < plan->step_count) ? "," : "");
         }
         printf("  ],\n");
+        if (kb && kb->count > 0) {
+            printf("  \"key_brightness\": [\n");
+            const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+            size_t printed = 0;
+            for (int s = 0; s <= CIY_MAX_MATRIX_SLOT; s++) {
+                if (!kb->slot_set[s]) continue;
+                const CIYLogicalKey *k = layout ? ciy_layout_find_key_by_slot(layout, s) : NULL;
+                printf("    {\n");
+                printf("      \"slot\": %d,\n", s);
+                printf("      \"led_index\": %d,\n", k ? k->led_index : -1);
+                printf("      \"key\": \"");
+                print_escaped_json_string(stdout, k ? k->name : "");
+                printf("\",\n");
+                printf("      \"percent\": %u\n", kb->percent[s]);
+                printed++;
+                printf("    }%s\n", (printed < kb->count) ? "," : "");
+            }
+            printf("  ],\n");
+        }
         printf("  \"result\": \"valid; hardware unchanged\"\n");
         printf("}\n");
     } else {
@@ -685,6 +837,19 @@ static void print_dry_run_plan(const CIYTransferPlan *plan, bool json_mode, bool
         printf("Profile: ");
         print_sanitized_terminal_string(stdout, plan->profile_name[0] ? plan->profile_name : "Custom");
         printf("\n");
+        if (kb && kb->count > 0) {
+            printf("Key-Brightness: ");
+            const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+            size_t printed = 0;
+            for (int s = 0; s <= CIY_MAX_MATRIX_SLOT; s++) {
+                if (!kb->slot_set[s]) continue;
+                const CIYLogicalKey *k = layout ? ciy_layout_find_key_by_slot(layout, s) : NULL;
+                printf("Slot %d (%s) = %u%%", s, k ? k->name : "?", kb->percent[s]);
+                printed++;
+                if (printed < kb->count) printf(", ");
+            }
+            printf("\n");
+        }
         printf("Plan: ");
         for (size_t i = 0; i < plan->step_count; i++) {
             const CIYPlanStep *s = &plan->steps[i];
@@ -751,6 +916,7 @@ static void print_help(const char *prog_name) {
     printf("  help, --help, -h                    Zeigt diese Hilfe an\n\n");
     printf("Optionen:\n");
     printf("  -b, --brightness <0..5>             Helligkeit für Schreibbefehle (fill, load, set, wasd, battery, gradient etc.; Standard: 5)\n");
+    printf("  --key-brightness <slot> <0..100>    Individuelle Helligkeit für Matrix-Slot (0..124), mehrfach angebbar (wirkt multiplikativ mit -b)\n");
     printf("  --dir <horizontal|vertical>         Richtung für gradient (Standard: horizontal)\n");
     printf("  --apply                             Wendet den Akku-Indikator direkt auf die Tastatur an\n");
     printf("  --target <1-0|space|nav|<slots>>    Ziel-Tasten für den Akku-Indikator (Standard: 1-0)\n");
@@ -813,6 +979,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // 2b. Optionale individuelle Tasten-Helligkeit (--key-brightness) extrahieren
+    CIYKeyBrightnessSpec kb_spec;
+    char kb_err[256] = {0};
+    if (!extract_key_brightness_options(&argc, argv, &kb_spec, kb_err, sizeof(kb_err))) {
+        if (json_mode) {
+            printf("{\n  \"connected\": false,\n  \"error\": \"");
+            print_escaped_json_string(stdout, kb_err);
+            printf("\"\n}\n");
+        } else {
+            fprintf(stderr, "Fehler: %s\n", kb_err);
+        }
+        return 1;
+    }
+
     // 3. Befehl identifizieren (erstes Argument, das kein Flag ist)
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') {
@@ -822,6 +1002,21 @@ int main(int argc, char **argv) {
     }
     if (!cmd) {
         cmd = "status";
+    }
+
+    // 3b. Prüfung: --key-brightness wird nur für Befehle unterstützt, die einen planaren Puffer erzeugen
+    if (kb_spec.count > 0 &&
+        strcmp(cmd, "fill") != 0 && strcmp(cmd, "load") != 0 &&
+        strcmp(cmd, "gradient") != 0 && strcmp(cmd, "wasd") != 0 &&
+        strcmp(cmd, "wasd-arrows") != 0 && strcmp(cmd, "all-red") != 0) {
+        if (json_mode) {
+            printf("{\n  \"success\": false,\n  \"error\": \"--key-brightness wird für den Befehl '");
+            print_escaped_json_string(stdout, cmd);
+            printf("' nicht unterstützt (nur für fill, load, gradient, wasd, wasd-arrows, all-red)\"\n}\n");
+        } else {
+            fprintf(stderr, "Fehler: --key-brightness wird für den Befehl '%s' nicht unterstützt.\nErlaubt für: fill, load, gradient, wasd, wasd-arrows, all-red.\n", cmd);
+        }
+        return 1;
     }
 
     // 4. Auf unbekannte Optionen prüfen
@@ -1012,7 +1207,7 @@ int main(int argc, char **argv) {
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, prof_name, (int)active_count)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, NULL);
             return 0;
         }
 
@@ -1053,6 +1248,9 @@ int main(int argc, char **argv) {
             }
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_gradient_generate_planar(rgb, r1, g1, b1, r2, g2, b2, dir);
+            if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                return 1;
+            }
             const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             char prof_name[64];
             snprintf(prof_name, sizeof(prof_name), "Verlauf (%s -> %s, %s)",
@@ -1061,7 +1259,7 @@ int main(int argc, char **argv) {
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, prof_name, 69)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, &kb_spec);
             return 0;
         }
         if (strcmp(cmd, "load") == 0) {
@@ -1179,6 +1377,10 @@ int main(int argc, char **argv) {
                 brightness = profile_brightness;
             }
 
+            if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                return 1;
+            }
+
             CIYTransferPlan plan;
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), brightness, profile_name, slots_count)) {
                 if (json_mode) {
@@ -1189,7 +1391,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
 
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, &kb_spec);
             return 0;
         } else if (strcmp(cmd, "fill") == 0) {
             const char *color_arg = NULL;
@@ -1233,44 +1435,56 @@ int main(int argc, char **argv) {
             }
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_build_solid_color_profile(rgb, r, g, b);
+            if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                return 1;
+            }
             char prof_name[64];
             snprintf(prof_name, sizeof(prof_name), "Vollfarbe #%02X%02X%02X", r, g, b);
             CIYTransferPlan plan;
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), brightness, prof_name, 69)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, &kb_spec);
             return 0;
         } else if (strcmp(cmd, "wasd") == 0) {
             const int wasd_idx[] = {15, 10, 16, 22};
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_build_profile(rgb, wasd_idx, 4, true, false, true);
+            if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                return 1;
+            }
             const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             CIYTransferPlan plan;
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "WASD Gaming (Rot / Basis Blau)", 4)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, &kb_spec);
             return 0;
         } else if (strcmp(cmd, "wasd-arrows") == 0) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_build_wasd_and_arrows_profile(rgb, true);
+            if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                return 1;
+            }
             const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             CIYTransferPlan plan;
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "WASD + Pfeiltasten (Rot & Gelb / Basis Blau)", 8)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, &kb_spec);
             return 0;
         } else if (strcmp(cmd, "all-red") == 0) {
             uint8_t rgb[CIY_PLANAR_RGB_SIZE];
             ciy_build_all_red_profile(rgb);
+            if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                return 1;
+            }
             const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
             CIYTransferPlan plan;
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "Alles Rot", 69)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, &kb_spec);
             return 0;
         } else if (strcmp(cmd, "set") == 0) {
             const char *set_args[4] = {NULL, NULL, NULL, NULL};
@@ -1325,7 +1539,7 @@ int main(int argc, char **argv) {
             if (!ciy_build_state_transfer_plan(&plan, st)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, NULL);
             return 0;
         } else if (strcmp(cmd, "probe-led") == 0) {
             int led = 0, slot = 0;
@@ -1357,7 +1571,7 @@ int main(int argc, char **argv) {
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, prof_name, 1)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, NULL);
             return 0;
         } else if (strcmp(cmd, "sweep") == 0) {
             bool auto_mode = false;
@@ -1380,7 +1594,7 @@ int main(int argc, char **argv) {
             if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, "Sweep Simulation", 1)) {
                 return 1;
             }
-            print_dry_run_plan(&plan, json_mode, dump_bytes);
+            print_dry_run_plan(&plan, json_mode, dump_bytes, NULL);
             return 0;
         }
     }
@@ -1446,23 +1660,29 @@ int main(int argc, char **argv) {
                 } else {
                     uint8_t rgb[CIY_PLANAR_RGB_SIZE];
                     ciy_build_solid_color_profile(rgb, r, g, b);
-                    if (!json_mode) {
-                        printf("Sende Vollfarbton #%02X%02X%02X (Helligkeit %u/5) an Tastatur...\n", r, g, b, brightness);
-                    }
-                    if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
-                        if (json_mode) {
-                            printf("{\n  \"success\": true,\n  \"action\": \"fill\",\n  \"color\": \"#%02X%02X%02X\",\n  \"brightness\": %u\n}\n",
-                                   r, g, b, brightness);
-                        } else {
-                            printf("Farbe #%02X%02X%02X erfolgreich auf alle Tasten angewendet!\n", r, g, b);
-                        }
-                    } else {
-                        if (json_mode) {
-                            printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Übertragen der Farbe an die Tastatur\"\n}\n");
-                        } else {
-                            fprintf(stderr, "Fehler beim Übertragen der Farbe an die Tastatur.\n");
-                        }
+                    if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
                         rc = 1;
+                    } else {
+                        if (!json_mode) {
+                            printf("Sende Vollfarbton #%02X%02X%02X (Helligkeit %u/5) an Tastatur...\n", r, g, b, brightness);
+                        }
+                        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
+                            if (json_mode) {
+                                printf("{\n  \"success\": true,\n  \"action\": \"fill\",\n  \"color\": \"#%02X%02X%02X\",\n  \"brightness\": %u",
+                                       r, g, b, brightness);
+                                print_key_brightness_json_field(&kb_spec);
+                                printf("\n}\n");
+                            } else {
+                                printf("Farbe #%02X%02X%02X erfolgreich auf alle Tasten angewendet!\n", r, g, b);
+                            }
+                        } else {
+                            if (json_mode) {
+                                printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Übertragen der Farbe an die Tastatur\"\n}\n");
+                            } else {
+                                fprintf(stderr, "Fehler beim Übertragen der Farbe an die Tastatur.\n");
+                            }
+                            rc = 1;
+                        }
                     }
                 }
             }
@@ -1592,25 +1812,29 @@ int main(int argc, char **argv) {
                             printf("' an...\n");
                         }
                     }
-                    if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
-                            if (json_mode) {
-                                printf("{\n  \"success\": true,\n  \"action\": \"load\",\n  \"file\": \"");
-                                print_escaped_json_string(stdout, file_arg);
-                                printf("\",\n  \"name\": \"");
-                                print_escaped_json_string(stdout, profile_name);
-                                printf("\",\n  \"keys\": %d,\n  \"brightness\": %u\n}\n",
-                                       slots_count, brightness);
-                            } else {
-                                printf("Profil erfolgreich auf Tastatur übertragen!\n");
-                            }
+                    if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                        rc = 1;
+                    } else if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), brightness)) {
+                        if (json_mode) {
+                            printf("{\n  \"success\": true,\n  \"action\": \"load\",\n  \"file\": \"");
+                            print_escaped_json_string(stdout, file_arg);
+                            printf("\",\n  \"name\": \"");
+                            print_escaped_json_string(stdout, profile_name);
+                            printf("\",\n  \"keys\": %d,\n  \"brightness\": %u",
+                                   slots_count, brightness);
+                            print_key_brightness_json_field(&kb_spec);
+                            printf("\n}\n");
                         } else {
-                            if (json_mode) {
-                                printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Übertragen des Profils an die Tastatur\"\n}\n");
-                            } else {
-                                fprintf(stderr, "Fehler beim Übertragen des Profils an die Tastatur.\n");
-                            }
-                            rc = 1;
+                            printf("Profil erfolgreich auf Tastatur übertragen!\n");
                         }
+                    } else {
+                        if (json_mode) {
+                            printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Übertragen des Profils an die Tastatur\"\n}\n");
+                        } else {
+                            fprintf(stderr, "Fehler beim Übertragen des Profils an die Tastatur.\n");
+                        }
+                        rc = 1;
+                    }
                     }
                 }
             }
@@ -1624,9 +1848,13 @@ int main(int argc, char **argv) {
         ciy_build_profile(rgb, wasd_idx, 4, true, false, true);
         const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
 
-        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+        if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+            rc = 1;
+        } else if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
-                printf("{\n  \"success\": true,\n  \"action\": \"wasd\",\n  \"name\": \"WASD Gaming (Rot / Basis Blau)\",\n  \"brightness\": %u\n}\n", br);
+                printf("{\n  \"success\": true,\n  \"action\": \"wasd\",\n  \"name\": \"WASD Gaming (Rot / Basis Blau)\",\n  \"brightness\": %u", br);
+                print_key_brightness_json_field(&kb_spec);
+                printf("\n}\n");
             } else {
                 printf("WASD Gaming-Profil erfolgreich angewendet!\n");
             }
@@ -1645,9 +1873,13 @@ int main(int argc, char **argv) {
         uint8_t rgb[CIY_PLANAR_RGB_SIZE];
         ciy_build_wasd_and_arrows_profile(rgb, true);
         const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
-        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+        if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+            rc = 1;
+        } else if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
-                printf("{\n  \"success\": true,\n  \"action\": \"wasd-arrows\",\n  \"name\": \"WASD + Pfeiltasten (Rot & Gelb / Basis Blau)\",\n  \"brightness\": %u\n}\n", br);
+                printf("{\n  \"success\": true,\n  \"action\": \"wasd-arrows\",\n  \"name\": \"WASD + Pfeiltasten (Rot & Gelb / Basis Blau)\",\n  \"brightness\": %u", br);
+                print_key_brightness_json_field(&kb_spec);
+                printf("\n}\n");
             } else {
                 printf("Kombiniertes Profil erfolgreich angewendet!\n");
             }
@@ -1666,9 +1898,13 @@ int main(int argc, char **argv) {
         uint8_t rgb[CIY_PLANAR_RGB_SIZE];
         ciy_build_all_red_profile(rgb);
         const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
-        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+        if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+            rc = 1;
+        } else if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
-                printf("{\n  \"success\": true,\n  \"action\": \"all-red\",\n  \"name\": \"Alles Rot\",\n  \"brightness\": %u\n}\n", br);
+                printf("{\n  \"success\": true,\n  \"action\": \"all-red\",\n  \"name\": \"Alles Rot\",\n  \"brightness\": %u", br);
+                print_key_brightness_json_field(&kb_spec);
+                printf("\n}\n");
             } else {
                 printf("Profil 'Alles Rot' erfolgreich angewendet!\n");
             }
@@ -2044,14 +2280,18 @@ int main(int argc, char **argv) {
         uint8_t rgb[CIY_PLANAR_RGB_SIZE];
         ciy_gradient_generate_planar(rgb, r1, g1, b1, r2, g2, b2, dir);
         const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
-        if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+        if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+            rc = 1;
+        } else if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
             if (json_mode) {
                 printf("{\n  \"success\": true,\n  \"action\": \"gradient\",\n  \"color_start\": \"");
                 print_escaped_json_string(stdout, col1_str);
                 printf("\",\n  \"color_end\": \"");
                 print_escaped_json_string(stdout, col2_str);
-                printf("\",\n  \"direction\": \"%s\",\n  \"brightness\": %u\n}\n",
+                printf("\",\n  \"direction\": \"%s\",\n  \"brightness\": %u",
                        dir == CIY_GRADIENT_VERTICAL ? "vertical" : "horizontal", br);
+                print_key_brightness_json_field(&kb_spec);
+                printf("\n}\n");
             } else {
                 printf("Farbverlauf (%s -> %s, %s, Helligkeit %u) erfolgreich auf Tastatur übertragen.\n",
                        col1_str, col2_str, dir == CIY_GRADIENT_VERTICAL ? "vertikal" : "horizontal", br);

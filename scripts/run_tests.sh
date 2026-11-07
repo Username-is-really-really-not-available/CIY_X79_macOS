@@ -73,6 +73,31 @@ clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}"
     -o "${TEST_TMP_DIR}/test_ciy_gradient"
 "${TEST_TMP_DIR}/test_ciy_gradient"
 
+echo "=== Test 0d: Per-Key Brightness Engine (ASan/UBSan, C11 & C++, CLI) ==="
+clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    src/layouts/ciy_x79_iso_de.c \
+    tests/test_ciy_brightness.c \
+    -o "${TEST_TMP_DIR}/test_ciy_brightness"
+
+clang++ -Wall -Wextra -Werror -std=c++17 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    -x c++ -c src/core/ciy_brightness.h -o /dev/null
+
+if grep -nE '#include *[<"](IOKit|Cocoa|CoreFoundation|Foundation|AppKit)' src/core/ciy_brightness.h; then
+    echo "FEHLER: ciy_brightness.h enthält OS-Framework-Includes!" >&2
+    exit 1
+fi
+
+clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    -framework IOKit \
+    -framework CoreFoundation \
+    "${HOOK_FLAGS[@]}" \
+    src/core/ciy_hid.c \
+    src/layouts/ciy_x79_iso_de.c \
+    src/cli/ciy_ctl.c \
+    -o "${TEST_TMP_DIR}/ciy_ctl_brightness_test"
+
+"${TEST_TMP_DIR}/test_ciy_brightness" "${TEST_TMP_DIR}/ciy_ctl_brightness_test"
+
 echo "=== Test 1: HID & Protokoll Tests (macOS IOKit, ASan/UBSan) ==="
 clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -framework IOKit \
