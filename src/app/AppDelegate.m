@@ -191,6 +191,53 @@ static NSString *SanitizeAppMetadata(id raw) {
     return trimmed.length > 0 ? trimmed : nil;
 }
 
+@interface CIYMainWindow : NSWindow <NSMenuItemValidation>
+@property (nonatomic, weak, nullable) CIYKeyboardView *keyboardView;
+@end
+
+@implementation CIYMainWindow
+
+- (nullable NSTextView *)activeFieldEditor {
+    id responder = self.firstResponder;
+    return [responder isKindOfClass:[NSTextView class]] ? (NSTextView *)responder : nil;
+}
+
+- (void)undo:(id)sender {
+    NSTextView *editor = [self activeFieldEditor];
+    if (editor) {
+        [editor.undoManager undo];
+        return;
+    }
+    if (self.keyboardView.canUndo) {
+        [self.keyboardView undo:sender];
+    }
+}
+
+- (void)redo:(id)sender {
+    NSTextView *editor = [self activeFieldEditor];
+    if (editor) {
+        [editor.undoManager redo];
+        return;
+    }
+    if (self.keyboardView.canRedo) {
+        [self.keyboardView redo:sender];
+    }
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    NSTextView *editor = [self activeFieldEditor];
+    if (editor) {
+        if (menuItem.action == @selector(undo:)) return editor.undoManager.canUndo;
+        if (menuItem.action == @selector(redo:)) return editor.undoManager.canRedo;
+        return YES;
+    }
+    if (menuItem.action == @selector(undo:)) return self.keyboardView.canUndo;
+    if (menuItem.action == @selector(redo:)) return self.keyboardView.canRedo;
+    return YES;
+}
+
+@end
+
 @implementation AppDelegate
 
 /// Gemeinsame Farbpalette für Tastenbuttons (Reihenfolge = Button-Tag).
@@ -219,7 +266,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     // Hauptfenster einrichten
     NSRect frame = NSMakeRect(100, 100, 940, 660);
-    self.window = [[NSWindow alloc] initWithContentRect:frame
+    self.window = [[CIYMainWindow alloc] initWithContentRect:frame
                                               styleMask:(NSWindowStyleMaskTitled |
                                                          NSWindowStyleMaskClosable |
                                                          NSWindowStyleMaskMiniaturizable |
@@ -238,6 +285,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     content.layer.backgroundColor = [NSColor colorWithCalibratedWhite:0.11 alpha:1.0].CGColor;
 
     [self buildUI:content];
+    ((CIYMainWindow *)self.window).keyboardView = _keyboardView;
     [self loadProfiles];
 
     // Status Item in macOS-Menüleiste einrichten
@@ -680,9 +728,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     [self refreshProfilesPopUp];
     if (selIdx < _profiles.count) {
-        [_profilesPopUp selectItemAtIndex:(NSInteger)selIdx];
+        [_profilesPopUp selectItemAtIndex:selIdx];
         _currentActiveProfileId = _profiles[selIdx][@"id"];
         [self loadProfileIntoView:_profiles[selIdx]];
+        [_keyboardView clearUndoHistory];
     }
 
     _autoTriggerEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:kAutoTriggerEnabledKey];
@@ -1046,11 +1095,22 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     return CIYL(@"Profile");
 }
 
+- (BOOL)canvasMatchesSavedProfile {
+    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    if (idx < 0 || (NSUInteger)idx >= _profiles.count) return NO;
+    NSDictionary *prof = _profiles[(NSUInteger)idx];
+    return [_keyboardView matchesProfileSlots:prof[@"slots"]];
+}
+
 - (void)loadProfileIntoView:(NSDictionary *)prof {
     NSDictionary<NSString *, NSString *> *slots = prof[@"slots"];
     if (!slots || ![slots isKindOfClass:[NSDictionary class]]) return;
 
-    NSMutableDictionary<NSNumber *, NSColor *> *keyColors = [NSMutableDictionary dictionaryWithCapacity:slots.count];
+    NSColor *offColor = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0];
+    NSMutableDictionary<NSNumber *, NSColor *> *keyColors = [NSMutableDictionary dictionaryWithCapacity:CIY_LED_COUNT];
+    for (int i = 0; i < CIY_LED_COUNT; i++) {
+        keyColors[@(i)] = offColor;
+    }
     for (NSString *slotStr in slots) {
         NSScanner *scanner = [NSScanner scannerWithString:slotStr];
         int slot = -1;
@@ -1078,6 +1138,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self saveProfilesToDefaults];
 
     [self loadProfileIntoView:prof];
+    [_keyboardView clearUndoHistory];
     [self setHasUnsavedEdits:NO];
     [self updateButtonsState];
 
@@ -1115,6 +1176,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     prof[@"slots"] = slotHex;
 
     [self saveProfilesToDefaults];
+    [_keyboardView clearUndoHistory];
     [self setHasUnsavedEdits:NO];
     [self updateButtonsState];
 
@@ -1176,6 +1238,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self refreshProfilesPopUp];
 
             [self->_profilesPopUp selectItemAtIndex:(NSInteger)(self->_profiles.count - 1)];
+            [self->_keyboardView clearUndoHistory];
             [self setHasUnsavedEdits:NO];
             [self updateButtonsState];
 
@@ -1260,6 +1323,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self refreshProfilesPopUp];
             [self->_profilesPopUp selectItemAtIndex:(NSInteger)nextIdx];
             [self loadProfileIntoView:self->_profiles[nextIdx]];
+            [self->_keyboardView clearUndoHistory];
 
             [self setHasUnsavedEdits:NO];
             [self updateButtonsState];
@@ -1297,13 +1361,24 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     NSColor *color = sender.representedObject;
     if (!color) return;
 
-    [_keyboardView resetAllKeysToColor:color];
-    [self setHasUnsavedEdits:YES];
+    BOOL changed = [_keyboardView resetAllKeysToColor:color];
+    if (_currentSelectedSlot >= 0 && _colorWell) {
+        _colorWell.color = color;
+    }
+    if (!changed) return;
+
+    BOOL matches = [self canvasMatchesSavedProfile];
+    [self setHasUnsavedEdits:!matches];
     [self updateButtonsState];
 
     NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● All keys colored (profile “%@” unsaved)"), profName];
-    _statusLabel.textColor = [NSColor systemOrangeColor];
+    if (matches) {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● No unsaved changes (profile “%@”)"), profName];
+        _statusLabel.textColor = [NSColor systemCyanColor];
+    } else {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● All keys colored (profile “%@” unsaved)"), profName];
+        _statusLabel.textColor = [NSColor systemOrangeColor];
+    }
     // WICHTIG: Kein USB-Senden bei Zwischenschritten im Editor
 }
 
@@ -1318,20 +1393,64 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     }
 }
 
+- (void)keyboardViewDidUndo:(CIYKeyboardView *)view {
+    (void)view;
+    if (_currentSelectedSlot >= 0 && _colorWell) {
+        NSColor *c = [_keyboardView allKeyColors][@(_currentSelectedSlot)];
+        if (c) {
+            _colorWell.color = c;
+        }
+    }
+
+    BOOL matches = [self canvasMatchesSavedProfile];
+    [self setHasUnsavedEdits:!matches];
+    [self updateButtonsState];
+
+    NSString *profName = [self currentProfileName];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Undo (profile “%@”)"), profName];
+    _statusLabel.textColor = matches ? [NSColor systemCyanColor] : [NSColor systemOrangeColor];
+}
+
+- (void)keyboardViewDidRedo:(CIYKeyboardView *)view {
+    (void)view;
+    if (_currentSelectedSlot >= 0 && _colorWell) {
+        NSColor *c = [_keyboardView allKeyColors][@(_currentSelectedSlot)];
+        if (c) {
+            _colorWell.color = c;
+        }
+    }
+
+    BOOL matches = [self canvasMatchesSavedProfile];
+    [self setHasUnsavedEdits:!matches];
+    [self updateButtonsState];
+
+    NSString *profName = [self currentProfileName];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Redo (profile “%@”)"), profName];
+    _statusLabel.textColor = matches ? [NSColor systemCyanColor] : [NSColor systemOrangeColor];
+}
+
 - (void)onKeyColorChosen:(NSButton *)sender {
     if (_currentSelectedSlot < 0) return;
 
     NSArray<NSDictionary *> *colors = KeyPalette();
     if (sender.tag >= 0 && (NSUInteger)sender.tag < colors.count) {
         NSColor *c = colors[(NSUInteger)sender.tag][@"c"];
-        [_keyboardView setColor:c forSlot:_currentSelectedSlot];
+        BOOL changed = [_keyboardView setColor:c forSlot:_currentSelectedSlot];
         if (_colorWell) _colorWell.color = c;
-        [self setHasUnsavedEdits:YES];
+        if (!changed) return;
+
+        BOOL matches = [self canvasMatchesSavedProfile];
+        [self setHasUnsavedEdits:!matches];
         [self updateButtonsState];
 
         NSString *profName = [self currentProfileName];
-        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Key edited (profile “%@” unsaved)"), profName];
-        _statusLabel.textColor = [NSColor systemOrangeColor];
+        if (matches) {
+            _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● No unsaved changes (profile “%@”)"), profName];
+            _statusLabel.textColor = [NSColor systemCyanColor];
+        } else {
+            _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Key edited (profile “%@” unsaved)"), profName];
+            _statusLabel.textColor = [NSColor systemOrangeColor];
+        }
         // WICHTIG: Kein USB-Senden bei Zwischenschritten im Editor!
     }
 }
@@ -1339,13 +1458,21 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)onColorWellChanged:(NSColorWell *)sender {
     if (_currentSelectedSlot < 0) return;
     NSColor *chosen = sender.color;
-    [_keyboardView setColor:chosen forSlot:_currentSelectedSlot];
-    [self setHasUnsavedEdits:YES];
+    BOOL changed = [_keyboardView setColor:chosen forSlot:_currentSelectedSlot continuous:YES];
+    if (!changed) return;
+
+    BOOL matches = [self canvasMatchesSavedProfile];
+    [self setHasUnsavedEdits:!matches];
     [self updateButtonsState];
 
     NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Custom color selected (profile “%@” unsaved)"), profName];
-    _statusLabel.textColor = [NSColor systemOrangeColor];
+    if (matches) {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● No unsaved changes (profile “%@”)"), profName];
+        _statusLabel.textColor = [NSColor systemCyanColor];
+    } else {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Custom color selected (profile “%@” unsaved)"), profName];
+        _statusLabel.textColor = [NSColor systemOrangeColor];
+    }
 }
 
 - (void)onBrightnessChanged:(NSSlider *)sender {
@@ -1360,13 +1487,25 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     NSArray<NSNumber *> *slots = SlotsForZone(sender.tag);
     if (slots.count == 0) return;
     NSColor *color = _colorWell.color;
-    [_keyboardView applyColor:color toSlots:slots];
-    [self setHasUnsavedEdits:YES];
+    BOOL changed = [_keyboardView applyColor:color toSlots:slots];
+    if (_currentSelectedSlot >= 0 && _colorWell) {
+        NSColor *c = [_keyboardView allKeyColors][@(_currentSelectedSlot)];
+        if (c) _colorWell.color = c;
+    }
+    if (!changed) return;
+
+    BOOL matches = [self canvasMatchesSavedProfile];
+    [self setHasUnsavedEdits:!matches];
     [self updateButtonsState];
 
     NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Zone “%@” colored (profile “%@” unsaved)"), sender.title, profName];
-    _statusLabel.textColor = [NSColor systemOrangeColor];
+    if (matches) {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● No unsaved changes (profile “%@”)"), profName];
+        _statusLabel.textColor = [NSColor systemCyanColor];
+    } else {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Zone “%@” colored (profile “%@” unsaved)"), sender.title, profName];
+        _statusLabel.textColor = [NSColor systemOrangeColor];
+    }
 }
 
 - (void)onOpenGradientSheet:(id)sender {
@@ -1404,7 +1543,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [_gradDirPopUp addItemWithTitle:CIYL(@"Vertical (top → bottom)")];
     [content addSubview:_gradDirPopUp];
 
-    NSButton *applyBtn = [NSButton buttonWithTitle:CIYL(@"Apply to keyboard") target:self action:@selector(onApplyGradient:)];
+    NSButton *applyBtn = [NSButton buttonWithTitle:CIYL(@"Apply to editor") target:self action:@selector(onApplyGradient:)];
     applyBtn.frame = NSMakeRect(190, 20, 166, 32);
     applyBtn.bezelStyle = NSBezelStyleRounded;
     applyBtn.keyEquivalent = @"\r";
@@ -1456,10 +1595,25 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         }
     }
 
-    [_keyboardView applyKeyColors:newColors];
-    [self setHasUnsavedEdits:YES];
-    [self updateButtonsState];
-    [self sendCurrentProfileToHardware];
+    BOOL changed = [_keyboardView applyKeyColors:newColors registerUndo:YES];
+    if (_currentSelectedSlot >= 0 && _colorWell) {
+        NSColor *c = [_keyboardView allKeyColors][@(_currentSelectedSlot)];
+        if (c) _colorWell.color = c;
+    }
+    if (changed) {
+        BOOL matches = [self canvasMatchesSavedProfile];
+        [self setHasUnsavedEdits:!matches];
+        [self updateButtonsState];
+
+        NSString *profName = [self currentProfileName];
+        if (matches) {
+            _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● No unsaved changes (profile “%@”)"), profName];
+            _statusLabel.textColor = [NSColor systemCyanColor];
+        } else {
+            _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Gradient applied (profile “%@” unsaved)"), profName];
+            _statusLabel.textColor = [NSColor systemOrangeColor];
+        }
+    }
 
     if (_gradientSheet) {
         [self.window endSheet:_gradientSheet];
@@ -1926,6 +2080,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [self refreshProfilesPopUp];
                 [self->_profilesPopUp selectItemAtIndex:(NSInteger)(self->_profiles.count - 1)];
                 [self loadProfileIntoView:self->_profiles.lastObject];
+                [self->_keyboardView clearUndoHistory];
                 [self setHasUnsavedEdits:NO];
                 [self updateButtonsState];
                 [self sendCurrentProfileToHardware];
@@ -1969,6 +2124,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self refreshProfilesPopUp];
             [self->_profilesPopUp selectItemAtIndex:0];
             [self loadProfileIntoView:self->_profiles.firstObject];
+            [self->_keyboardView clearUndoHistory];
             [self setHasUnsavedEdits:NO];
             [self updateButtonsState];
             [self sendCurrentProfileToHardware];
@@ -2054,6 +2210,16 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // 3. Bearbeiten (Edit)
     NSMenuItem *editMenuItem = [[NSMenuItem alloc] init];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:CIYL(@"Edit")];
+
+    NSMenuItem *undoItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Undo") action:@selector(undo:) keyEquivalent:@"z"];
+    undoItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    [editMenu addItem:undoItem];
+
+    NSMenuItem *redoItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Redo") action:@selector(redo:) keyEquivalent:@"z"];
+    redoItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [editMenu addItem:redoItem];
+
+    [editMenu addItem:[NSMenuItem separatorItem]];
     [editMenu addItemWithTitle:CIYL(@"Fill all keys...") action:@selector(onFillAllKeys:) keyEquivalent:@""];
     editMenuItem.submenu = editMenu;
     [mainMenu addItem:editMenuItem];

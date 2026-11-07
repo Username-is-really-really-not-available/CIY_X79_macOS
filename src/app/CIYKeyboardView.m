@@ -1,11 +1,65 @@
 #import "CIYKeyboardView.h"
+#import "../core/ciy_hid.h"
 #import "../layouts/ciy_layout.h"
+
+@interface CIYColorAction : NSObject
+@property (nonatomic, copy) NSDictionary<NSNumber *, NSColor *> *previousColors;
+@property (nonatomic, copy) NSDictionary<NSNumber *, NSColor *> *newColors;
+@property (nonatomic, assign) CFAbsoluteTime timestamp;
+@property (nonatomic, assign) BOOL isContinuous;
+- (NSDictionary<NSNumber *, NSColor *> *)newColors __attribute__((objc_method_family(none)));
+@end
+
+@implementation CIYColorAction
+@end
+
+static const NSUInteger kMaxUndoSteps = 50;
+
+static int CIYColorChannel8(CGFloat value) {
+    int channel = (int)(value * 255.0 + 0.5);
+    if (channel < 0) return 0;
+    if (channel > 255) return 255;
+    return channel;
+}
+
+static BOOL CIYColorEqualsRGB(NSColor *a, NSColor *b) {
+    if (a == b) return YES;
+    if (!a || !b) return NO;
+
+    NSColor *srgbA = [a colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    NSColor *srgbB = [b colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!srgbA || !srgbB) return NO;
+
+    CGFloat ar = 0, ag = 0, ab = 0, aa = 0;
+    CGFloat br = 0, bg = 0, bb = 0, ba = 0;
+    [srgbA getRed:&ar green:&ag blue:&ab alpha:&aa];
+    [srgbB getRed:&br green:&bg blue:&bb alpha:&ba];
+
+    return CIYColorChannel8(ar) == CIYColorChannel8(br) &&
+           CIYColorChannel8(ag) == CIYColorChannel8(bg) &&
+           CIYColorChannel8(ab) == CIYColorChannel8(bb);
+}
+
+static BOOL CIYColorDictionariesEqual(NSDictionary<NSNumber *, NSColor *> *a,
+                                      NSDictionary<NSNumber *, NSColor *> *b) {
+    if (a == b) return YES;
+    if (!a || !b || a.count != b.count) return NO;
+
+    for (NSNumber *key in a) {
+        NSColor *colorB = b[key];
+        if (!colorB || !CIYColorEqualsRGB(a[key], colorB)) return NO;
+    }
+    return YES;
+}
 
 @interface CIYKeyboardView () {
     NSMutableDictionary<NSNumber *, NSColor *> *_keyColors;
     NSMutableDictionary<NSNumber *, NSColor *> *_overlayColors;
+    NSMutableArray<CIYColorAction *> *_undoStack;
+    NSMutableArray<CIYColorAction *> *_redoStack;
     NSTrackingArea *_trackingArea;
     int _hoveredSlot;
+    BOOL _coalescingSuspended;
 }
 @end
 
@@ -16,9 +70,12 @@
     if (self) {
         _keyColors = [NSMutableDictionary dictionary];
         _overlayColors = [NSMutableDictionary dictionary];
+        _undoStack = [NSMutableArray array];
+        _redoStack = [NSMutableArray array];
         _selectedSlot = -1;
         _hoveredSlot = -1;
         [self resetAllKeysToColor:[NSColor colorWithCalibratedRed:0.85 green:0.1 blue:0.1 alpha:1.0]]; // Red default
+        [self clearUndoHistory]; // Initialzustand nicht als Undo-Aktion werten
     }
     return self;
 }
@@ -68,27 +125,90 @@
     }
 }
 
-- (void)resetAllKeysToColor:(NSColor *)color {
-    [_keyColors removeAllObjects];
-    for (int i = 0; i < 126; i++) {
-        _keyColors[@(i)] = color;
+- (BOOL)resetAllKeysToColor:(NSColor *)color {
+    if (!color) return NO;
+
+    NSMutableDictionary<NSNumber *, NSColor *> *newColors = [NSMutableDictionary dictionaryWithCapacity:CIY_LED_COUNT];
+    for (int i = 0; i < CIY_LED_COUNT; i++) {
+        newColors[@(i)] = color;
     }
+
+    BOOL anyChanged = (_keyColors.count != newColors.count);
+    if (!anyChanged) {
+        for (int i = 0; i < CIY_LED_COUNT - 1; i++) {
+            NSColor *prev = _keyColors[@(i)];
+            if (!prev || !CIYColorEqualsRGB(prev, color)) {
+                anyChanged = YES;
+                break;
+            }
+        }
+    }
+    if (!anyChanged) return NO;
+
+    if (_keyColors.count > 0) {
+        [self recordColorChangeFrom:[_keyColors copy] to:newColors continuous:NO];
+    }
+    [_keyColors removeAllObjects];
+    [_keyColors addEntriesFromDictionary:newColors];
     [self setNeedsDisplay:YES];
+    return YES;
 }
 
 - (NSDictionary<NSNumber *, NSColor *> *)allKeyColors {
     return [_keyColors copy];
 }
 
-- (void)applyKeyColors:(NSDictionary<NSNumber *, NSColor *> *)colors {
-    if (!colors) return;
-    [_keyColors setDictionary:colors];
-    [self setNeedsDisplay:YES];
+- (BOOL)applyKeyColors:(NSDictionary<NSNumber *, NSColor *> *)colors {
+    return [self applyKeyColors:colors registerUndo:NO];
 }
 
-- (void)setColor:(NSColor *)color forSlot:(int)slot {
+- (BOOL)applyKeyColors:(NSDictionary<NSNumber *, NSColor *> *)colors registerUndo:(BOOL)registerUndo {
+    if (!colors || colors.count == 0) return NO;
+
+    NSMutableDictionary<NSNumber *, NSColor *> *oldColors = [NSMutableDictionary dictionaryWithCapacity:colors.count];
+    BOOL anyChanged = NO;
+    for (NSNumber *slotNum in colors) {
+        NSColor *prev = _keyColors[slotNum];
+        NSColor *next = colors[slotNum];
+        if (!prev) {
+            anyChanged = YES;
+            prev = [NSColor colorWithCalibratedRed:0.2 green:0.2 blue:0.2 alpha:1.0];
+        } else if (!CIYColorEqualsRGB(prev, next)) {
+            anyChanged = YES;
+        }
+        if (registerUndo) {
+            oldColors[slotNum] = prev;
+        }
+    }
+    if (registerUndo && anyChanged) {
+        [self recordColorChangeFrom:oldColors to:colors continuous:NO];
+    }
+    [_keyColors addEntriesFromDictionary:colors];
+    [self setNeedsDisplay:YES];
+    return anyChanged;
+}
+
+- (BOOL)setColor:(NSColor *)color forSlot:(int)slot {
+    return [self setColor:color forSlot:slot continuous:NO];
+}
+
+- (BOOL)setColor:(NSColor *)color forSlot:(int)slot continuous:(BOOL)continuous {
+    if (slot < 0 || !color) return NO;
+
+    NSColor *prev = _keyColors[@(slot)];
+    if (prev && CIYColorEqualsRGB(prev, color)) {
+        return NO;
+    }
+    if (!prev) {
+        prev = [NSColor colorWithCalibratedRed:0.2 green:0.2 blue:0.2 alpha:1.0];
+    }
+
+    [self recordColorChangeFrom:@{@(slot): prev}
+                             to:@{@(slot): color}
+                     continuous:continuous];
     _keyColors[@(slot)] = color;
     [self invalidateSlot:slot];
+    return YES;
 }
 
 - (void)setOverlayColors:(nullable NSDictionary<NSNumber *, NSColor *> *)overlayColors {
@@ -111,13 +231,29 @@
     return _overlayColors.count > 0 ? [_overlayColors copy] : nil;
 }
 
-- (void)applyColor:(NSColor *)color toSlots:(NSArray<NSNumber *> *)slots {
-    if (!color || !slots) return;
+- (BOOL)applyColor:(NSColor *)color toSlots:(NSArray<NSNumber *> *)slots {
+    if (!color || !slots || slots.count == 0) return NO;
+    NSMutableDictionary<NSNumber *, NSColor *> *oldColors = [NSMutableDictionary dictionaryWithCapacity:slots.count];
+    NSMutableDictionary<NSNumber *, NSColor *> *newColors = [NSMutableDictionary dictionaryWithCapacity:slots.count];
+    BOOL anyChanged = NO;
     for (NSNumber *slotNum in slots) {
         int slot = [slotNum intValue];
+        NSColor *prev = _keyColors[@(slot)];
+        if (!prev) {
+            anyChanged = YES;
+            prev = [NSColor colorWithCalibratedRed:0.2 green:0.2 blue:0.2 alpha:1.0];
+        } else if (!CIYColorEqualsRGB(prev, color)) {
+            anyChanged = YES;
+        }
+        oldColors[@(slot)] = prev;
+        newColors[@(slot)] = color;
         _keyColors[@(slot)] = color;
         [self invalidateSlot:slot];
     }
+    if (anyChanged) {
+        [self recordColorChangeFrom:oldColors to:newColors continuous:NO];
+    }
+    return anyChanged;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -415,6 +551,170 @@
         return [NSString stringWithUTF8String:key->name];
     }
     return [NSString stringWithFormat:@"Slot %d", slot];
+}
+
+- (BOOL)matchesProfileSlots:(NSDictionary *)savedSlots {
+    if (![savedSlots isKindOfClass:[NSDictionary class]] || savedSlots.count == 0) {
+        return NO;
+    }
+
+    uint8_t expectedR[CIY_LED_COUNT - 1] = {0};
+    uint8_t expectedG[CIY_LED_COUNT - 1] = {0};
+    uint8_t expectedB[CIY_LED_COUNT - 1] = {0};
+    NSUInteger validSlotCount = 0;
+
+    for (id slotKey in savedSlots) {
+        if (![slotKey isKindOfClass:[NSString class]]) return NO;
+
+        NSScanner *scanner = [NSScanner scannerWithString:(NSString *)slotKey];
+        int slot = -1;
+        if (![scanner scanInt:&slot] || !scanner.isAtEnd) return NO;
+        if (slot < 0 || slot >= CIY_LED_COUNT - 1) continue;
+
+        id rawHex = savedSlots[(NSString *)slotKey];
+        if (![rawHex isKindOfClass:[NSString class]]) return NO;
+
+        uint8_t r = 0, g = 0, b = 0;
+        if (!ciy_parse_hex_color([(NSString *)rawHex UTF8String], &r, &g, &b)) {
+            return NO;
+        }
+        expectedR[slot] = r;
+        expectedG[slot] = g;
+        expectedB[slot] = b;
+        validSlotCount++;
+    }
+
+    if (validSlotCount == 0) return NO;
+
+    for (int slot = 0; slot < CIY_LED_COUNT - 1; slot++) {
+        NSColor *current = _keyColors[@(slot)];
+        if (!current) return NO;
+        NSColor *srgb = [current colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+        if (!srgb) return NO;
+
+        CGFloat r = 0, g = 0, b = 0, a = 0;
+        [srgb getRed:&r green:&g blue:&b alpha:&a];
+        if (CIYColorChannel8(r) != expectedR[slot] ||
+            CIYColorChannel8(g) != expectedG[slot] ||
+            CIYColorChannel8(b) != expectedB[slot]) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+#pragma mark - Undo / Redo
+
+- (void)recordColorChangeFrom:(NSDictionary<NSNumber *, NSColor *> *)oldColors
+                           to:(NSDictionary<NSNumber *, NSColor *> *)newColors
+                   continuous:(BOOL)continuous {
+    if (!oldColors || !newColors || oldColors.count == 0 || newColors.count == 0) {
+        return;
+    }
+    if (CIYColorDictionariesEqual(oldColors, newColors)) {
+        return;
+    }
+
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+    if (continuous && !_coalescingSuspended && _redoStack.count == 0 && _undoStack.count > 0) {
+        CIYColorAction *lastAction = _undoStack.lastObject;
+        if (lastAction.isContinuous &&
+            (now - lastAction.timestamp) < 0.8 &&
+            [[NSSet setWithArray:lastAction.newColors.allKeys] isEqualToSet:[NSSet setWithArray:newColors.allKeys]]) {
+            // Coalescing: previousColors bleibt unverändert, newColors wird aktualisiert.
+            lastAction.newColors = [newColors copy];
+            lastAction.timestamp = now;
+            // Eine Serie, die exakt zur Ausgangsfarbe zurückkehrt, darf keine
+            // wirkungslose Undo-Aktion hinterlassen.
+            if (CIYColorDictionariesEqual(lastAction.previousColors, lastAction.newColors)) {
+                [_undoStack removeLastObject];
+                _coalescingSuspended = YES;
+            }
+            return;
+        }
+    }
+
+    CIYColorAction *action = [[CIYColorAction alloc] init];
+    action.previousColors = [oldColors copy];
+    action.newColors = [newColors copy];
+    action.timestamp = now;
+    action.isContinuous = continuous;
+
+    [_undoStack addObject:action];
+    if (_undoStack.count > kMaxUndoSteps) {
+        [_undoStack removeObjectAtIndex:0];
+    }
+    [_redoStack removeAllObjects];
+    _coalescingSuspended = NO;
+}
+
+- (IBAction)undo:(nullable id)sender {
+    (void)sender;
+    if (![self canUndo]) return;
+    CIYColorAction *action = _undoStack.lastObject;
+    [_undoStack removeLastObject];
+
+    for (NSNumber *slotNum in action.previousColors) {
+        _keyColors[slotNum] = action.previousColors[slotNum];
+        [self invalidateSlot:slotNum.intValue];
+    }
+    [_redoStack addObject:action];
+    _coalescingSuspended = YES;
+
+    if ([self.delegate respondsToSelector:@selector(keyboardViewDidUndo:)]) {
+        [self.delegate keyboardViewDidUndo:self];
+    }
+}
+
+- (IBAction)redo:(nullable id)sender {
+    (void)sender;
+    if (![self canRedo]) return;
+    CIYColorAction *action = _redoStack.lastObject;
+    [_redoStack removeLastObject];
+
+    for (NSNumber *slotNum in action.newColors) {
+        _keyColors[slotNum] = action.newColors[slotNum];
+        [self invalidateSlot:slotNum.intValue];
+    }
+    [_undoStack addObject:action];
+    _coalescingSuspended = YES;
+
+    if ([self.delegate respondsToSelector:@selector(keyboardViewDidRedo:)]) {
+        [self.delegate keyboardViewDidRedo:self];
+    }
+}
+
+- (BOOL)canUndo {
+    return _undoStack.count > 0;
+}
+
+- (BOOL)canRedo {
+    return _redoStack.count > 0;
+}
+
+- (void)clearUndoHistory {
+    [_undoStack removeAllObjects];
+    [_redoStack removeAllObjects];
+    _coalescingSuspended = NO;
+}
+
+- (NSUInteger)undoCount {
+    return _undoStack.count;
+}
+
+- (NSUInteger)redoCount {
+    return _redoStack.count;
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(undo:)) {
+        return [self canUndo];
+    }
+    if (menuItem.action == @selector(redo:)) {
+        return [self canRedo];
+    }
+    return YES;
 }
 
 @end

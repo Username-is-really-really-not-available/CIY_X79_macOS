@@ -633,6 +633,428 @@ static void test_keyboard_backend_monitoring_lifecycle(void) {
     [backend stopMonitoring];
 }
 
+@interface CIYTestKeyboardDelegate : NSObject <CIYKeyboardViewDelegate>
+@property (nonatomic, assign) int undoCalls;
+@property (nonatomic, assign) int redoCalls;
+@end
+
+@implementation CIYTestKeyboardDelegate
+- (void)keyboardViewDidUndo:(CIYKeyboardView *)view {
+    (void)view;
+    self.undoCalls++;
+}
+- (void)keyboardViewDidRedo:(CIYKeyboardView *)view {
+    (void)view;
+    self.redoCalls++;
+}
+@end
+
+static void test_undo_redo_single_key(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    assert(![view canUndo]);
+    assert(![view canRedo]);
+    assert(view.undoCount == 0);
+    assert(view.redoCount == 0);
+
+    NSString *initialHex = HexFromColor([view allKeyColors][@14]);
+
+    // 1. Taste W (Slot 14) auf Blau setzen
+    NSColor *blue = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+    [view setColor:blue forSlot:14];
+    assert([view canUndo]);
+    assert(![view canRedo]);
+    assert(view.undoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+
+    // 2. Taste W auf Grün setzen
+    NSColor *green = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+    [view setColor:green forSlot:14];
+    assert(view.undoCount == 2);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#00FF00"]);
+
+    // 3. Undo -> zurück zu Blau
+    [view undo:nil];
+    assert(view.undoCount == 1);
+    assert(view.redoCount == 1);
+    assert([view canRedo]);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+
+    // 4. Undo -> zurück zum Initialwert
+    [view undo:nil];
+    assert(view.undoCount == 0);
+    assert(view.redoCount == 2);
+    assert(![view canUndo]);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:initialHex]);
+
+    // No-op Undo wenn leer
+    [view undo:nil];
+    assert(view.undoCount == 0);
+    assert(view.redoCount == 2);
+
+    // 5. Redo -> wieder Blau
+    [view redo:nil];
+    assert(view.undoCount == 1);
+    assert(view.redoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+
+    // 6. Redo -> wieder Grün
+    [view redo:nil];
+    assert(view.undoCount == 2);
+    assert(view.redoCount == 0);
+    assert(![view canRedo]);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#00FF00"]);
+
+    // 7. Neuer Edit nach Undo leert Redo-Stack
+    [view undo:nil]; // zurück zu Blau
+    assert([view canRedo]);
+    NSColor *yellow = [NSColor colorWithSRGBRed:1.0 green:1.0 blue:0.0 alpha:1.0];
+    [view setColor:yellow forSlot:15]; // Taste S ändern
+    assert(![view canRedo]);
+    assert(view.redoCount == 0);
+    assert(view.undoCount == 2);
+}
+
+static void test_undo_redo_fifo_limit(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    assert(view.undoCount == 0);
+
+    // 60 Farbschritte durchführen (Limit ist 50)
+    for (int i = 0; i < 60; i++) {
+        CGFloat r = ((i + 1) % 256) / 255.0;
+        NSColor *c = [NSColor colorWithSRGBRed:r green:0.2 blue:0.2 alpha:1.0];
+        [view setColor:c forSlot:14];
+    }
+
+    assert(view.undoCount == 50);
+
+    // Alle 50 Schritte rückgängig machen
+    for (int i = 0; i < 50; i++) {
+        assert([view canUndo]);
+        [view undo:nil];
+    }
+
+    assert(![view canUndo]);
+    assert(view.undoCount == 0);
+    assert(view.redoCount == 50);
+}
+
+static void test_undo_redo_clear_history(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    [view setColor:[NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0] forSlot:14];
+    [view setColor:[NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0] forSlot:15];
+    assert(view.undoCount == 2);
+
+    [view clearUndoHistory];
+    assert(view.undoCount == 0);
+    assert(view.redoCount == 0);
+    assert(![view canUndo]);
+    assert(![view canRedo]);
+}
+
+static void test_undo_redo_bulk_actions(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSColor *initRed = [NSColor colorWithSRGBRed:0.85 green:0.1 blue:0.1 alpha:1.0];
+    [view resetAllKeysToColor:initRed];
+    [view clearUndoHistory];
+
+    // 1. Fill all mit Cyan
+    NSColor *cyan = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:1.0 alpha:1.0];
+    [view resetAllKeysToColor:cyan];
+    assert(view.undoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#00FFFF"]);
+    assert([HexFromColor([view allKeyColors][@81]) isEqualToString:@"#00FFFF"]);
+
+    [view undo:nil];
+    assert(view.undoCount == 0);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:HexFromColor(initRed)]);
+    assert([HexFromColor([view allKeyColors][@81]) isEqualToString:HexFromColor(initRed)]);
+
+    [view redo:nil];
+    assert(view.undoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#00FFFF"]);
+
+    // 2. Zone färben (WASD)
+    NSColor *magenta = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:1.0 alpha:1.0];
+    [view applyColor:magenta toSlots:@[@14, @9, @15, @21]];
+    assert(view.undoCount == 2);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#FF00FF"]);
+    assert([HexFromColor([view allKeyColors][@9]) isEqualToString:@"#FF00FF"]);
+    assert([HexFromColor([view allKeyColors][@1]) isEqualToString:@"#00FFFF"]); // Esc bleibt Cyan
+
+    [view undo:nil];
+    assert(view.undoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#00FFFF"]);
+    assert([HexFromColor([view allKeyColors][@9]) isEqualToString:@"#00FFFF"]);
+
+    // 3. applyKeyColors mit registerUndo: YES (Gradient-Simulation)
+    NSDictionary *gradColors = @{
+        @1: [NSColor colorWithSRGBRed:0.1 green:0.2 blue:0.3 alpha:1.0],
+        @2: [NSColor colorWithSRGBRed:0.4 green:0.5 blue:0.6 alpha:1.0]
+    };
+    [view applyKeyColors:gradColors registerUndo:YES];
+    assert(view.undoCount == 2);
+    assert([view allKeyColors].count == 126);
+    assert([HexFromColor([view allKeyColors][@1]) isEqualToString:@"#1A334D"]);
+    assert([HexFromColor([view allKeyColors][@100]) isEqualToString:@"#00FFFF"]);
+
+    [view undo:nil];
+    assert([view allKeyColors].count == 126);
+    assert([HexFromColor([view allKeyColors][@1]) isEqualToString:@"#00FFFF"]);
+    assert([HexFromColor([view allKeyColors][@100]) isEqualToString:@"#00FFFF"]);
+}
+
+static void test_undo_partial_apply_merges(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSDictionary<NSNumber *, NSColor *> *before = [view allKeyColors];
+    assert(before.count == 126);
+
+    NSColor *green = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+    NSColor *yellow = [NSColor colorWithSRGBRed:1.0 green:1.0 blue:0.0 alpha:1.0];
+    [view applyKeyColors:@{@1: green, @2: yellow} registerUndo:YES];
+
+    assert(view.undoCount == 1);
+    assert([view allKeyColors].count == 126);
+    assert([HexFromColor([view allKeyColors][@1]) isEqualToString:@"#00FF00"]);
+    assert([HexFromColor([view allKeyColors][@2]) isEqualToString:@"#FFFF00"]);
+    assert([HexFromColor([view allKeyColors][@100]) isEqualToString:HexFromColor(before[@100])]);
+
+    [view undo:nil];
+    assert([view allKeyColors].count == 126);
+    assert([HexFromColor([view allKeyColors][@1]) isEqualToString:HexFromColor(before[@1])]);
+    assert([HexFromColor([view allKeyColors][@2]) isEqualToString:HexFromColor(before[@2])]);
+    assert([HexFromColor([view allKeyColors][@100]) isEqualToString:HexFromColor(before[@100])]);
+}
+
+static void test_undo_ignores_noop_edits(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSColor *blue = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+
+    [view setColor:blue forSlot:14];
+    assert(view.undoCount == 1);
+
+    [view setColor:blue forSlot:14];
+    assert(view.undoCount == 1);
+
+    NSColor *cyan = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:1.0 alpha:1.0];
+    [view resetAllKeysToColor:cyan];
+    assert(view.undoCount == 2);
+
+    [view resetAllKeysToColor:cyan];
+    assert(view.undoCount == 2);
+
+    [view applyColor:cyan toSlots:@[@1, @2]];
+    assert(view.undoCount == 2);
+
+    [view applyKeyColors:@{@1: cyan, @2: cyan} registerUndo:YES];
+    assert(view.undoCount == 2);
+}
+
+static void test_undo_redo_coalescing(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSString *initHex = HexFromColor([view allKeyColors][@14]);
+
+    // Simuliere schnelles Ziehen im Farbrad (< 0.8s Abstand)
+    NSColor *c1 = [NSColor colorWithSRGBRed:0.1 green:0.1 blue:0.1 alpha:1.0];
+    NSColor *c2 = [NSColor colorWithSRGBRed:0.3 green:0.3 blue:0.3 alpha:1.0];
+    NSColor *c3 = [NSColor colorWithSRGBRed:0.6 green:0.6 blue:0.6 alpha:1.0];
+    NSColor *c4 = [NSColor colorWithSRGBRed:0.9 green:0.9 blue:0.9 alpha:1.0];
+
+    [view setColor:c1 forSlot:14 continuous:YES];
+    assert(view.undoCount == 1);
+
+    [view setColor:c2 forSlot:14 continuous:YES];
+    assert(view.undoCount == 1); // Coalesced
+
+    [view setColor:c3 forSlot:14 continuous:YES];
+    assert(view.undoCount == 1); // Coalesced
+
+    [view setColor:c4 forSlot:14 continuous:YES];
+    assert(view.undoCount == 1); // Coalesced
+
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#E6E6E6"]);
+
+    // Ein einzelnes Undo muss sofort auf die Ausgangsfarbe vor der Serie zurückspringen
+    [view undo:nil];
+    assert(view.undoCount == 0);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:initHex]);
+
+    // Redo stellt den Endzustand der Serie (#E6E6E6) wieder her
+    [view redo:nil];
+    assert(view.undoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#E6E6E6"]);
+}
+
+static void test_undo_coalescing_after_undo_creates_new_step(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSString *initialHex = HexFromColor([view allKeyColors][@14]);
+
+    NSColor *blue = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+    NSColor *green = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+    NSColor *purple = [NSColor colorWithSRGBRed:0.5 green:0.0 blue:0.5 alpha:1.0];
+
+    // A: kontinuierliche Serie, B: diskreter Palette-Edit auf demselben Slot.
+    [view setColor:blue forSlot:14 continuous:YES];
+    assert(view.undoCount == 1);
+    [view setColor:green forSlot:14];
+    assert(view.undoCount == 2);
+
+    // B rückgängig: A liegt wieder oben, Blau ist der aktuelle Zustand.
+    [view undo:nil];
+    assert(view.undoCount == 1);
+    assert(view.redoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+
+    // Neuer kontinuierlicher Edit darf nicht mit der überholten Aktion A coalescen.
+    [view setColor:purple forSlot:14 continuous:YES];
+    assert(view.undoCount == 2);
+    assert(view.redoCount == 0);
+
+    // C rückgängig: zurück zu Blau (nicht direkt zur Initialfarbe).
+    [view undo:nil];
+    assert(view.undoCount == 1);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:@"#0000FF"]);
+
+    // A rückgängig: zurück zur Initialfarbe.
+    [view undo:nil];
+    assert(view.undoCount == 0);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:initialHex]);
+}
+
+static void test_undo_coalescing_noop_removes_action(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSColor *initial = [view allKeyColors][@14];
+    NSString *initialHex = HexFromColor(initial);
+    NSColor *blue = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+
+    [view setColor:blue forSlot:14 continuous:YES];
+    assert(view.undoCount == 1);
+
+    // Zurück zur Ausgangsfarbe: Die Serie hat netto nichts geändert.
+    [view setColor:initial forSlot:14 continuous:YES];
+    assert(view.undoCount == 0);
+    assert(view.redoCount == 0);
+    assert(![view canUndo]);
+    assert([HexFromColor([view allKeyColors][@14]) isEqualToString:initialHex]);
+}
+
+static void test_color_mutators_return_change_flag(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSColor *cyan = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:1.0 alpha:1.0];
+    NSColor *blue = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+    NSColor *green = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+
+    assert([view resetAllKeysToColor:cyan]);
+    assert(![view resetAllKeysToColor:cyan]);
+    assert(![view setColor:cyan forSlot:14]);
+    assert([view setColor:blue forSlot:14]);
+    assert(![view setColor:blue forSlot:14]);
+    BOOL zoneChanged = [view applyColor:blue toSlots:@[@14, @15]]; // Slot 15 wechselt cyan -> blau
+    assert(zoneChanged);
+    zoneChanged = [view applyColor:blue toSlots:@[@14, @15]];
+    assert(!zoneChanged);
+    assert([view applyKeyColors:@{@1: green} registerUndo:YES]);
+    assert(![view applyKeyColors:@{@1: green} registerUndo:YES]);
+    assert(![view applyKeyColors:@{} registerUndo:YES]);
+    assert(![view applyColor:blue toSlots:@[]]);
+}
+
+static void test_undo_redo_delegate_and_validation(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    CIYTestKeyboardDelegate *del = [[CIYTestKeyboardDelegate alloc] init];
+    view.delegate = del;
+
+    NSMenuItem *undoItem = [[NSMenuItem alloc] initWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+    NSMenuItem *redoItem = [[NSMenuItem alloc] initWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"z"];
+
+    assert(![view validateMenuItem:undoItem]);
+    assert(![view validateMenuItem:redoItem]);
+
+    [view setColor:[NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0] forSlot:14];
+    assert([view validateMenuItem:undoItem]);
+    assert(![view validateMenuItem:redoItem]);
+
+    [view undo:nil];
+    assert(del.undoCalls == 1);
+    assert(del.redoCalls == 0);
+    assert(![view validateMenuItem:undoItem]);
+    assert([view validateMenuItem:redoItem]);
+
+    [view redo:nil];
+    assert(del.undoCalls == 1);
+    assert(del.redoCalls == 1);
+    assert([view validateMenuItem:undoItem]);
+    assert(![view validateMenuItem:redoItem]);
+}
+
+static void test_matches_profile_slots_and_dirty_state(void) {
+    CIYKeyboardView *view = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSColor *off = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:0.0 alpha:1.0];
+    NSColor *red = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0];
+    NSColor *green = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+    NSColor *blue = [NSColor colorWithSRGBRed:0.0 green:0.0 blue:1.0 alpha:1.0];
+
+    // 1. Partielles savedSlots-Dictionary (wie in loadProfileIntoView geladen):
+    // Nur Slot 14 ist #FF0000, alle übrigen Slots 0..124 sind implizit #000000.
+    NSMutableDictionary<NSNumber *, NSColor *> *loadedColors = [NSMutableDictionary dictionaryWithCapacity:CIY_LED_COUNT];
+    for (int i = 0; i < CIY_LED_COUNT; i++) {
+        loadedColors[@(i)] = off;
+    }
+    loadedColors[@14] = red;
+    [view applyKeyColors:loadedColors];
+    [view clearUndoHistory];
+
+    NSDictionary *sparseSlots = @{@"14": @"#FF0000"};
+    assert([view matchesProfileSlots:sparseSlots]);
+
+    // Nicht in sparseSlots aufgeführter Slot (15) wird geändert, danach Slot 14:
+    assert([view setColor:green forSlot:15]);
+    assert(![view matchesProfileSlots:sparseSlots]);
+    assert([view setColor:blue forSlot:14]);
+    assert(![view matchesProfileSlots:sparseSlots]);
+
+    // Erstes Undo stellt zwar Slot 14 wieder auf #FF0000, Slot 15 ist aber weiterhin #00FF00:
+    [view undo:nil];
+    assert(![view matchesProfileSlots:sparseSlots]);
+
+    // Zweites Undo stellt auch Slot 15 auf #000000 zurück -> wieder exakt synchron:
+    [view undo:nil];
+    assert([view matchesProfileSlots:sparseSlots]);
+
+    // 2. Nicht-kanonische Hex-Formate (3-stellig, ohne '#', Kleinschreibung)
+    assert([view setColor:green forSlot:15]);
+    NSDictionary *nonCanonicalSlots = @{@"14": @"#f00", @"15": @"00ff00"};
+    assert([view matchesProfileSlots:nonCanonicalSlots]);
+
+    // 3. Ungültige Eingaben müssen NO liefern
+    assert(![view matchesProfileSlots:@{}]);
+    assert(![view matchesProfileSlots:@{@"125": @"#FF0000"}]); // Nur Out-of-Range-Slot
+    assert(![view matchesProfileSlots:@{@"abc": @"#FF0000"}]);
+    assert(![view matchesProfileSlots:@{@"14": @"#GGGGGG"}]);
+    assert(![view matchesProfileSlots:@{@"14": @(123)}]);
+
+    // 4. Vollprofil-Abgleich, manuelle Rückkehr & Slot-125-Konsistenz:
+    // Simuliere loadProfileIntoView für ein "Full red"-Profil (Slots 0..124 = Rot, Slot 125 = #000000)
+    NSMutableDictionary<NSString *, NSString *> *fullRedSlots = [NSMutableDictionary dictionaryWithCapacity:CIY_LED_COUNT];
+    NSMutableDictionary<NSNumber *, NSColor *> *fullRedLoaded = [NSMutableDictionary dictionaryWithCapacity:CIY_LED_COUNT];
+    for (int i = 0; i < CIY_LED_COUNT; i++) {
+        fullRedSlots[@(i).stringValue] = @"#FF0000";
+        fullRedLoaded[@(i)] = (i < CIY_LED_COUNT - 1) ? red : off;
+    }
+    [view applyKeyColors:fullRedLoaded];
+    [view clearUndoHistory];
+    assert([view matchesProfileSlots:fullRedSlots]);
+
+    // "Fill all keys: Red" auf bereits komplett rotem Profil (0..124) darf keinen Phantom-Undo-Schritt für Slot 125 erzeugen
+    assert(![view resetAllKeysToColor:red]);
+    assert(view.undoCount == 0);
+
+    // Diskreter Edit auf Blau -> dirty, manuelle Rückkehr per Palette auf Rot -> wieder clean
+    assert([view setColor:blue forSlot:14]);
+    assert(![view matchesProfileSlots:fullRedSlots]);
+    assert([view setColor:red forSlot:14]);
+    assert([view matchesProfileSlots:fullRedSlots]);
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -656,6 +1078,18 @@ int main(void) {
         test_battery_monitor_sleep_safety();
         test_battery_monitor_termination_cleanup();
         test_keyboard_backend_monitoring_lifecycle();
+        test_undo_redo_single_key();
+        test_undo_redo_fifo_limit();
+        test_undo_redo_clear_history();
+        test_undo_redo_bulk_actions();
+        test_undo_partial_apply_merges();
+        test_undo_ignores_noop_edits();
+        test_undo_redo_coalescing();
+        test_undo_coalescing_after_undo_creates_new_step();
+        test_undo_coalescing_noop_removes_action();
+        test_color_mutators_return_change_flag();
+        test_undo_redo_delegate_and_validation();
+        test_matches_profile_slots_and_dirty_state();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

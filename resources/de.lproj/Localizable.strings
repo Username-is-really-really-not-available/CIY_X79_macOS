@@ -14,7 +14,7 @@
 "Applies selected profile immediately to the keyboard (Mode 19 Customize)" = "Ausgewähltes Profil sofort auf die Tastatur übertragen (Modus 19 Customize)";
 "Apply" = "Übernehmen";
 "Apply (↵)" = "Senden (↵)";
-"Apply to keyboard" = "Auf Tastatur anwenden";
+"Apply to editor" = "Auf Editor anwenden";
 "Arrow keys" = "Pfeiltasten";
 "At least one profile must remain." = "Es muss mindestens ein Profil erhalten bleiben.";
 "Blue" = "Blau";
@@ -104,6 +104,7 @@
 "Quit CIY X79 Control" = "CIY X79 Control beenden";
 "Reconnect" = "Neu verbinden";
 "Red" = "Rot";
+"Redo" = "Wiederholen";
 "Remove app link" = "App-Verknüpfung entfernen";
 "Remove app link for this profile" = "App-Verknüpfung für dieses Profil entfernen";
 "Remove selected profile" = "Ausgewähltes Profil entfernen";
@@ -143,6 +144,7 @@
 "The selected path is not a regular file." = "Der ausgewählte Pfad ist keine reguläre Datei.";
 "Toggle auto-trigger on app focus" = "Auto-Trigger bei App-Fokus umschalten";
 "UPS" = "USV";
+"Undo" = "Widerrufen";
 "Unnamed" = "Unbenannt";
 "Unsaved key edits will be lost if you restart now." = "Ungespeicherte Tastenänderungen gehen beim Neustart verloren.";
 "Use this profile as the default fallback when an unlinked app is focused" = "Dieses Profil als Standard-Fallback verwenden, wenn eine nicht verknüpfte App im Fokus ist";
@@ -167,9 +169,11 @@
 "● CIY X79 connected (VID: 0x258A / PID: 0x0049)" = "● CIY X79 Verbunden (VID: 0x258A / PID: 0x0049)";
 "● Connection is being checked..." = "● Verbindung wird geprüft...";
 "● Custom color selected (profile “%@” unsaved)" = "● Eigene Farbe gewählt (Profil „%@“ ungespeichert)";
+"● Gradient applied (profile “%@” unsaved)" = "● Farbverlauf angewendet (Profil „%@“ ungespeichert)";
 "● Gradient command copied to clipboard" = "● Verlauf-Befehl in Zwischenablage kopiert";
 "● Key edited (profile “%@” unsaved)" = "● Taste bearbeitet (Profil „%@“ ungespeichert)";
 "● Keyboard not found (check USB)" = "● Tastatur nicht gefunden (USB prüfen)";
+"● No unsaved changes (profile “%@”)" = "● Keine ungespeicherten Änderungen (Profil „%@“)";
 "● Preview “%@” (unsaved) on keyboard" = "● Vorschau „%@“ (ungespeichert) auf Tastatur";
 "● Profile renamed to “%@”" = "● Profil umbenannt in „%@“";
 "● Profile “%@” active on keyboard" = "● Profil „%@“ aktiv auf Tastatur";
@@ -178,6 +182,8 @@
 "● Profile “%@” set as default fallback" = "● Profil „%@“ als Standard-Fallback festgelegt";
 "● Profiles reset to defaults" = "● Profile auf Standardwerte zurückgesetzt";
 "● Send failed (check USB)" = "● Senden fehlgeschlagen (USB prüfen)";
+"● Undo (profile “%@”)" = "● Widerrufen (Profil „%@“)";
+"● Redo (profile “%@”)" = "● Wiederholen (Profil „%@“)";
 "● Zone “%@” colored (profile “%@” unsaved)" = "● Zone „%@“ eingefärbt (Profil „%@“ ungespeichert)";
 "★ Fallback" = "★ Fallback";
 "☆ Fallback" = "☆ Fallback";
