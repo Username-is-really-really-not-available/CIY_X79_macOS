@@ -9,6 +9,7 @@
 #import "../src/app/CIYBatteryMonitor.h"
 #import "../src/app/CIYLocalization.h"
 #import "../src/app/CIYMiniWindowController.h"
+#import "../src/app/CIYProfileScheduler.h"
 
 #if !defined(CIY_ENABLE_TEST_HOOKS)
 #error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
@@ -1235,6 +1236,580 @@ static void test_mini_window_controller(void) {
     assert(del.closed == NO);
 }
 
+@interface TestSchedulerDelegate : NSObject <CIYProfileSchedulerDelegate>
+@property (nonatomic, strong, nullable) NSString *lastProfileId;
+@property (nonatomic, assign) NSInteger callCount;
+@end
+
+@implementation TestSchedulerDelegate
+- (void)scheduler:(CIYProfileScheduler *)scheduler didDetermineTargetProfileId:(nullable NSString *)profileId {
+    (void)scheduler;
+    self.lastProfileId = profileId;
+    self.callCount++;
+}
+@end
+
+static NSDate *TestCreateDate(NSCalendar *cal, NSInteger y, NSInteger m, NSInteger d, NSInteger h, NSInteger min) {
+    NSDateComponents *comp = [[NSDateComponents alloc] init];
+    comp.year = y;
+    comp.month = m;
+    comp.day = d;
+    comp.hour = h;
+    comp.minute = min;
+    comp.second = 0;
+    return [cal dateFromComponents:comp];
+}
+
+static void test_scheduler_weekday_and_mask_filtering(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    // Profil 1: Werktags Mo-Fr um 09:00
+    NSMutableDictionary *profWork = [@{
+        @"id": @"prof-work",
+        @"name": @"Work",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(9),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysWorkdays) // Mo-Fr
+    } mutableCopy];
+
+    // Profil 2: Wochenende Sa-So um 10:00
+    NSMutableDictionary *profWeekend = [@{
+        @"id": @"prof-weekend",
+        @"name": @"Weekend",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(10),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysWeekend) // Sa-So
+    } mutableCopy];
+
+    NSArray<NSDictionary *> *profiles = @[profWork, profWeekend];
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return profiles;
+    };
+    scheduler.globalEnabled = YES;
+
+    // Freitag 2026-11-06 um 11:00 (Werktag): Work-Profil muss aktiv sein
+    NSDate *fri11am = TestCreateDate(cal, 2026, 11, 6, 11, 0);
+    assert([[scheduler activeScheduledProfileIdAtDate:fri11am] isEqualToString:@"prof-work"]);
+
+    // Samstag 2026-11-07 um 09:30: Weekend-Profil schaltet erst um 10:00.
+    // Zuletzt fälliger Schaltzeitpunkt ist Freitag 09:00 (Work-Profil).
+    NSDate *sat0930 = TestCreateDate(cal, 2026, 11, 7, 9, 30);
+    assert([[scheduler activeScheduledProfileIdAtDate:sat0930] isEqualToString:@"prof-work"]);
+
+    // Samstag 2026-11-07 um 10:01: Weekend-Profil ist fällig geworden und gewinnt
+    NSDate *sat1001 = TestCreateDate(cal, 2026, 11, 7, 10, 1);
+    assert([[scheduler activeScheduledProfileIdAtDate:sat1001] isEqualToString:@"prof-weekend"]);
+
+    // Sonntag 2026-11-08 um 15:00: Weekend-Profil immer noch aktiv
+    NSDate *sun1500 = TestCreateDate(cal, 2026, 11, 8, 15, 0);
+    assert([[scheduler activeScheduledProfileIdAtDate:sun1500] isEqualToString:@"prof-weekend"]);
+
+    // Montag 2026-11-09 um 09:05: Work-Profil übernimmt wieder
+    NSDate *mon0905 = TestCreateDate(cal, 2026, 11, 9, 9, 5);
+    assert([[scheduler activeScheduledProfileIdAtDate:mon0905] isEqualToString:@"prof-work"]);
+
+    // Deaktiviertes Profil
+    profWork[@"scheduleEnabled"] = @(NO);
+    assert([[scheduler activeScheduledProfileIdAtDate:fri11am] isEqualToString:@"prof-weekend"]); // letzter fälliger des Wochenendes
+    profWeekend[@"scheduleDaysMask"] = @(0);
+    assert([scheduler activeScheduledProfileIdAtDate:fri11am] == nil);
+}
+
+static void test_scheduler_midnight_and_day_transitions(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    // Profil Tag: Täglich um 08:00
+    NSMutableDictionary *profDay = [@{
+        @"id": @"prof-day",
+        @"name": @"Day",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(8),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    } mutableCopy];
+
+    // Profil Nacht: Täglich um 22:00
+    NSMutableDictionary *profNight = [@{
+        @"id": @"prof-night",
+        @"name": @"Night",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(22),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    } mutableCopy];
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[profDay, profNight];
+    };
+    scheduler.globalEnabled = YES;
+
+    // Freitag Abend 23:00 -> Nacht-Profil
+    NSDate *fri2300 = TestCreateDate(cal, 2026, 11, 6, 23, 0);
+    assert([[scheduler activeScheduledProfileIdAtDate:fri2300] isEqualToString:@"prof-night"]);
+
+    // Samstag früh um 01:30 morgens -> Nacht-Profil bleibt aktiv (letzter Schaltpunkt war gestern 22:00)
+    NSDate *sat0130 = TestCreateDate(cal, 2026, 11, 7, 1, 30);
+    assert([[scheduler activeScheduledProfileIdAtDate:sat0130] isEqualToString:@"prof-night"]);
+
+    // Samstag um 07:59 -> Nacht-Profil noch aktiv
+    NSDate *sat0759 = TestCreateDate(cal, 2026, 11, 7, 7, 59);
+    assert([[scheduler activeScheduledProfileIdAtDate:sat0759] isEqualToString:@"prof-night"]);
+
+    // Samstag um 08:00 -> Tag-Profil übernimmt exakt
+    NSDate *sat0800 = TestCreateDate(cal, 2026, 11, 7, 8, 0);
+    assert([[scheduler activeScheduledProfileIdAtDate:sat0800] isEqualToString:@"prof-day"]);
+
+    // Samstag um 21:59 -> Tag-Profil noch aktiv
+    NSDate *sat2159 = TestCreateDate(cal, 2026, 11, 7, 21, 59);
+    assert([[scheduler activeScheduledProfileIdAtDate:sat2159] isEqualToString:@"prof-day"]);
+
+    // Samstag um 22:00 -> Nacht-Profil übernimmt exakt
+    NSDate *sat2200 = TestCreateDate(cal, 2026, 11, 7, 22, 0);
+    assert([[scheduler activeScheduledProfileIdAtDate:sat2200] isEqualToString:@"prof-night"]);
+}
+
+static void test_scheduler_tie_breaking_and_overlap(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    // Zwei Profile zur exakt gleichen Zeit (09:00)
+    NSDictionary *profA = @{
+        @"id": @"prof-A",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(9),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+    NSDictionary *profB = @{
+        @"id": @"prof-B",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(9),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.globalEnabled = YES;
+
+    // A zuerst: A gewinnt
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[profA, profB];
+    };
+    NSDate *now = TestCreateDate(cal, 2026, 11, 6, 9, 30);
+    assert([[scheduler activeScheduledProfileIdAtDate:now] isEqualToString:@"prof-A"]);
+
+    // B zuerst: B gewinnt
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[profB, profA];
+    };
+    assert([[scheduler activeScheduledProfileIdAtDate:now] isEqualToString:@"prof-B"]);
+
+    // GlobalEnabled = NO liefert nil
+    scheduler.globalEnabled = NO;
+    assert([scheduler activeScheduledProfileIdAtDate:now] == nil);
+
+    // Leere Profilliste
+    scheduler.globalEnabled = YES;
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[];
+    };
+    assert([scheduler activeScheduledProfileIdAtDate:now] == nil);
+}
+
+static void test_scheduler_next_switch_date(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    // Profil 1: 14:00 (täglich)
+    NSDictionary *p1 = @{
+        @"id": @"p1",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(14),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+    // Profil 2: 20:00 (täglich)
+    NSDictionary *p2 = @{
+        @"id": @"p2",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(20),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[p1, p2];
+    };
+    scheduler.globalEnabled = YES;
+
+    // Vor 14:00 -> nächster Schaltzeitpunkt ist heute 14:00
+    NSDate *at11am = TestCreateDate(cal, 2026, 11, 6, 11, 0);
+    NSDate *next = [scheduler nextSwitchDateAfterDate:at11am];
+    assert(next != nil);
+    NSDateComponents *comp = [cal components:NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitDay fromDate:next];
+    assert(comp.day == 6 && comp.hour == 14 && comp.minute == 0);
+
+    // Exakt um 14:00 -> nächster Schaltzeitpunkt muss strikt in der Zukunft liegen (heute 20:00)
+    NSDate *at1400 = TestCreateDate(cal, 2026, 11, 6, 14, 0);
+    next = [scheduler nextSwitchDateAfterDate:at1400];
+    assert(next != nil);
+    comp = [cal components:NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitDay fromDate:next];
+    assert(comp.day == 6 && comp.hour == 20 && comp.minute == 0);
+
+    // Nach 20:00 -> nächster Schaltzeitpunkt ist morgen um 14:00
+    NSDate *at2100 = TestCreateDate(cal, 2026, 11, 6, 21, 0);
+    next = [scheduler nextSwitchDateAfterDate:at2100];
+    assert(next != nil);
+    comp = [cal components:NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitDay fromDate:next];
+    assert(comp.day == 7 && comp.hour == 14 && comp.minute == 0);
+
+    // Global deaktiviert -> nextSwitchDateAfterDate und nextSwitchDate müssen nil liefern
+    scheduler.nowProvider = ^NSDate *{ return at11am; };
+    scheduler.globalEnabled = NO;
+    assert([scheduler nextSwitchDateAfterDate:at11am] == nil);
+    assert([scheduler nextSwitchDate] == nil);
+    scheduler.globalEnabled = YES;
+
+    // Keine Profile -> nil
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{ return @[]; };
+    assert([scheduler nextSwitchDateAfterDate:at11am] == nil);
+}
+
+static void test_scheduler_sanitizing_and_serialization(void) {
+    NSMutableDictionary *prof = [@{
+        @"scheduleHour": @(45),       // ungültig > 23
+        @"scheduleMinute": @(-10),    // ungültig < 0
+        @"scheduleDaysMask": @(500),  // > 127
+        @"scheduleEnabled": @(YES)
+    } mutableCopy];
+
+    [CIYProfileScheduler sanitizeScheduleInProfile:prof];
+    assert([prof[kCIYProfileScheduleHourKey] integerValue] == 23);
+    assert([prof[kCIYProfileScheduleMinuteKey] integerValue] == 0);
+    assert(([prof[kCIYProfileScheduleDaysMaskKey] unsignedIntegerValue] & ~0x7F) == 0);
+    assert([prof[kCIYProfileScheduleEnabledKey] boolValue] == YES);
+
+    // Maske 0 deaktiviert scheduleEnabled
+    prof[kCIYProfileScheduleDaysMaskKey] = @(0);
+    [CIYProfileScheduler sanitizeScheduleInProfile:prof];
+    assert([prof[kCIYProfileScheduleEnabledKey] boolValue] == NO);
+
+    // Formatierung
+    assert([[CIYProfileScheduler formattedTimeStringForHour:8 minute:5] isEqualToString:@"08:05"]);
+    assert([[CIYProfileScheduler formattedTimeStringForHour:23 minute:59] isEqualToString:@"23:59"]);
+    assert([CIYProfileScheduler shortScheduleSummaryForProfile:prof] == nil); // da enabled == NO
+    prof[kCIYProfileScheduleEnabledKey] = @(YES);
+    assert([[CIYProfileScheduler shortScheduleSummaryForProfile:prof] isEqualToString:@"23:00"]);
+
+    // JSON Export Privacy (Strippen ohne App-Metadaten)
+    NSMutableDictionary *copyProf = [prof mutableCopy];
+    copyProf[@"appBundleId"] = @"com.apple.Terminal";
+    copyProf[@"appName"] = @"Terminal";
+    BOOL includeAppMetadata = NO;
+    if (!includeAppMetadata) {
+        [copyProf removeObjectForKey:@"appBundleId"];
+        [copyProf removeObjectForKey:@"appName"];
+        [copyProf removeObjectForKey:kCIYProfileScheduleEnabledKey];
+        [copyProf removeObjectForKey:kCIYProfileScheduleHourKey];
+        [copyProf removeObjectForKey:kCIYProfileScheduleMinuteKey];
+        [copyProf removeObjectForKey:kCIYProfileScheduleDaysMaskKey];
+    }
+    assert(copyProf[@"appBundleId"] == nil);
+    assert(copyProf[@"scheduleEnabled"] == nil);
+    assert(copyProf[@"scheduleHour"] == nil);
+}
+
+static void test_scheduler_lifecycle_and_sleep_safety(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    __block NSDate *currentTestDate = TestCreateDate(cal, 2026, 11, 6, 8, 30);
+
+    NSDictionary *p1 = @{
+        @"id": @"prof-p1",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(9),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+    NSDictionary *p2 = @{
+        @"id": @"prof-p2",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(12),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.nowProvider = ^NSDate *{
+        return currentTestDate;
+    };
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[p1, p2];
+    };
+    scheduler.globalEnabled = YES;
+
+    TestSchedulerDelegate *delegate = [[TestSchedulerDelegate alloc] init];
+    scheduler.delegate = delegate;
+
+    assert(!scheduler.isRunning);
+    [scheduler start];
+    assert(scheduler.isRunning);
+    assert(delegate.callCount == 1);
+    // Vor 09:00: Der letzte fällige war gestern um 12:00 (p2)
+    assert([delegate.lastProfileId isEqualToString:@"prof-p2"]);
+
+    // Zeit auf 09:05 vorspulen und Timer auslösen
+    currentTestDate = TestCreateDate(cal, 2026, 11, 6, 9, 5);
+    [scheduler fireTimerForTesting];
+    assert(delegate.callCount == 2);
+    assert([delegate.lastProfileId isEqualToString:@"prof-p1"]);
+
+    // SystemWillSleep: Scheduler muss gestoppt werden
+    [scheduler stop];
+    assert(!scheduler.isRunning);
+    NSInteger countBeforeSleep = delegate.callCount;
+
+    // Während Sleep gefeuerte Events dürfen Delegate nicht benachrichtigen
+    currentTestDate = TestCreateDate(cal, 2026, 11, 6, 12, 5);
+    [scheduler fireTimerForTesting];
+    assert(delegate.callCount == countBeforeSleep);
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSSystemClockDidChangeNotification object:nil];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    assert(delegate.callCount == countBeforeSleep);
+
+    // Wake: Wieder starten
+    [scheduler start];
+    assert(scheduler.isRunning);
+    assert(delegate.callCount > countBeforeSleep);
+    assert([delegate.lastProfileId isEqualToString:@"prof-p2"]);
+
+    // Mehrfaches Stop ist idempotent
+    [scheduler stop];
+    [scheduler stop];
+    assert(!scheduler.isRunning);
+}
+
+static void test_scheduler_retain_cycle_freedom(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    NSDictionary *p1 = @{
+        @"id": @"prof-p1",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(23),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+
+    __weak CIYProfileScheduler *weakRef = nil;
+    @autoreleasepool {
+        CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+        scheduler.calendar = cal;
+        scheduler.nowProvider = ^NSDate *{
+            return TestCreateDate(cal, 2026, 11, 6, 12, 0);
+        };
+        scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+            return @[p1];
+        };
+        scheduler.globalEnabled = YES;
+        [scheduler start];
+        assert(scheduler.isRunning);
+        weakRef = scheduler;
+        assert(weakRef != nil);
+        // Scope endet hier ohne [scheduler stop]
+    }
+    // Nach Verlassen des autoreleasepools muss die Instanz deallokiert sein (kein Timer-Retain-Cycle)
+    assert(weakRef == nil);
+}
+
+static void test_scheduler_timezone_notification(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    __block NSDate *currentTestDate = TestCreateDate(cal, 2026, 11, 6, 8, 30);
+
+    NSDictionary *p1 = @{
+        @"id": @"prof-p1",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(9),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+    NSDictionary *p2 = @{
+        @"id": @"prof-p2",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(12),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.nowProvider = ^NSDate *{
+        return currentTestDate;
+    };
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[p1, p2];
+    };
+    scheduler.globalEnabled = YES;
+
+    TestSchedulerDelegate *delegate = [[TestSchedulerDelegate alloc] init];
+    scheduler.delegate = delegate;
+
+    [scheduler start];
+    assert(delegate.callCount == 1);
+    assert([delegate.lastProfileId isEqualToString:@"prof-p2"]);
+
+    // Zeit vorspulen auf 09:05
+    currentTestDate = TestCreateDate(cal, 2026, 11, 6, 9, 5);
+
+    // Zeitzonenwechsel-Notification absenden
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSSystemTimeZoneDidChangeNotification object:nil];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+
+    // Scheduler muss im laufenden Zustand reevaluiert haben
+    assert(delegate.callCount == 2);
+    assert([delegate.lastProfileId isEqualToString:@"prof-p1"]);
+
+    // Scheduler stoppen und prüfen, dass Notification ignoriert wird
+    [scheduler stop];
+    NSInteger countAfterStop = delegate.callCount;
+
+    currentTestDate = TestCreateDate(cal, 2026, 11, 6, 12, 5);
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSSystemTimeZoneDidChangeNotification object:nil];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+
+    assert(delegate.callCount == countAfterStop);
+}
+
+static void test_scheduler_reschedule_timer_only(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    __block NSDate *currentTestDate = TestCreateDate(cal, 2026, 11, 6, 8, 30);
+
+    NSDictionary *p1 = @{
+        @"id": @"prof-p1",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(9),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.nowProvider = ^NSDate *{
+        return currentTestDate;
+    };
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[p1];
+    };
+    scheduler.globalEnabled = YES;
+
+    TestSchedulerDelegate *delegate = [[TestSchedulerDelegate alloc] init];
+    scheduler.delegate = delegate;
+
+    [scheduler start];
+    assert(delegate.callCount == 1);
+
+    // 1. rescheduleTimerOnly aufrufen: Delegate-Callcount darf sich NICHT erhöhen
+    NSDate *targetSwitch = TestCreateDate(cal, 2026, 11, 6, 9, 0);
+    // 50ms vor dem Umschaltzeitpunkt
+    currentTestDate = [targetSwitch dateByAddingTimeInterval:-0.05];
+
+    [scheduler rescheduleTimerOnly];
+    assert(delegate.callCount == 1); // Synchroner Callback darf nicht erfolgt sein
+
+    // 2. Zeit auf nach dem Schaltzeitpunkt vorstellen, sodass beim Timer-Feuern das Profil aktiv ist
+    currentTestDate = [targetSwitch dateByAddingTimeInterval:1.0];
+
+    // Main RunLoop drehen, bis der geplante Timer feuert (intervall 0.05s)
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
+
+    // Timer muss gefeuert und reevaluate ausgelöst haben
+    assert(delegate.callCount == 2);
+    assert([delegate.lastProfileId isEqualToString:@"prof-p1"]);
+
+    [scheduler stop];
+}
+
+static void test_scheduler_global_enabled_timer_rescheduling(void) {
+    NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:3600];
+
+    NSDate *targetSwitch = TestCreateDate(cal, 2026, 11, 6, 9, 0);
+    // 50ms vor dem Umschaltzeitpunkt starten
+    __block NSDate *currentTestDate = [targetSwitch dateByAddingTimeInterval:-0.05];
+
+    NSDictionary *p1 = @{
+        @"id": @"prof-p1",
+        @"scheduleEnabled": @(YES),
+        @"scheduleHour": @(9),
+        @"scheduleMinute": @(0),
+        @"scheduleDaysMask": @(CIYScheduleDaysAll)
+    };
+
+    CIYProfileScheduler *scheduler = [[CIYProfileScheduler alloc] init];
+    scheduler.calendar = cal;
+    scheduler.nowProvider = ^NSDate *{
+        return currentTestDate;
+    };
+    scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        return @[p1];
+    };
+    scheduler.globalEnabled = YES;
+
+    TestSchedulerDelegate *delegate = [[TestSchedulerDelegate alloc] init];
+    scheduler.delegate = delegate;
+
+    [scheduler start];
+    assert(delegate.callCount == 1); // Initialer Aufruf bei start
+
+    // Laufenden Scheduler ohne reevaluate auf globalEnabled = NO setzen
+    scheduler.globalEnabled = NO;
+    assert(delegate.callCount == 1); // Kein synchroner Delegate-Aufruf
+
+    // Zeit auf nach den Schaltzeitpunkt vorstellen
+    currentTestDate = [targetSwitch dateByAddingTimeInterval:1.0];
+
+    // RunLoop laufen lassen: Der vorherige Timer darf NICHT feuern
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
+    assert(delegate.callCount == 1);
+
+    // Nächsten Schaltzeitpunkt vorbereiten (morgen 09:00, 50ms vorher)
+    NSDate *nextTargetSwitch = TestCreateDate(cal, 2026, 11, 7, 9, 0);
+    currentTestDate = [nextTargetSwitch dateByAddingTimeInterval:-0.05];
+
+    // Wieder aktivieren: Timer muss ohne manuelles reevaluate neu eingeplant werden
+    scheduler.globalEnabled = YES;
+    assert(delegate.callCount == 1); // Kein synchroner Callback im Setter
+
+    // Zeit auf nach den Schaltzeitpunkt vorstellen
+    currentTestDate = [nextTargetSwitch dateByAddingTimeInterval:1.0];
+
+    // RunLoop laufen lassen: Jetzt muss der reguläre Timer auslösen
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
+    assert(delegate.callCount == 2);
+    assert([delegate.lastProfileId isEqualToString:@"prof-p1"]);
+
+    [scheduler stop];
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -1271,6 +1846,16 @@ int main(void) {
         test_undo_redo_delegate_and_validation();
         test_matches_profile_slots_and_dirty_state();
         test_mini_window_controller();
+        test_scheduler_weekday_and_mask_filtering();
+        test_scheduler_midnight_and_day_transitions();
+        test_scheduler_tie_breaking_and_overlap();
+        test_scheduler_next_switch_date();
+        test_scheduler_sanitizing_and_serialization();
+        test_scheduler_lifecycle_and_sleep_safety();
+        test_scheduler_retain_cycle_freedom();
+        test_scheduler_timezone_notification();
+        test_scheduler_reschedule_timer_only();
+        test_scheduler_global_enabled_timer_rescheduling();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

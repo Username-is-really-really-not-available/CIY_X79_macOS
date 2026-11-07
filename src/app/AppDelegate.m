@@ -6,8 +6,9 @@
 #import "CIYBatteryMonitor.h"
 #import "CIYLocalization.h"
 #import "CIYMiniWindowController.h"
+#import "CIYProfileScheduler.h"
 
-@interface AppDelegate () <CIYMiniWindowControllerDelegate, NSMenuItemValidation> {
+@interface AppDelegate () <CIYMiniWindowControllerDelegate, NSMenuItemValidation, CIYProfileSchedulerDelegate> {
     NSTextField *_statusLabel;
     NSTextField *_selectedKeyLabel;
     CIYKeyboardView *_keyboardView;
@@ -20,6 +21,18 @@
     NSButton *_saveProfileBtn;
     NSButton *_renameProfileBtn;
     NSButton *_deleteProfileBtn;
+
+    // Profil-Zeitsteuerung (Roadmap 2.1)
+    CIYProfileScheduler *_scheduler;
+    NSMenuItem *_scheduleActiveMenuItem;
+    NSWindow *_scheduleSheet;
+    NSButton *_schedEnabledCheckbox;
+    NSDatePicker *_schedTimePicker;
+    NSMutableArray<NSButton *> *_schedDayCheckboxes;
+    NSTextField *_schedErrorLabel;
+    NSString *_scheduleSheetProfileId;
+    NSArray<NSButton *> *_schedQuickButtons;
+    BOOL _scheduleSwitchDeferredByEdits;
 
     // Editor & Hardware-Steuerung
     NSColorWell *_colorWell;
@@ -55,6 +68,7 @@
     NSMutableArray<NSMutableDictionary *> *_profiles;
     NSString *_currentActiveProfileId;
     BOOL _hasUnsavedEdits;
+    BOOL _isSleeping;
     BOOL _isWakingUp;
     BOOL _wakeSyncScheduled;
     BOOL _sendInFlight;
@@ -68,6 +82,7 @@
     NSDate *_lastSendDate;
 }
 - (void)recordSendResult:(BOOL)ok;
+- (void)dismissScheduleSheet;
 @end
 
 static NSString * const kCustomProfilesKey = @"CIYX79CustomProfiles_v1";
@@ -294,6 +309,39 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     ((CIYMainWindow *)self.window).keyboardView = _keyboardView;
     [self loadProfiles];
 
+    // Profil-Zeitsteuerung initialisieren (Roadmap 2.1)
+    _scheduler = [[CIYProfileScheduler alloc] init];
+    _scheduler.delegate = self;
+    __weak typeof(self) weakSelf = self;
+    _scheduler.profilesProvider = ^NSArray<NSDictionary *> *{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        return strongSelf ? strongSelf->_profiles : @[];
+    };
+    _scheduler.globalEnabled = [[NSUserDefaults standardUserDefaults] objectForKey:kCIYScheduleEnabledDefaultsKey]
+        ? [[NSUserDefaults standardUserDefaults] boolForKey:kCIYScheduleEnabledDefaultsKey]
+        : YES;
+    [self refreshScheduleMenuStates];
+
+    if (_autoTriggerEnabled) {
+        NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+        NSString *ownBundleId = [[NSBundle mainBundle] bundleIdentifier];
+        if (frontApp && ![frontApp isEqual:[NSRunningApplication currentApplication]]) {
+            NSString *bid = frontApp.bundleIdentifier;
+            if (!bid || bid.length == 0) {
+                if (frontApp.localizedName.length > 0) {
+                    bid = [NSString stringWithFormat:@"local.%@", frontApp.localizedName];
+                }
+            }
+            if (bid && !(ownBundleId && [bid isEqualToString:ownBundleId])) {
+                _pendingAppBundleId = [bid copy];
+                _pendingAppName = [(frontApp.localizedName ?: bid) copy];
+                [self executeAutoSwitch];
+            }
+        }
+    }
+
+    [_scheduler start];
+
     // Status Item in macOS-Menüleiste einrichten
     [self setupStatusItem];
 
@@ -330,7 +378,6 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                                                name:NSWorkspaceDidWakeNotification
                                                              object:nil];
     // Akku-Überwachung einrichten (v1.4)
-    __weak typeof(self) weakSelf = self;
     [CIYBatteryMonitor sharedMonitor].updateHandler = ^(CIYBatteryInfo info) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [weakSelf handleBatteryUpdate:info];
@@ -452,6 +499,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     NSMenuItem *fallbackItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Set as default fallback") action:@selector(onSetDefaultFallback:) keyEquivalent:@""];
     fallbackItem.target = self;
     [actionsBtn.menu addItem:fallbackItem];
+    NSMenuItem *scheduleActionItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Schedule profile...") action:@selector(onOpenScheduleSheet:) keyEquivalent:@""];
+    scheduleActionItem.target = self;
+    [actionsBtn.menu addItem:scheduleActionItem];
     NSMenuItem *resetItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Reset to defaults") action:@selector(onResetProfiles:) keyEquivalent:@""];
     resetItem.target = self;
     [actionsBtn.menu addItem:resetItem];
@@ -707,6 +757,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [prof removeObjectForKey:@"appName"];
             }
 
+            [CIYProfileScheduler sanitizeScheduleInProfile:prof];
             [_profiles addObject:prof];
         }
     } else {
@@ -845,7 +896,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [_profilesPopUp removeAllItems];
     for (NSDictionary *prof in _profiles) {
         NSString *name = prof[@"name"] ?: CIYL(@"Unnamed");
-        [_profilesPopUp.menu addItemWithTitle:name action:nil keyEquivalent:@""];
+        NSString *schedBadge = [CIYProfileScheduler shortScheduleSummaryForProfile:prof];
+        NSString *title = schedBadge ? [NSString stringWithFormat:@"%@  (⏰ %@)", name, schedBadge] : name;
+        [_profilesPopUp.menu addItemWithTitle:title action:nil keyEquivalent:@""];
     }
     [self syncMiniWindowProfiles];
 }
@@ -920,15 +973,29 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         _statusLabel.stringValue = CIYL(@"● Auto-trigger active (switches profile on app focus)");
         _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
         NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
-        if (frontApp && frontApp.bundleIdentifier) {
-            _pendingAppBundleId = [frontApp.bundleIdentifier copy];
-            _pendingAppName = [(frontApp.localizedName ?: frontApp.bundleIdentifier) copy];
-            [self executeAutoSwitch];
+        NSString *ownBundleId = [[NSBundle mainBundle] bundleIdentifier];
+        if (frontApp && ![frontApp isEqual:[NSRunningApplication currentApplication]]) {
+            NSString *bid = frontApp.bundleIdentifier;
+            if (!bid || bid.length == 0) {
+                if (frontApp.localizedName.length > 0) {
+                    bid = [NSString stringWithFormat:@"local.%@", frontApp.localizedName];
+                }
+            }
+            if (bid && !(ownBundleId && [bid isEqualToString:ownBundleId])) {
+                _pendingAppBundleId = [bid copy];
+                _pendingAppName = [(frontApp.localizedName ?: bid) copy];
+                [self executeAutoSwitch];
+            }
         }
     } else {
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
+        _pendingAppBundleId = nil;
+        _pendingAppName = nil;
         _statusLabel.stringValue = CIYL(@"● Auto-trigger disabled (manual profile selection)");
         _statusLabel.textColor = [NSColor secondaryLabelColor];
+        if (_scheduler && _scheduler.globalEnabled) {
+            [_scheduler reevaluate];
+        }
     }
 }
 
@@ -943,15 +1010,29 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         _statusLabel.stringValue = CIYL(@"● Auto-trigger active (switches profile on app focus)");
         _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
         NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
-        if (frontApp && frontApp.bundleIdentifier) {
-            _pendingAppBundleId = [frontApp.bundleIdentifier copy];
-            _pendingAppName = [(frontApp.localizedName ?: frontApp.bundleIdentifier) copy];
-            [self executeAutoSwitch];
+        NSString *ownBundleId = [[NSBundle mainBundle] bundleIdentifier];
+        if (frontApp && ![frontApp isEqual:[NSRunningApplication currentApplication]]) {
+            NSString *bid = frontApp.bundleIdentifier;
+            if (!bid || bid.length == 0) {
+                if (frontApp.localizedName.length > 0) {
+                    bid = [NSString stringWithFormat:@"local.%@", frontApp.localizedName];
+                }
+            }
+            if (bid && !(ownBundleId && [bid isEqualToString:ownBundleId])) {
+                _pendingAppBundleId = [bid copy];
+                _pendingAppName = [(frontApp.localizedName ?: bid) copy];
+                [self executeAutoSwitch];
+            }
         }
     } else {
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
+        _pendingAppBundleId = nil;
+        _pendingAppName = nil;
         _statusLabel.stringValue = CIYL(@"● Auto-trigger disabled (manual profile selection)");
         _statusLabel.textColor = [NSColor secondaryLabelColor];
+        if (_scheduler && _scheduler.globalEnabled) {
+            [_scheduler reevaluate];
+        }
     }
 }
 
@@ -1081,7 +1162,19 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         }
     }
 
-    // 2. Falls kein Treffer: Fallback-Profil verwenden
+    // 2. Falls kein Treffer: Aktives Zeitplan-Profil (falls Zeitsteuerung aktiv), sonst Fallback-Profil verwenden
+    if (targetIdx < 0 && _scheduler && _scheduler.globalEnabled) {
+        NSString *schedId = [_scheduler activeScheduledProfileId];
+        if (schedId) {
+            for (NSUInteger i = 0; i < _profiles.count; i++) {
+                if ([_profiles[i][@"id"] isEqualToString:schedId]) {
+                    targetIdx = (NSInteger)i;
+                    break;
+                }
+            }
+        }
+    }
+
     if (targetIdx < 0) {
         if (_fallbackProfileId) {
             for (NSUInteger i = 0; i < _profiles.count; i++) {
@@ -1104,6 +1197,113 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     NSString *name = [self currentProfileName];
     _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Auto-trigger: “%@” active (%@)"), name, _pendingAppName ?: CIYL(@"App")];
+    _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
+}
+
+- (BOOL)foregroundAppHasLinkedProfile {
+    if (!_autoTriggerEnabled) return NO;
+
+    NSRunningApplication *frontApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    NSString *ownBundleId = [[NSBundle mainBundle] bundleIdentifier];
+    BOOL isFrontAppExternal = (frontApp != nil &&
+                               ![frontApp isEqual:[NSRunningApplication currentApplication]] &&
+                               !(ownBundleId && frontApp.bundleIdentifier && [frontApp.bundleIdentifier isEqualToString:ownBundleId]));
+
+    NSString *effectiveBundleId = nil;
+    if (isFrontAppExternal) {
+        effectiveBundleId = frontApp.bundleIdentifier;
+        if (!effectiveBundleId || effectiveBundleId.length == 0) {
+            if (frontApp.localizedName.length > 0) {
+                effectiveBundleId = [NSString stringWithFormat:@"local.%@", frontApp.localizedName];
+            }
+        }
+    } else {
+        // CIYX79Control selbst im Vordergrund (oder frontApp == nil) und _pendingAppBundleId gesetzt
+        if (_pendingAppBundleId) {
+            BOOL processRunning = NO;
+            for (NSRunningApplication *app in [[NSWorkspace sharedWorkspace] runningApplications]) {
+                if (app.isTerminated) continue;
+                NSString *bid = app.bundleIdentifier;
+                if (!bid || bid.length == 0) {
+                    if (app.localizedName.length > 0) {
+                        bid = [NSString stringWithFormat:@"local.%@", app.localizedName];
+                    }
+                }
+                if (bid && [bid isEqualToString:_pendingAppBundleId]) {
+                    processRunning = YES;
+                    break;
+                }
+            }
+            if (!processRunning) {
+                _pendingAppBundleId = nil;
+                _pendingAppName = nil;
+                return NO;
+            }
+            effectiveBundleId = _pendingAppBundleId;
+        } else {
+            return NO;
+        }
+    }
+
+    if (!effectiveBundleId) return NO;
+
+    for (NSDictionary *prof in _profiles) {
+        NSString *linkedId = prof[@"appBundleId"];
+        if (linkedId && [linkedId isEqualToString:effectiveBundleId]) {
+            if (!isFrontAppExternal) {
+                if ([prof[@"id"] isEqualToString:_currentActiveProfileId]) {
+                    return YES;
+                }
+                return NO;
+            }
+            return YES;
+        }
+    }
+    return NO;
+}
+
+#pragma mark - CIYProfileSchedulerDelegate
+
+- (void)scheduler:(CIYProfileScheduler *)scheduler didDetermineTargetProfileId:(nullable NSString *)profileId {
+    (void)scheduler;
+    if (!profileId) return;
+
+    // Ungespeicherte Bearbeitungen des Benutzers im Editor niemals automatisch überschreiben!
+    if (_hasUnsavedEdits) {
+        if (![profileId isEqualToString:_currentActiveProfileId]) {
+            _scheduleSwitchDeferredByEdits = YES;
+            _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Schedule paused: profile “%@” has unsaved changes"), [self currentProfileName]];
+            _statusLabel.textColor = [NSColor systemOrangeColor];
+        }
+        return;
+    }
+
+    // Koexistenz mit App-Fokus:
+    // Wenn Auto-Trigger aktiv ist und die aktuelle Vordergrund-App explizit einem App-Profil zugeordnet ist,
+    // behält dieses spezifische App-Profil Vorrang.
+    if ([self foregroundAppHasLinkedProfile]) {
+        return;
+    }
+
+    // Kein redundanter USB-Transfer, wenn das Zielprofil bereits aktiv ist
+    if ([profileId isEqualToString:_currentActiveProfileId]) {
+        return;
+    }
+
+    NSInteger targetIdx = -1;
+    for (NSUInteger i = 0; i < _profiles.count; i++) {
+        if ([_profiles[i][@"id"] isEqualToString:profileId]) {
+            targetIdx = (NSInteger)i;
+            break;
+        }
+    }
+
+    if (targetIdx < 0) return;
+
+    [self activateProfileAtIndex:targetIdx];
+
+    NSString *name = [self currentProfileName];
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Schedule: “%@” active"), name];
     _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
 }
 
@@ -1152,6 +1352,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)activateProfileAtIndex:(NSInteger)idx {
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
 
+    _scheduleSwitchDeferredByEdits = NO;
     [_profilesPopUp selectItemAtIndex:idx];
     NSDictionary *prof = _profiles[(NSUInteger)idx];
     _currentActiveProfileId = prof[@"id"];
@@ -1201,10 +1402,22 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     }
     prof[@"slots"] = slotHex;
 
+    BOOL hadDeferredScheduleSwitch = _scheduleSwitchDeferredByEdits;
+    NSString *savedProfileId = prof[@"id"];
+    _scheduleSwitchDeferredByEdits = NO;
+    _currentActiveProfileId = savedProfileId;
+
     [self saveProfilesToDefaults];
     [_keyboardView clearUndoHistory];
     [self setHasUnsavedEdits:NO];
     [self updateButtonsState];
+
+    if (hadDeferredScheduleSwitch && _scheduler && _scheduler.globalEnabled) {
+        [_scheduler reevaluate];
+        if (savedProfileId && ![_currentActiveProfileId isEqualToString:savedProfileId]) {
+            return;
+        }
+    }
 
     // Sofort an Tastatur übertragen
     [self sendCurrentProfileToHardware];
@@ -1257,6 +1470,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             newProf[@"id"] = newId;
             newProf[@"name"] = name;
             newProf[@"slots"] = slotHex;
+            newProf[kCIYProfileScheduleEnabledKey] = @(NO);
+            [CIYProfileScheduler sanitizeScheduleInProfile:newProf];
 
             [self->_profiles addObject:newProf];
             self->_currentActiveProfileId = newId;
@@ -1265,10 +1480,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
             [self->_profilesPopUp selectItemAtIndex:(NSInteger)(self->_profiles.count - 1)];
             [self->_keyboardView clearUndoHistory];
+            self->_scheduleSwitchDeferredByEdits = NO;
             [self setHasUnsavedEdits:NO];
             [self updateButtonsState];
 
             [self sendCurrentProfileToHardware];
+            [self->_scheduler rescheduleTimerOnly];
         }
     }];
 }
@@ -1352,9 +1569,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self loadProfileIntoView:self->_profiles[nextIdx]];
             [self->_keyboardView clearUndoHistory];
 
+            self->_scheduleSwitchDeferredByEdits = NO;
             [self setHasUnsavedEdits:NO];
             [self updateButtonsState];
             [self sendCurrentProfileToHardware];
+            [self->_scheduler rescheduleTimerOnly];
         }
     }];
 }
@@ -1830,6 +2049,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (!connected) {
         [self cancelHardwareSync];
         _isWakingUp = NO;
+        if (!_isSleeping && _scheduler && !_scheduler.isRunning) {
+            [_scheduler start];
+        }
         [[KeyboardBackend shared] requestCancel];
         [self updateConnectionStatus];
         dispatch_async(_hwQueue, ^{
@@ -1853,10 +2075,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onSystemWillSleep:(NSNotification *)note {
     (void)note;
+    _isSleeping = YES;
     _isWakingUp = YES;
     // Anstehende Auto-Switches und Hardware-Syncs stornieren, damit während des Suspend-Vorgangs keine Transfers laufen
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(executeAutoSwitch) object:nil];
     [self cancelHardwareSync];
+    // Scheduler-Timer stoppen und invalidieren (AGENTS.md Regel 3)
+    [_scheduler stop];
+    [self dismissScheduleSheet];
     // Akku-Überwachung während Ruhezustand pausieren
     [[CIYBatteryMonitor sharedMonitor] stopMonitoring];
     // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
@@ -1873,6 +2099,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onSystemDidWake:(NSNotification *)note {
     (void)note;
+    _isSleeping = NO;
     // 500 ms Verzögerung, damit macOS USB-Root-Hub und MCU nach dem Aufwachen vollständig initialisiert sind.
     // Konsolidiert Aufwach- und Hotplug-Events zu einem einzigen Reconnect.
     [self cancelHardwareSync];
@@ -1888,11 +2115,37 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [[KeyboardBackend shared] disconnect];
         return [[KeyboardBackend shared] connect];
     } completion:^(BOOL ok) {
+        if (self->_isSleeping) {
+            [self updateConnectionStatus];
+            return;
+        }
         [self updateConnectionStatus];
         if (ok) {
             self->_wakeRetryCount = 0;
-            // Tastatur mit dem aktuell aktiven Profil synchronisieren
-            [self sendCurrentProfileToHardware];
+            // Prüfen, ob sich während des Ruhezustands das Zeitplan-Profil geändert hat (kein doppelter USB-Transfer!)
+            BOOL wasStoppedForSleep = (self->_scheduler && !self->_scheduler.isRunning);
+            BOOL profileChanged = NO;
+            if (wasStoppedForSleep && self->_scheduler.globalEnabled && !self->_hasUnsavedEdits) {
+                if (![self foregroundAppHasLinkedProfile]) {
+                    NSString *targetId = [self->_scheduler activeScheduledProfileId];
+                    if (targetId && ![targetId isEqualToString:self->_currentActiveProfileId]) {
+                        for (NSUInteger i = 0; i < self->_profiles.count; i++) {
+                            if ([self->_profiles[i][@"id"] isEqualToString:targetId]) {
+                                [self activateProfileAtIndex:(NSInteger)i];
+                                profileChanged = YES;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!profileChanged) {
+                // Tastatur mit dem aktuell aktiven Profil synchronisieren
+                [self sendCurrentProfileToHardware];
+            }
+            [self->_scheduler start];
+
             if (self->_batteryMirrorCheckbox.state == NSControlStateValueOn) {
                 [[CIYBatteryMonitor sharedMonitor] startMonitoring];
                 [self updateBatteryDisplay];
@@ -1903,6 +2156,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self cancelHardwareSync];
             self->_wakeSyncScheduled = YES;
             [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:delay];
+        } else {
+            // Unplugged-Wake (Retries erschöpft): Scheduler dennoch starten
+            [self->_scheduler start];
         }
     }];
 }
@@ -1915,8 +2171,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (void)setHasUnsavedEdits:(BOOL)edited {
+    BOOL wasEdited = _hasUnsavedEdits;
     _hasUnsavedEdits = edited;
     [self.window setDocumentEdited:edited];
+    if (wasEdited && !edited && _scheduleSwitchDeferredByEdits) {
+        _scheduleSwitchDeferredByEdits = NO;
+        [_scheduler reevaluate];
+    }
 }
 
 - (void)updateConnectionStatus {
@@ -1944,7 +2205,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     panel.nameFieldStringValue = @"CIYX79_Profile.json";
     panel.allowedContentTypes = @[UTTypeJSON];
 
-    NSButton *includeAppsCheckbox = [NSButton checkboxWithTitle:CIYL(@"Also export app links (auto-trigger)") target:nil action:nil];
+    NSButton *includeAppsCheckbox = [NSButton checkboxWithTitle:CIYL(@"Also export app links & schedules (auto-trigger)") target:nil action:nil];
     includeAppsCheckbox.state = NSControlStateValueOff;
     [includeAppsCheckbox sizeToFit];
     NSRect cbFrame = includeAppsCheckbox.frame;
@@ -1965,6 +2226,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 if (!includeAppMetadata) {
                     [copyProf removeObjectForKey:@"appBundleId"];
                     [copyProf removeObjectForKey:@"appName"];
+                    [copyProf removeObjectForKey:kCIYProfileScheduleEnabledKey];
+                    [copyProf removeObjectForKey:kCIYProfileScheduleHourKey];
+                    [copyProf removeObjectForKey:kCIYProfileScheduleMinuteKey];
+                    [copyProf removeObjectForKey:kCIYProfileScheduleDaysMaskKey];
                 }
                 [exportList addObject:copyProf];
             }
@@ -2100,6 +2365,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                                 newProf[@"appName"] = importedAppName;
                             }
                         }
+                        if (dict[kCIYProfileScheduleEnabledKey] != nil) {
+                            newProf[kCIYProfileScheduleEnabledKey] = dict[kCIYProfileScheduleEnabledKey];
+                            newProf[kCIYProfileScheduleHourKey] = dict[kCIYProfileScheduleHourKey];
+                            newProf[kCIYProfileScheduleMinuteKey] = dict[kCIYProfileScheduleMinuteKey];
+                            newProf[kCIYProfileScheduleDaysMaskKey] = dict[kCIYProfileScheduleDaysMaskKey];
+                        }
+                        [CIYProfileScheduler sanitizeScheduleInProfile:newProf];
                         [self->_profiles addObject:newProf];
                         lastId = newId;
                         importedCount++;
@@ -2114,9 +2386,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [self->_profilesPopUp selectItemAtIndex:(NSInteger)(self->_profiles.count - 1)];
                 [self loadProfileIntoView:self->_profiles.lastObject];
                 [self->_keyboardView clearUndoHistory];
+                self->_scheduleSwitchDeferredByEdits = NO;
                 [self setHasUnsavedEdits:NO];
                 [self updateButtonsState];
                 [self sendCurrentProfileToHardware];
+                [self->_scheduler rescheduleTimerOnly];
+                [self updateStatusItemMenu];
 
                 self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● %lu profile(s) imported successfully"), (unsigned long)importedCount];
                 self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
@@ -2158,9 +2433,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self->_profilesPopUp selectItemAtIndex:0];
             [self loadProfileIntoView:self->_profiles.firstObject];
             [self->_keyboardView clearUndoHistory];
+            self->_scheduleSwitchDeferredByEdits = NO;
             [self setHasUnsavedEdits:NO];
             [self updateButtonsState];
             [self sendCurrentProfileToHardware];
+            [self->_scheduler rescheduleTimerOnly];
 
             self->_statusLabel.stringValue = CIYL(@"● Profiles reset to defaults");
             self->_statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
@@ -2267,6 +2544,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [hwMenu addItemWithTitle:CIYL(@"Link app to current profile...") action:@selector(onAssignApp:) keyEquivalent:@""];
     [hwMenu addItemWithTitle:CIYL(@"Remove app link") action:@selector(onClearApp:) keyEquivalent:@""];
     [hwMenu addItemWithTitle:CIYL(@"Set current profile as default fallback") action:@selector(onSetDefaultFallback:) keyEquivalent:@""];
+    [hwMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *scheduleItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Schedule profile...") action:@selector(onOpenScheduleSheet:) keyEquivalent:@"t"];
+    scheduleItem.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagCommand;
+    scheduleItem.target = self;
+    [hwMenu addItem:scheduleItem];
+    _scheduleActiveMenuItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Profile scheduling active") action:@selector(toggleScheduleActiveMenu:) keyEquivalent:@""];
+    _scheduleActiveMenuItem.target = self;
+    _scheduleActiveMenuItem.state = (_scheduler && _scheduler.globalEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
+    [hwMenu addItem:_scheduleActiveMenuItem];
     hwMenuItem.submenu = hwMenu;
     [mainMenu addItem:hwMenuItem];
 
@@ -2423,10 +2709,21 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
         NSString *itemTitle = name;
         NSString *appName = prof[@"appName"];
+        NSString *schedBadge = [CIYProfileScheduler shortScheduleSummaryForProfile:prof];
         if (appName.length > 0) {
-            itemTitle = [NSString stringWithFormat:@"%@  [%@]", name, appName];
+            if (schedBadge) {
+                itemTitle = [NSString stringWithFormat:@"%@  [%@]  (⏰ %@)", name, appName, schedBadge];
+            } else {
+                itemTitle = [NSString stringWithFormat:@"%@  [%@]", name, appName];
+            }
         } else if (_fallbackProfileId && [profId isEqualToString:_fallbackProfileId]) {
-            itemTitle = [NSString stringWithFormat:@"%@  [Fallback]", name];
+            if (schedBadge) {
+                itemTitle = [NSString stringWithFormat:@"%@  [Fallback]  (⏰ %@)", name, schedBadge];
+            } else {
+                itemTitle = [NSString stringWithFormat:@"%@  [Fallback]", name];
+            }
+        } else if (schedBadge) {
+            itemTitle = [NSString stringWithFormat:@"%@  (⏰ %@)", name, schedBadge];
         }
 
         NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:itemTitle action:@selector(onStatusMenuSelectProfile:) keyEquivalent:@""];
@@ -2443,6 +2740,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     triggerItem.target = self;
     triggerItem.state = _autoTriggerEnabled ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:triggerItem];
+
+    // 4b. Profile Scheduling Toggle
+    NSMenuItem *schedItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"⏰ Profile scheduling active") action:@selector(toggleScheduleActiveMenu:) keyEquivalent:@""];
+    schedItem.target = self;
+    schedItem.state = (_scheduler && _scheduler.globalEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:schedItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -2490,6 +2793,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         menuItem.state = (_miniController && _miniController.isVisible) ? NSControlStateValueOn : NSControlStateValueOff;
         return YES;
     }
+    if (menuItem.action == @selector(toggleScheduleActiveMenu:)) {
+        menuItem.state = (_scheduler && _scheduler.globalEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
+        return YES;
+    }
+    if (menuItem.action == @selector(onOpenScheduleSheet:)) {
+        if (self.window.attachedSheet != nil) return NO;
+        NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+        return (idx >= 0 && (NSUInteger)idx < _profiles.count);
+    }
     return YES;
 }
 
@@ -2529,6 +2841,291 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             if (completion) completion(ok);
         });
     });
+}
+
+#pragma mark - Profil-Zeitsteuerung UI & Sheet
+
+- (void)dismissScheduleSheet {
+    if (_scheduleSheet) {
+        [self.window endSheet:_scheduleSheet];
+        _scheduleSheet = nil;
+    }
+    _scheduleSheetProfileId = nil;
+    _schedQuickButtons = nil;
+}
+
+- (void)onOpenScheduleSheet:(id)sender {
+    (void)sender;
+    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
+    if (self.window.attachedSheet != nil) return;
+
+    NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
+    NSString *profName = prof[@"name"] ?: CIYL(@"Profile");
+
+    if (_scheduleSheet) {
+        [self dismissScheduleSheet];
+    }
+
+    _scheduleSheetProfileId = [prof[@"id"] copy];
+
+    _scheduleSheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 440, 270)
+                                                 styleMask:NSWindowStyleMaskTitled
+                                                   backing:NSBackingStoreBuffered
+                                                     defer:NO];
+    _scheduleSheet.title = [NSString stringWithFormat:CIYL(@"Schedule profile “%@”"), profName];
+    NSView *content = _scheduleSheet.contentView;
+
+    _schedEnabledCheckbox = [NSButton checkboxWithTitle:CIYL(@"Enable schedule for this profile") target:self action:@selector(onSchedEnabledToggled:)];
+    _schedEnabledCheckbox.frame = NSMakeRect(20, 226, 320, 22);
+    _schedEnabledCheckbox.state = [prof[kCIYProfileScheduleEnabledKey] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+    [content addSubview:_schedEnabledCheckbox];
+
+    NSTextField *lblTime = [self labelWithText:CIYL(@"Switch time:") fontSize:12 weight:NSFontWeightMedium];
+    lblTime.frame = NSMakeRect(20, 188, 100, 20);
+    [content addSubview:lblTime];
+
+    _schedTimePicker = [[NSDatePicker alloc] initWithFrame:NSMakeRect(130, 185, 96, 26)];
+    _schedTimePicker.datePickerStyle = NSDatePickerStyleTextFieldAndStepper;
+    _schedTimePicker.datePickerElements = NSDatePickerElementFlagHourMinute;
+
+    NSInteger hour = [prof[kCIYProfileScheduleHourKey] integerValue];
+    NSInteger minute = [prof[kCIYProfileScheduleMinuteKey] integerValue];
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSDateComponents *comp = [cal components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:[NSDate date]];
+    comp.hour = hour;
+    comp.minute = minute;
+    comp.second = 0;
+    _schedTimePicker.dateValue = [cal dateFromComponents:comp] ?: [NSDate date];
+    [content addSubview:_schedTimePicker];
+
+    NSTextField *lblDays = [self labelWithText:CIYL(@"Active days:") fontSize:12 weight:NSFontWeightMedium];
+    lblDays.frame = NSMakeRect(20, 148, 100, 20);
+    [content addSubview:lblDays];
+
+    NSButton *btnDaily = [NSButton buttonWithTitle:CIYL(@"Daily") target:self action:@selector(onSchedQuickSelectDaily:)];
+    btnDaily.bezelStyle = NSBezelStyleRounded;
+    [btnDaily sizeToFit];
+    CGFloat wDaily = MAX(btnDaily.frame.size.width, 68.0);
+    btnDaily.frame = NSMakeRect(124, 146, wDaily, 24);
+    [content addSubview:btnDaily];
+
+    CGFloat xWorkdays = NSMaxX(btnDaily.frame) + 6.0;
+    NSButton *btnWorkdays = [NSButton buttonWithTitle:CIYL(@"Mon–Fri") target:self action:@selector(onSchedQuickSelectWorkdays:)];
+    btnWorkdays.bezelStyle = NSBezelStyleRounded;
+    [btnWorkdays sizeToFit];
+    CGFloat wWorkdays = MAX(btnWorkdays.frame.size.width, 68.0);
+    btnWorkdays.frame = NSMakeRect(xWorkdays, 146, wWorkdays, 24);
+    [content addSubview:btnWorkdays];
+
+    CGFloat xWeekend = NSMaxX(btnWorkdays.frame) + 6.0;
+    NSButton *btnWeekend = [NSButton buttonWithTitle:CIYL(@"Weekend") target:self action:@selector(onSchedQuickSelectWeekend:)];
+    btnWeekend.bezelStyle = NSBezelStyleRounded;
+    [btnWeekend sizeToFit];
+    CGFloat wWeekend = MAX(btnWeekend.frame.size.width, 68.0);
+    btnWeekend.frame = NSMakeRect(xWeekend, 146, wWeekend, 24);
+    [content addSubview:btnWeekend];
+
+    _schedQuickButtons = @[btnDaily, btnWorkdays, btnWeekend];
+
+    NSArray<NSString *> *dayTitles = @[
+        CIYL(@"Mon"), CIYL(@"Tue"), CIYL(@"Wed"), CIYL(@"Thu"), CIYL(@"Fri"), CIYL(@"Sat"), CIYL(@"Sun")
+    ];
+    NSUInteger currentMask = [prof[kCIYProfileScheduleDaysMaskKey] unsignedIntegerValue];
+    if (currentMask == 0) currentMask = CIYScheduleDaysAll;
+
+    _schedDayCheckboxes = [NSMutableArray arrayWithCapacity:7];
+    CGFloat dayX = 20;
+    for (NSUInteger d = 0; d < 7; d++) {
+        NSButton *cb = [NSButton checkboxWithTitle:dayTitles[d] target:self action:@selector(onSchedDayCheckboxChanged:)];
+        cb.frame = NSMakeRect(dayX, 108, 52, 22);
+        cb.state = (currentMask & (1 << d)) ? NSControlStateValueOn : NSControlStateValueOff;
+        [content addSubview:cb];
+        [_schedDayCheckboxes addObject:cb];
+        dayX += 54;
+    }
+
+    _schedErrorLabel = [self labelWithText:@"" fontSize:11 weight:NSFontWeightRegular];
+    _schedErrorLabel.frame = NSMakeRect(20, 68, 400, 20);
+    _schedErrorLabel.textColor = [NSColor systemOrangeColor];
+    [content addSubview:_schedErrorLabel];
+
+    NSButton *saveBtn = [NSButton buttonWithTitle:CIYL(@"Save") target:self action:@selector(onSaveScheduleSheet:)];
+    saveBtn.frame = NSMakeRect(314, 20, 106, 32);
+    saveBtn.bezelStyle = NSBezelStyleRounded;
+    saveBtn.keyEquivalent = @"\r";
+    [content addSubview:saveBtn];
+
+    NSButton *cancelBtn = [NSButton buttonWithTitle:CIYL(@"Cancel") target:self action:@selector(onCancelScheduleSheet:)];
+    cancelBtn.frame = NSMakeRect(204, 20, 106, 32);
+    cancelBtn.bezelStyle = NSBezelStyleRounded;
+    cancelBtn.keyEquivalent = @"\e";
+    [content addSubview:cancelBtn];
+
+    [self updateSchedControlsState];
+    if (self.window.isMiniaturized) {
+        [self.window deminiaturize:nil];
+    }
+    if (!self.window.isVisible) {
+        [self.window makeKeyAndOrderFront:nil];
+    }
+    [self.window beginSheet:_scheduleSheet completionHandler:nil];
+}
+
+- (void)updateSchedControlsState {
+    BOOL enabled = (_schedEnabledCheckbox.state == NSControlStateValueOn);
+    _schedTimePicker.enabled = enabled;
+    for (NSButton *cb in _schedDayCheckboxes) {
+        cb.enabled = enabled;
+    }
+    for (NSButton *btn in _schedQuickButtons) {
+        btn.enabled = enabled;
+    }
+}
+
+- (void)onSchedEnabledToggled:(NSButton *)sender {
+    (void)sender;
+    [self updateSchedControlsState];
+    _schedErrorLabel.stringValue = @"";
+}
+
+- (void)onSchedQuickSelectDaily:(id)sender {
+    (void)sender;
+    for (NSButton *cb in _schedDayCheckboxes) {
+        cb.state = NSControlStateValueOn;
+    }
+    _schedErrorLabel.stringValue = @"";
+}
+
+- (void)onSchedQuickSelectWorkdays:(id)sender {
+    (void)sender;
+    for (NSUInteger i = 0; i < _schedDayCheckboxes.count && i < 7; i++) {
+        _schedDayCheckboxes[i].state = (i < 5) ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    _schedErrorLabel.stringValue = @"";
+}
+
+- (void)onSchedQuickSelectWeekend:(id)sender {
+    (void)sender;
+    for (NSUInteger i = 0; i < _schedDayCheckboxes.count && i < 7; i++) {
+        _schedDayCheckboxes[i].state = (i >= 5) ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    _schedErrorLabel.stringValue = @"";
+}
+
+- (void)onSchedDayCheckboxChanged:(NSButton *)sender {
+    (void)sender;
+    _schedErrorLabel.stringValue = @"";
+}
+
+- (void)onSaveScheduleSheet:(id)sender {
+    (void)sender;
+    if (!_scheduleSheetProfileId) {
+        [self onCancelScheduleSheet:nil];
+        return;
+    }
+
+    NSUInteger targetIdx = NSNotFound;
+    for (NSUInteger i = 0; i < _profiles.count; i++) {
+        if ([_profiles[i][@"id"] isEqualToString:_scheduleSheetProfileId]) {
+            targetIdx = i;
+            break;
+        }
+    }
+    if (targetIdx == NSNotFound) {
+        [self onCancelScheduleSheet:nil];
+        return;
+    }
+
+    BOOL enabled = (_schedEnabledCheckbox.state == NSControlStateValueOn);
+    NSUInteger mask = 0;
+    for (NSUInteger d = 0; d < _schedDayCheckboxes.count && d < 7; d++) {
+        if (_schedDayCheckboxes[d].state == NSControlStateValueOn) {
+            mask |= (1 << d);
+        }
+    }
+
+    if (enabled && mask == 0) {
+        _schedErrorLabel.stringValue = CIYL(@"Please select at least one day of the week.");
+        return;
+    }
+
+    [_scheduleSheet makeFirstResponder:nil];
+
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSDateComponents *comp = [cal components:NSCalendarUnitHour | NSCalendarUnitMinute fromDate:_schedTimePicker.dateValue];
+    NSInteger hour = comp.hour;
+    NSInteger minute = comp.minute;
+
+    NSMutableDictionary *prof = _profiles[targetIdx];
+    prof[kCIYProfileScheduleEnabledKey] = @(enabled);
+    prof[kCIYProfileScheduleHourKey] = @(hour);
+    prof[kCIYProfileScheduleMinuteKey] = @(minute);
+    prof[kCIYProfileScheduleDaysMaskKey] = @(mask);
+
+    NSString *selectedProfileId = nil;
+    NSInteger currentPopupIdx = _profilesPopUp.indexOfSelectedItem;
+    if (currentPopupIdx >= 0 && (NSUInteger)currentPopupIdx < _profiles.count) {
+        selectedProfileId = _profiles[(NSUInteger)currentPopupIdx][@"id"];
+    }
+
+    [self saveProfilesToDefaults];
+    [self refreshProfilesPopUp];
+
+    if (selectedProfileId) {
+        for (NSUInteger i = 0; i < _profiles.count; i++) {
+            if ([_profiles[i][@"id"] isEqualToString:selectedProfileId]) {
+                [_profilesPopUp selectItemAtIndex:(NSInteger)i];
+                break;
+            }
+        }
+    }
+    [self updateButtonsState];
+    [self updateStatusItemMenu];
+
+    [self dismissScheduleSheet];
+
+    NSString *name = prof[@"name"] ?: CIYL(@"Profile");
+    if (enabled) {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Schedule saved for “%@” (%02ld:%02ld)"), name, (long)hour, (long)minute];
+    } else {
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Schedule disabled for “%@”"), name];
+    }
+    _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
+
+    [_scheduler reevaluate];
+}
+
+- (void)onCancelScheduleSheet:(id)sender {
+    (void)sender;
+    [self dismissScheduleSheet];
+}
+
+- (void)toggleScheduleActiveMenu:(id)sender {
+    (void)sender;
+    BOOL newState = !_scheduler.globalEnabled;
+    _scheduler.globalEnabled = newState;
+    [[NSUserDefaults standardUserDefaults] setBool:newState forKey:kCIYScheduleEnabledDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+
+    [self updateStatusItemMenu];
+    [self refreshScheduleMenuStates];
+
+    if (newState) {
+        _statusLabel.stringValue = CIYL(@"● Profile scheduling active");
+        _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
+        [_scheduler reevaluate];
+    } else {
+        _statusLabel.stringValue = CIYL(@"● Profile scheduling disabled");
+        _statusLabel.textColor = [NSColor secondaryLabelColor];
+        [_scheduler reevaluate];
+    }
+}
+
+- (void)refreshScheduleMenuStates {
+    if (_scheduleActiveMenuItem) {
+        _scheduleActiveMenuItem.state = (_scheduler && _scheduler.globalEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
+    }
 }
 
 - (void)reportResult:(BOOL)ok {
@@ -2575,6 +3172,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [_miniController teardown];
         _miniController = nil;
     }
+    if (_scheduler) {
+        [_scheduler stop];
+    }
+    [self dismissScheduleSheet];
     [NSObject cancelPreviousPerformRequestsWithTarget:self];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
