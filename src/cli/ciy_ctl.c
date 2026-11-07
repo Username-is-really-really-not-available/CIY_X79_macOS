@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <termios.h>
 #include <time.h>
@@ -13,6 +14,7 @@
 #include "../core/ciy_battery.h"
 #include "../core/ciy_gradient.h"
 #include "../core/ciy_brightness.h"
+#include "../core/ciy_templates.h"
 
 // Sw_mode to effect names (from our verified ROM dump)
 static const char *EFFECT_NAMES[] = {
@@ -232,6 +234,221 @@ static bool parse_gradient_options(int argc, char **argv,
 
     if (!*out_col1 || !*out_col2) {
         snprintf(err_msg, err_size, "Fehlende Hex-Farben. Verwendung: ciy_ctl gradient <#Start> <#End> [--dir horizontal|vertical] [-b 0..5]");
+        return false;
+    }
+    return true;
+}
+
+static bool parse_template_options(int argc, char **argv,
+                                   bool *out_list,
+                                   const char **out_id,
+                                   const char **out_accent,
+                                   const char **out_bg,
+                                   const char **out_name,
+                                   const char **out_export,
+                                   char *err_msg, size_t err_size) {
+    *out_list = false;
+    *out_id = NULL;
+    *out_accent = NULL;
+    *out_bg = NULL;
+    *out_name = NULL;
+    *out_export = NULL;
+
+    bool seen_cmd = false;
+    for (int i = 1; i < argc; i++) {
+        if (!seen_cmd && strcmp(argv[i], "template") == 0) {
+            seen_cmd = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--json") == 0 ||
+            strcmp(argv[i], "--dry-run") == 0 ||
+            strcmp(argv[i], "--dump-bytes") == 0) {
+            continue;
+        }
+
+        if (strcmp(argv[i], "--list") == 0) {
+            *out_list = true;
+        } else if (strcmp(argv[i], "--accent") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0' || argv[i + 1][0] == '-') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --accent (erwartet: #RRGGBB)");
+                return false;
+            }
+            *out_accent = argv[++i];
+        } else if (strncmp(argv[i], "--accent=", 9) == 0) {
+            const char *val = argv[i] + 9;
+            if (val[0] == '\0') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --accent (erwartet: #RRGGBB)");
+                return false;
+            }
+            *out_accent = val;
+        } else if (strcmp(argv[i], "--bg") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0' || argv[i + 1][0] == '-') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --bg (erwartet: #RRGGBB)");
+                return false;
+            }
+            *out_bg = argv[++i];
+        } else if (strncmp(argv[i], "--bg=", 5) == 0) {
+            const char *val = argv[i] + 5;
+            if (val[0] == '\0') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --bg (erwartet: #RRGGBB)");
+                return false;
+            }
+            *out_bg = val;
+        } else if (strcmp(argv[i], "--name") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0' || argv[i + 1][0] == '-') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --name");
+                return false;
+            }
+            *out_name = argv[++i];
+            if (strlen(*out_name) > CIY_TEMPLATE_MAX_NAME_LEN) {
+                snprintf(err_msg, err_size, "Profilname zu lang (maximal %d Bytes erlaubt)", CIY_TEMPLATE_MAX_NAME_LEN);
+                return false;
+            }
+        } else if (strncmp(argv[i], "--name=", 7) == 0) {
+            const char *val = argv[i] + 7;
+            if (val[0] == '\0') {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --name");
+                return false;
+            }
+            if (strlen(val) > CIY_TEMPLATE_MAX_NAME_LEN) {
+                snprintf(err_msg, err_size, "Profilname zu lang (maximal %d Bytes erlaubt)", CIY_TEMPLATE_MAX_NAME_LEN);
+                return false;
+            }
+            *out_name = val;
+        } else if (strcmp(argv[i], "--export") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0' || (argv[i + 1][0] == '-' && strcmp(argv[i + 1], "-") != 0)) {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --export (Dateipfad oder -)");
+                return false;
+            }
+            *out_export = argv[++i];
+        } else if (strncmp(argv[i], "--export=", 9) == 0) {
+            const char *val = argv[i] + 9;
+            if (val[0] == '\0' || (val[0] == '-' && strcmp(val, "-") != 0)) {
+                snprintf(err_msg, err_size, "Fehlendes Argument für --export (Dateipfad oder -)");
+                return false;
+            }
+            *out_export = val;
+        } else if (argv[i][0] != '-') {
+            if (!*out_id) {
+                *out_id = argv[i];
+            } else {
+                snprintf(err_msg, err_size, "Unerwartetes zusätzliches Argument '%s'", argv[i]);
+                return false;
+            }
+        } else {
+            snprintf(err_msg, err_size, "Nicht unterstützte Option '%s' für template", argv[i]);
+            return false;
+        }
+    }
+
+    if (*out_list) {
+        if (*out_id || *out_accent || *out_bg || *out_name || *out_export) {
+            snprintf(err_msg, err_size, "--list kann nicht mit anderen Vorlagen-Optionen kombiniert werden");
+            return false;
+        }
+        return true;
+    }
+
+    if (!*out_id) {
+        snprintf(err_msg, err_size, "Fehlende Template-ID. Verwendung: ciy_ctl template <id> [Optionen] oder ciy_ctl template --list");
+        return false;
+    }
+
+    if (*out_name && !*out_export) {
+        snprintf(err_msg, err_size, "--name kann nur in Kombination mit --export verwendet werden");
+        return false;
+    }
+
+    return true;
+}
+
+static void print_templates_list_text(void) {
+    printf("\nVerfügbare Vorlagen (ISO-DE):\n");
+    size_t count = ciy_template_count();
+    for (size_t i = 0; i < count; i++) {
+        const CIYTemplate *t = ciy_template_get(i);
+        if (!t) continue;
+        printf("  %-12s %-25s %s (#%02X%02X%02X / #%02X%02X%02X)\n",
+               t->id, t->name, t->description,
+               t->default_accent[0], t->default_accent[1], t->default_accent[2],
+               t->default_bg[0], t->default_bg[1], t->default_bg[2]);
+    }
+    printf("\nVerwendung:\n");
+    printf("  ciy_ctl template <id> [--accent <#HEX>] [--bg <#HEX>] [-b 0..5]\n");
+    printf("  ciy_ctl template <id> --export <Datei.json | -> [--name <Profilname>]\n\n");
+}
+
+static void print_templates_list_json(void) {
+    printf("[\n");
+    size_t count = ciy_template_count();
+    for (size_t i = 0; i < count; i++) {
+        const CIYTemplate *t = ciy_template_get(i);
+        if (!t) continue;
+        printf("  {\n");
+        printf("    \"id\": \"");
+        print_escaped_json_string(stdout, t->id);
+        printf("\",\n    \"name\": \"");
+        print_escaped_json_string(stdout, t->name);
+        printf("\",\n    \"description\": \"");
+        print_escaped_json_string(stdout, t->description);
+        printf("\",\n    \"default_accent\": \"#%02X%02X%02X\",\n",
+               t->default_accent[0], t->default_accent[1], t->default_accent[2]);
+        printf("    \"default_bg\": \"#%02X%02X%02X\"\n",
+               t->default_bg[0], t->default_bg[1], t->default_bg[2]);
+        printf("  }%s\n", (i + 1 < count) ? "," : "");
+    }
+    printf("]\n");
+}
+
+static bool write_export_file(const char *path, const char *data, char *err_msg, size_t err_size) {
+    if (!path || !data) {
+        snprintf(err_msg, err_size, "Ungültige Parameter für Export");
+        return false;
+    }
+
+    if (strcmp(path, "-") == 0) {
+        errno = 0;
+        if (fputs(data, stdout) == EOF || fflush(stdout) == EOF) {
+            if (errno != 0) {
+                snprintf(err_msg, err_size, "Fehler beim Schreiben auf stdout: %s", strerror(errno));
+            } else {
+                snprintf(err_msg, err_size, "Fehler beim Schreiben auf stdout");
+            }
+            return false;
+        }
+        return true;
+    }
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        if (errno == ELOOP) {
+            snprintf(err_msg, err_size, "Export nach '%s' abgelehnt: Datei ist ein symbolischer Link", path);
+        } else if (errno == EEXIST) {
+            snprintf(err_msg, err_size, "Export nach '%s' abgelehnt: Datei existiert bereits", path);
+        } else {
+            snprintf(err_msg, err_size, "Konnte '%s' nicht erstellen: %s", path, strerror(errno));
+        }
+        return false;
+    }
+
+    size_t len = strlen(data);
+    const char *ptr = data;
+    while (len > 0) {
+        ssize_t written = write(fd, ptr, len);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            snprintf(err_msg, err_size, "Schreibfehler in '%s': %s", path, strerror(errno));
+            close(fd);
+            unlink(path);
+            return false;
+        }
+        ptr += written;
+        len -= (size_t)written;
+    }
+
+    if (close(fd) != 0) {
+        snprintf(err_msg, err_size, "Fehler beim Schließen von '%s': %s", path, strerror(errno));
+        unlink(path);
         return false;
     }
     return true;
@@ -913,10 +1130,17 @@ static void print_help(const char *prog_name) {
     printf("  sweep [--auto] [--delay-ms <ms>]    Schrittweiser Matrix-Durchlauf (Standard: interaktiv)\n");
     printf("  battery [--apply] [Optionen]        Zeigt Akkustand an oder spiegelt ihn auf Tastatur-Slots\n");
     printf("  gradient <#HEX1> <#HEX2> [Optionen] Erzeugt linearen sRGB-Farbverlauf (U-Coords / Zeilen)\n");
+    printf("  template <id> [Optionen]            Wendet eine ISO-DE-Profil-Vorlage an oder exportiert sie\n");
+    printf("  template --list                     Listet alle verfügbaren Vorlagen auf\n");
     printf("  help, --help, -h                    Zeigt diese Hilfe an\n\n");
     printf("Optionen:\n");
     printf("  -b, --brightness <0..5>             Helligkeit für Schreibbefehle (fill, load, set, wasd, battery, gradient etc.; Standard: 5)\n");
     printf("  --key-brightness <slot> <0..100>    Individuelle Helligkeit für Matrix-Slot (0..124), mehrfach angebbar (wirkt multiplikativ mit -b)\n");
+    printf("  --list                              Listet verfügbare Vorlagen auf (nur für template)\n");
+    printf("  --accent <#HEX>                     Benutzerdefinierte Hauptakzentfarbe für template (z. B. #FF0055)\n");
+    printf("  --bg <#HEX>                         Benutzerdefinierte Hintergrundfarbe für template (z. B. #001122)\n");
+    printf("  --export <Datei.json | ->           Exportiert Vorlage ohne Hardwarezugriff als JSON-Profildatei\n");
+    printf("  --name <Profilname>                 Benutzerdefinierter Profilname für den JSON-Export (--export)\n");
     printf("  --dir <horizontal|vertical>         Richtung für gradient (Standard: horizontal)\n");
     printf("  --apply                             Wendet den Akku-Indikator direkt auf die Tastatur an\n");
     printf("  --target <1-0|space|nav|<slots>>    Ziel-Tasten für den Akku-Indikator (Standard: 1-0)\n");
@@ -1008,13 +1232,14 @@ int main(int argc, char **argv) {
     if (kb_spec.count > 0 &&
         strcmp(cmd, "fill") != 0 && strcmp(cmd, "load") != 0 &&
         strcmp(cmd, "gradient") != 0 && strcmp(cmd, "wasd") != 0 &&
-        strcmp(cmd, "wasd-arrows") != 0 && strcmp(cmd, "all-red") != 0) {
+        strcmp(cmd, "wasd-arrows") != 0 && strcmp(cmd, "all-red") != 0 &&
+        strcmp(cmd, "template") != 0) {
         if (json_mode) {
             printf("{\n  \"success\": false,\n  \"error\": \"--key-brightness wird für den Befehl '");
             print_escaped_json_string(stdout, cmd);
-            printf("' nicht unterstützt (nur für fill, load, gradient, wasd, wasd-arrows, all-red)\"\n}\n");
+            printf("' nicht unterstützt (nur für fill, load, gradient, wasd, wasd-arrows, all-red, template)\"\n}\n");
         } else {
-            fprintf(stderr, "Fehler: --key-brightness wird für den Befehl '%s' nicht unterstützt.\nErlaubt für: fill, load, gradient, wasd, wasd-arrows, all-red.\n", cmd);
+            fprintf(stderr, "Fehler: --key-brightness wird für den Befehl '%s' nicht unterstützt.\nErlaubt für: fill, load, gradient, wasd, wasd-arrows, all-red, template.\n", cmd);
         }
         return 1;
     }
@@ -1026,18 +1251,24 @@ int main(int argc, char **argv) {
                 strcmp(argv[i], "--dump-bytes") != 0 && strcmp(argv[i], "--auto") != 0 &&
                 strcmp(argv[i], "-i") != 0 && strcmp(argv[i], "--interactive") != 0 &&
                 strcmp(argv[i], "--apply") != 0 && strcmp(argv[i], "--watch") != 0 &&
-                strcmp(argv[i], "--list-sources") != 0 && strcmp(argv[i], "--segmented") != 0) {
+                strcmp(argv[i], "--list-sources") != 0 && strcmp(argv[i], "--segmented") != 0 &&
+                strcmp(argv[i], "--list") != 0) {
                 if (strcmp(argv[i], "--slot") == 0 || strcmp(argv[i], "--delay-ms") == 0 ||
                     strcmp(argv[i], "--target") == 0 || strcmp(argv[i], "--source") == 0 ||
-                    strcmp(argv[i], "--dir") == 0) {
-                    if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    strcmp(argv[i], "--dir") == 0 ||
+                    strcmp(argv[i], "--accent") == 0 || strcmp(argv[i], "--bg") == 0 ||
+                    strcmp(argv[i], "--name") == 0 || strcmp(argv[i], "--export") == 0) {
+                    bool allow_dash = (strcmp(argv[i], "--export") == 0);
+                    if (i + 1 < argc && (argv[i + 1][0] != '-' || (allow_dash && strcmp(argv[i + 1], "-") == 0))) {
                         i++;
                     }
                     continue;
                 }
                 if (strncmp(argv[i], "--slot=", 7) == 0 || strncmp(argv[i], "--delay-ms=", 11) == 0 ||
                     strncmp(argv[i], "--target=", 9) == 0 || strncmp(argv[i], "--source=", 9) == 0 ||
-                    strncmp(argv[i], "--dir=", 6) == 0) {
+                    strncmp(argv[i], "--dir=", 6) == 0 ||
+                    strncmp(argv[i], "--accent=", 9) == 0 || strncmp(argv[i], "--bg=", 5) == 0 ||
+                    strncmp(argv[i], "--name=", 7) == 0 || strncmp(argv[i], "--export=", 9) == 0) {
                     continue;
                 }
                 // Wenn es eine Zahl ist (z. B. negatives Argument bei set -1 oder probe-led -1), übernimmt der Befehl die Prüfung
@@ -1061,11 +1292,12 @@ int main(int argc, char **argv) {
         strcmp(cmd, "wasd") != 0 && strcmp(cmd, "wasd-arrows") != 0 &&
         strcmp(cmd, "all-red") != 0 && strcmp(cmd, "set") != 0 &&
         strcmp(cmd, "probe-led") != 0 && strcmp(cmd, "sweep") != 0 &&
-        strcmp(cmd, "battery") != 0 && strcmp(cmd, "gradient") != 0) {
+        strcmp(cmd, "battery") != 0 && strcmp(cmd, "gradient") != 0 &&
+        strcmp(cmd, "template") != 0) {
         if (json_mode) {
-            printf("{\n  \"success\": false,\n  \"error\": \"--dry-run wird derzeit nur für Schreibbefehle (load, fill, set, wasd, wasd-arrows, all-red, probe-led, sweep, battery, gradient) unterstützt\"\n}\n");
+            printf("{\n  \"success\": false,\n  \"error\": \"--dry-run wird derzeit nur für Schreibbefehle (load, fill, set, wasd, wasd-arrows, all-red, probe-led, sweep, battery, gradient, template) unterstützt\"\n}\n");
         } else {
-            fprintf(stderr, "Fehler: --dry-run wird derzeit nur für Schreibbefehle (load, fill, set, wasd, wasd-arrows, all-red, probe-led, sweep, battery, gradient) unterstützt.\n");
+            fprintf(stderr, "Fehler: --dry-run wird derzeit nur für Schreibbefehle (load, fill, set, wasd, wasd-arrows, all-red, probe-led, sweep, battery, gradient, template) unterstützt.\n");
         }
         return 1;
     }
@@ -1218,6 +1450,197 @@ int main(int argc, char **argv) {
             } else {
                 print_battery_status_text(&info, batt_target_str, batt_target_slots, batt_target_count, active_count);
             }
+            return 0;
+        }
+    }
+
+    if (strcmp(cmd, "template") == 0) {
+        bool list_mode = false;
+        const char *tpl_id = NULL;
+        const char *accent_str = NULL;
+        const char *bg_str = NULL;
+        const char *name_str = NULL;
+        const char *export_path = NULL;
+        char err[256] = {0};
+
+        if (!parse_template_options(argc, argv, &list_mode, &tpl_id, &accent_str, &bg_str, &name_str, &export_path, err, sizeof(err))) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"");
+                print_escaped_json_string(stdout, err);
+                printf("\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: %s\n", err);
+            }
+            return 1;
+        }
+
+        if (list_mode) {
+            if (dry_run) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"--list kann nicht mit --dry-run kombiniert werden\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: --list kann nicht mit --dry-run kombiniert werden.\n");
+                }
+                return 1;
+            }
+            if (has_flag_brightness) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"--brightness wird bei --list nicht unterstützt\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: -b / --brightness wird bei --list nicht unterstützt.\n");
+                }
+                return 1;
+            }
+            if (kb_spec.count > 0) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"--key-brightness wird bei --list nicht unterstützt\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: --key-brightness wird bei --list nicht unterstützt.\n");
+                }
+                return 1;
+            }
+
+            if (json_mode) {
+                print_templates_list_json();
+            } else {
+                print_templates_list_text();
+            }
+            return 0;
+        }
+
+        const CIYTemplate *tpl = ciy_template_find(tpl_id);
+        if (!tpl) {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"Unbekannte Vorlage '");
+                print_escaped_json_string(stdout, tpl_id);
+                printf("' (siehe 'ciy_ctl template --list')\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: Unbekannte Vorlage '%s'.\nVerfügbare Vorlagen anzeigen mit: %s template --list\n", tpl_id, argv[0]);
+            }
+            return 1;
+        }
+
+        uint8_t custom_accent[3];
+        uint8_t *p_accent = NULL;
+        if (accent_str) {
+            if (!ciy_parse_hex_color(accent_str, &custom_accent[0], &custom_accent[1], &custom_accent[2])) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Hex-Farbe für --accent (erwartet #RRGGBB)\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: Ungültige Hex-Farbe '%s' für --accent (erwartet #RRGGBB).\n", accent_str);
+                }
+                return 1;
+            }
+            p_accent = custom_accent;
+        }
+
+        uint8_t custom_bg[3];
+        uint8_t *p_bg = NULL;
+        if (bg_str) {
+            if (!ciy_parse_hex_color(bg_str, &custom_bg[0], &custom_bg[1], &custom_bg[2])) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Ungültige Hex-Farbe für --bg (erwartet #RRGGBB)\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: Ungültige Hex-Farbe '%s' für --bg (erwartet #RRGGBB).\n", bg_str);
+                }
+                return 1;
+            }
+            p_bg = custom_bg;
+        }
+
+        if (export_path) {
+            if (dry_run) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"--export kann nicht mit --dry-run kombiniert werden (Export erfolgt ohne Hardwarezugriff)\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: --export kann nicht mit --dry-run kombiniert werden.\n");
+                }
+                return 1;
+            }
+            if (has_flag_brightness) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"--brightness wird bei --export nicht unterstützt\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: -b / --brightness wird bei --export nicht unterstützt.\n");
+                }
+                return 1;
+            }
+            if (kb_spec.count > 0) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"--key-brightness wird bei --export nicht unterstützt\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler: --key-brightness wird bei --export nicht unterstützt.\n");
+                }
+                return 1;
+            }
+
+            char json_buf[8192];
+            if (!ciy_template_to_json(tpl, name_str, p_accent, p_bg, json_buf, sizeof(json_buf))) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehler bei der Serialisierung der Vorlage\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler bei der Serialisierung der Vorlage.\n");
+                }
+                return 1;
+            }
+
+            char write_err[256] = {0};
+            if (!write_export_file(export_path, json_buf, write_err, sizeof(write_err))) {
+                if (strcmp(export_path, "-") == 0) {
+                    if (json_mode) {
+                        fprintf(stderr, "{\n  \"success\": false,\n  \"error\": \"");
+                        print_escaped_json_string(stderr, write_err);
+                        fprintf(stderr, "\"\n}\n");
+                    } else {
+                        fprintf(stderr, "Fehler: %s\n", write_err);
+                    }
+                } else {
+                    if (json_mode) {
+                        printf("{\n  \"success\": false,\n  \"error\": \"");
+                        print_escaped_json_string(stdout, write_err);
+                        printf("\"\n}\n");
+                    } else {
+                        fprintf(stderr, "Fehler: %s\n", write_err);
+                    }
+                }
+                return 1;
+            }
+
+            if (strcmp(export_path, "-") != 0) {
+                if (json_mode) {
+                    printf("{\n  \"success\": true,\n  \"template\": \"");
+                    print_escaped_json_string(stdout, tpl->id);
+                    printf("\",\n  \"file\": \"");
+                    print_escaped_json_string(stdout, export_path);
+                    printf("\"\n}\n");
+                } else {
+                    printf("Vorlage '%s' erfolgreich nach '%s' exportiert.\n", tpl->name, export_path);
+                }
+            }
+            return 0;
+        }
+
+        if (dry_run) {
+            uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+            if (!ciy_template_generate_planar(tpl, p_accent, p_bg, rgb)) {
+                if (json_mode) {
+                    printf("{\n  \"success\": false,\n  \"error\": \"Fehler beim Generieren der Vorlage\"\n}\n");
+                } else {
+                    fprintf(stderr, "Fehler beim Generieren der Vorlage.\n");
+                }
+                return 1;
+            }
+            if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+                return 1;
+            }
+            const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+            char prof_name[64];
+            snprintf(prof_name, sizeof(prof_name), "Vorlage (%s)", tpl->name);
+            CIYTransferPlan plan;
+            if (!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), br, prof_name, 69)) {
+                return 1;
+            }
+            print_dry_run_plan(&plan, json_mode, dump_bytes, &kb_spec);
             return 0;
         }
     }
@@ -2305,6 +2728,62 @@ int main(int argc, char **argv) {
             }
             rc = 1;
         }
+    } else if (strcmp(cmd, "template") == 0) {
+        bool list_mode = false;
+        const char *tpl_id = NULL;
+        const char *accent_str = NULL;
+        const char *bg_str = NULL;
+        const char *name_str = NULL;
+        const char *export_path = NULL;
+        char err[256] = {0};
+
+        if (!parse_template_options(argc, argv, &list_mode, &tpl_id, &accent_str, &bg_str, &name_str, &export_path, err, sizeof(err))) {
+            ciy_close(&dev);
+            return 1;
+        }
+        const CIYTemplate *tpl = ciy_template_find(tpl_id);
+        if (!tpl) {
+            ciy_close(&dev);
+            return 1;
+        }
+        uint8_t custom_accent[3];
+        uint8_t *p_accent = NULL;
+        if (accent_str && ciy_parse_hex_color(accent_str, &custom_accent[0], &custom_accent[1], &custom_accent[2])) {
+            p_accent = custom_accent;
+        }
+        uint8_t custom_bg[3];
+        uint8_t *p_bg = NULL;
+        if (bg_str && ciy_parse_hex_color(bg_str, &custom_bg[0], &custom_bg[1], &custom_bg[2])) {
+            p_bg = custom_bg;
+        }
+
+        uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+        if (!ciy_template_generate_planar(tpl, p_accent, p_bg, rgb)) {
+            ciy_close(&dev);
+            return 1;
+        }
+        const uint8_t br = has_flag_brightness ? flag_brightness : CIY_MAX_BRIGHTNESS;
+        if (!apply_key_brightness(rgb, &kb_spec, json_mode)) {
+            rc = 1;
+        } else if (ciy_apply_custom_profile_with_brightness(&dev, rgb, sizeof(rgb), br)) {
+            if (json_mode) {
+                printf("{\n  \"success\": true,\n  \"action\": \"template\",\n  \"template\": \"");
+                print_escaped_json_string(stdout, tpl->id);
+                printf("\",\n  \"brightness\": %u", br);
+                print_key_brightness_json_field(&kb_spec);
+                printf("\n}\n");
+            } else {
+                printf("Vorlage '%s' (Helligkeit %u) erfolgreich auf Tastatur übertragen.\n", tpl->name, br);
+            }
+            rc = 0;
+        } else {
+            if (json_mode) {
+                printf("{\n  \"success\": false,\n  \"error\": \"Übertragung der Vorlage an USB fehlgeschlagen\"\n}\n");
+            } else {
+                fprintf(stderr, "Fehler: Übertragung der Vorlage an USB fehlgeschlagen.\n");
+            }
+            rc = 1;
+        }
     } else {
         if (json_mode) {
             printf("{\n  \"success\": false,\n  \"error\": \"Unbekannter Befehl '");
@@ -2312,7 +2791,7 @@ int main(int argc, char **argv) {
             printf("'\"\n}\n");
         } else {
             fprintf(stderr, "Unbekannter Befehl: %s\n", cmd);
-            fprintf(stderr, "Verfügbare Befehle: status, fill, load, wasd, wasd-arrows, all-red, list-modes, set, export-layout, validate-profile, probe-led, sweep, battery, gradient\n");
+            fprintf(stderr, "Verfügbare Befehle: status, fill, load, wasd, wasd-arrows, all-red, list-modes, set, export-layout, validate-profile, probe-led, sweep, battery, gradient, template\n");
             fprintf(stderr, "Rufen Sie '%s --help' für weitere Informationen auf.\n", argv[0]);
         }
         rc = 1;
