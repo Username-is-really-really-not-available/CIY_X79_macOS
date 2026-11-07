@@ -1,5 +1,23 @@
 /* German translations for the CIY X79 Control GUI. English keys are the base language. */
 
+/* Profile tags */
+"● %@ (hidden)" = "● %@ (ausgeblendet)";
+"● Tags updated for “%@”" = "● Tags aktualisiert für „%@“";
+"A maximum of %lu tags can be assigned." = "Es können maximal %lu Tags vergeben werden.";
+"All" = "Alle";
+"Büro" = "Büro";
+"Coding" = "Coding";
+"Custom tags (comma-separated):" = "Eigene Tags (kommagetrennt):";
+"Edit tags for “%@”" = "Tags bearbeiten für „%@“";
+"Edit tags for the selected profile" = "Tags für das ausgewählte Profil bearbeiten";
+"Filter by tag:" = "Nach Tag filtern:";
+"Gaming" = "Gaming";
+"Max. %lu tags, max. %lu characters per tag" = "Max. %lu Tags, max. %lu Zeichen pro Tag";
+"Nacht" = "Nacht";
+"Suggested tags:" = "Vorgeschlagene Tags:";
+"Tags..." = "Tags...";
+
+
 "%lu profile(s) were imported. Additional profiles were skipped because the maximum of %lu profiles has been reached." = "%lu Profil(e) wurden importiert. Weitere Profile wurden übersprungen, da das Maximum von %lu Profilen erreicht ist.";
 "+ New..." = "+ Neu...";
 "A maximum of %lu profiles can be stored. Please delete an unneeded profile first." = "Es können maximal %lu Profile gespeichert werden. Bitte löschen Sie zuerst ein nicht benötigtes Profil.";

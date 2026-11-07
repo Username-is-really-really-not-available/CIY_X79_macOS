@@ -8,6 +8,7 @@
 #import "CIYMiniWindowController.h"
 #import "CIYProfileScheduler.h"
 #import "CIYStatusItemPresenter.h"
+#import "CIYProfileTags.h"
 
 @interface AppDelegate () <CIYMiniWindowControllerDelegate, NSMenuItemValidation, CIYProfileSchedulerDelegate> {
     NSTextField *_statusLabel;
@@ -16,12 +17,24 @@
     int _currentSelectedSlot;
     dispatch_queue_t _hwQueue; // serielle Queue: USB-Zugriffe blockieren nicht die Oberfläche
 
-    // Profilverwaltung
+    // Profilverwaltung & Tags (Roadmap 3.1)
     NSPopUpButton *_profilesPopUp;
     NSButton *_applyProfileBtn;
     NSButton *_saveProfileBtn;
     NSButton *_renameProfileBtn;
     NSButton *_deleteProfileBtn;
+    NSPopUpButton *_profileFilterPopUp;
+    NSButton *_editTagsBtn;
+    NSString *_selectedFilterTag;
+    NSArray<NSNumber *> *_visibleProfileIndices;
+    BOOL _activeProfilePrependedInPopUp;
+
+    // Tag-Bearbeitung Sheet
+    NSWindow *_tagSheet;
+    NSString *_tagSheetProfileId;
+    NSMutableArray<NSButton *> *_tagSuggestedCheckboxes;
+    NSTextField *_tagCustomField;
+    NSTextField *_tagErrorLabel;
 
     // Profil-Zeitsteuerung (Roadmap 2.1)
     CIYProfileScheduler *_scheduler;
@@ -438,7 +451,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [container addSubview:sep1];
 
     // Sektion: Profil-Verwaltung & Steuerung
-    CGFloat profBoxH = 104;
+    CGFloat profBoxH = 140;
     CGFloat profBoxY = y - 78 - profBoxH - 8;
     NSBox *boxProfile = [[NSBox alloc] initWithFrame:NSMakeRect(24, profBoxY, container.bounds.size.width - 48, profBoxH)];
     boxProfile.title = CIYL(@"Profile management & hardware transmission");
@@ -447,7 +460,23 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     NSView *profView = boxProfile.contentView;
 
-    // Zeile 1: Profil-Auswahl und Aktionen (y = 44)
+    // Zeile 1: Filter nach Tags & Tag-Bearbeitung (y = 78)
+    NSTextField *lblFilter = [self labelWithText:CIYL(@"Filter by tag:") fontSize:12 weight:NSFontWeightMedium];
+    lblFilter.frame = NSMakeRect(16, 80, 84, 20);
+    [profView addSubview:lblFilter];
+
+    _profileFilterPopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(102, 78, 198, 26) pullsDown:NO];
+    _profileFilterPopUp.target = self;
+    _profileFilterPopUp.action = @selector(onSelectProfileFilter:);
+    [profView addSubview:_profileFilterPopUp];
+
+    _editTagsBtn = [NSButton buttonWithTitle:CIYL(@"Tags...") target:self action:@selector(onOpenTagSheet:)];
+    _editTagsBtn.toolTip = CIYL(@"Edit tags for the selected profile");
+    _editTagsBtn.frame = NSMakeRect(306, 78, 80, 26);
+    _editTagsBtn.bezelStyle = NSBezelStyleRounded;
+    [profView addSubview:_editTagsBtn];
+
+    // Zeile 2: Profil-Auswahl und Aktionen (y = 44)
     NSTextField *lblProf = [self labelWithText:CIYL(@"Active profile:") fontSize:12 weight:NSFontWeightMedium];
     lblProf.frame = NSMakeRect(16, 46, 84, 20);
     [profView addSubview:lblProf];
@@ -758,6 +787,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [prof removeObjectForKey:@"appName"];
             }
 
+            [CIYProfileTags sanitizeTagsInProfile:prof];
             [CIYProfileScheduler sanitizeScheduleInProfile:prof];
             [_profiles addObject:prof];
         }
@@ -784,10 +814,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         }
     }
 
+    [self refreshProfileFilterPopUp];
     [self refreshProfilesPopUp];
     if (selIdx < _profiles.count) {
-        [_profilesPopUp selectItemAtIndex:selIdx];
         _currentActiveProfileId = _profiles[selIdx][@"id"];
+        [self selectPopUpForProfileIndex:selIdx];
         [self loadProfileIntoView:_profiles[selIdx]];
         [_keyboardView clearUndoHistory];
     }
@@ -893,12 +924,114 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
+- (NSInteger)activeProfileIndex {
+    if (!_currentActiveProfileId || !_profiles) return -1;
+    for (NSUInteger i = 0; i < _profiles.count; i++) {
+        if ([_profiles[i][@"id"] isEqualToString:_currentActiveProfileId]) {
+            return (NSInteger)i;
+        }
+    }
+    return -1;
+}
+
+- (NSInteger)selectedProfileIndex {
+    NSInteger row = _profilesPopUp.indexOfSelectedItem;
+    if (row < 0 || !_visibleProfileIndices || (NSUInteger)row >= _visibleProfileIndices.count) {
+        return -1;
+    }
+    NSInteger profIdx = _visibleProfileIndices[(NSUInteger)row].integerValue;
+    if (profIdx < 0 || (NSUInteger)profIdx >= _profiles.count) {
+        return -1;
+    }
+    return profIdx;
+}
+
+- (nullable NSMutableDictionary *)selectedProfile {
+    NSInteger idx = [self selectedProfileIndex];
+    return (idx >= 0 && (NSUInteger)idx < _profiles.count) ? _profiles[(NSUInteger)idx] : nil;
+}
+
+- (void)selectPopUpForProfileIndex:(NSInteger)targetIdx {
+    if (targetIdx < 0 || !_visibleProfileIndices) return;
+    NSInteger row = [CIYProfileTags rowForProfileIndex:targetIdx inPopUpIndices:_visibleProfileIndices];
+    if (row >= 0 && row < _profilesPopUp.numberOfItems) {
+        [_profilesPopUp selectItemAtIndex:row];
+    }
+}
+
+- (void)refreshProfileFilterPopUp {
+    if (!_profileFilterPopUp) return;
+    NSString *currentFilter = _selectedFilterTag;
+    [_profileFilterPopUp removeAllItems];
+    [_profileFilterPopUp addItemWithTitle:CIYL(@"All")];
+
+    NSArray<NSString *> *allTags = [CIYProfileTags allTagsInProfiles:_profiles];
+    for (NSString *tag in allTags) {
+        [_profileFilterPopUp addItemWithTitle:tag];
+    }
+
+    if (currentFilter && currentFilter.length > 0) {
+        NSString *normFilter = [CIYProfileTags normalizedTagKey:currentFilter];
+        NSInteger matchIdx = 0;
+        for (NSInteger i = 1; i < _profileFilterPopUp.numberOfItems; i++) {
+            NSString *title = [_profileFilterPopUp itemTitleAtIndex:i];
+            if ([[CIYProfileTags normalizedTagKey:title] isEqualToString:normFilter]) {
+                matchIdx = i;
+                break;
+            }
+        }
+        if (matchIdx > 0) {
+            [_profileFilterPopUp selectItemAtIndex:matchIdx];
+        } else {
+            _selectedFilterTag = nil;
+            [_profileFilterPopUp selectItemAtIndex:0];
+        }
+    } else {
+        [_profileFilterPopUp selectItemAtIndex:0];
+    }
+}
+
+- (void)onSelectProfileFilter:(NSPopUpButton *)sender {
+    NSInteger sel = sender.indexOfSelectedItem;
+    if (sel <= 0) {
+        _selectedFilterTag = nil;
+    } else {
+        _selectedFilterTag = [sender itemTitleAtIndex:sel];
+    }
+    [self refreshProfilesPopUp];
+
+    NSInteger activeIdx = [self activeProfileIndex];
+    [self selectPopUpForProfileIndex:activeIdx];
+    [self updateButtonsState];
+}
+
 - (void)refreshProfilesPopUp {
+    NSInteger activeIdx = [self activeProfileIndex];
+    BOOL prepended = NO;
+    _visibleProfileIndices = [CIYProfileTags popUpIndicesForProfiles:_profiles
+                                                          filterTag:_selectedFilterTag
+                                                 activeProfileIndex:activeIdx
+                                                  activeIsPrepended:&prepended];
+    _activeProfilePrependedInPopUp = prepended;
+
     [_profilesPopUp removeAllItems];
-    for (NSDictionary *prof in _profiles) {
+    for (NSUInteger row = 0; row < _visibleProfileIndices.count; row++) {
+        NSInteger profIdx = _visibleProfileIndices[row].integerValue;
+        NSDictionary *prof = _profiles[(NSUInteger)profIdx];
         NSString *name = prof[@"name"] ?: CIYL(@"Unnamed");
+        BOOL isPrependedRow = (prepended && row == 0);
+        NSString *title = isPrependedRow ? [NSString stringWithFormat:CIYL(@"● %@ (hidden)"), name] : name;
+
+        id rawTags = prof[kCIYProfileTagsKey];
+        if ([rawTags isKindOfClass:[NSArray class]] && ((NSArray *)rawTags).count > 0) {
+            NSString *tagsStr = [((NSArray *)rawTags) componentsJoinedByString:@", "];
+            title = [NSString stringWithFormat:@"%@  [%@]", title, tagsStr];
+        }
+
         NSString *schedBadge = [CIYProfileScheduler shortScheduleSummaryForProfile:prof];
-        NSString *title = schedBadge ? [NSString stringWithFormat:@"%@  (⏰ %@)", name, schedBadge] : name;
+        if (schedBadge) {
+            title = [NSString stringWithFormat:@"%@  (⏰ %@)", title, schedBadge];
+        }
         [_profilesPopUp.menu addItemWithTitle:title action:nil keyEquivalent:@""];
     }
     [self syncMiniWindowProfiles];
@@ -911,20 +1044,22 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         NSString *name = prof[@"name"] ?: CIYL(@"Unnamed");
         [names addObject:name];
     }
-    [_miniController setProfileNames:names selectedIndex:_profilesPopUp.indexOfSelectedItem];
+    NSInteger activeIdx = [self activeProfileIndex];
+    [_miniController setProfileNames:names selectedIndex:activeIdx];
 }
 
 - (void)updateButtonsState {
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    NSInteger idx = [self selectedProfileIndex];
     BOOL hasSelection = (idx >= 0 && (NSUInteger)idx < _profiles.count);
 
     _applyProfileBtn.enabled = hasSelection;
     _saveProfileBtn.enabled = hasSelection;
     _renameProfileBtn.enabled = hasSelection;
     _deleteProfileBtn.enabled = (hasSelection && _profiles.count > 1);
+    _editTagsBtn.enabled = hasSelection;
     [self updateAppTriggerUI];
     if (_miniController) {
-        [_miniController setSelectedIndex:idx];
+        [_miniController setSelectedIndex:[self activeProfileIndex]];
     }
 }
 
@@ -933,9 +1068,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)updateAppTriggerUI {
     _autoTriggerCheckbox.state = _autoTriggerEnabled ? NSControlStateValueOn : NSControlStateValueOff;
 
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
-    if (idx >= 0 && (NSUInteger)idx < _profiles.count) {
-        NSDictionary *prof = _profiles[(NSUInteger)idx];
+    NSDictionary *prof = [self selectedProfile];
+    if (prof) {
         NSString *appName = prof[@"appName"];
         NSString *bundleId = prof[@"appBundleId"];
         BOOL isFallback = (_fallbackProfileId && [prof[@"id"] isEqualToString:_fallbackProfileId]);
@@ -956,8 +1090,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         _setDefaultBtn.title = isFallback ? CIYL(@"★ Fallback") : CIYL(@"☆ Set as fallback");
     } else {
         _linkedAppLabel.stringValue = @"-";
-        _assignAppBtn.enabled = NO;
+        _linkedAppLabel.textColor = [NSColor secondaryLabelColor];
         _clearAppBtn.enabled = NO;
+        _assignAppBtn.enabled = NO;
         _setDefaultBtn.enabled = NO;
     }
 
@@ -1039,8 +1174,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onAssignApp:(id)sender {
     (void)sender;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    NSInteger idx = [self selectedProfileIndex];
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
+    NSString *targetId = _profiles[(NSUInteger)idx][@"id"];
 
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.title = CIYL(@"Select application for automatic profile");
@@ -1061,7 +1197,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 bundleId = SanitizeAppMetadata([NSString stringWithFormat:@"local.%@", appName]) ?: @"local.App";
             }
 
-            NSMutableDictionary *prof = self->_profiles[(NSUInteger)idx];
+            NSMutableDictionary *prof = nil;
+            for (NSMutableDictionary *p in self->_profiles) {
+                if ([p[@"id"] isEqualToString:targetId]) {
+                    prof = p;
+                    break;
+                }
+            }
+            if (!prof) return;
 
             // Bestehende Verknüpfung dieser App bei anderen Profilen entfernen (Konfliktvermeidung)
             for (NSMutableDictionary *other in self->_profiles) {
@@ -1085,10 +1228,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onClearApp:(id)sender {
     (void)sender;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
-    if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
+    NSMutableDictionary *prof = [self selectedProfile];
+    if (!prof) return;
 
-    NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
     [prof removeObjectForKey:@"appBundleId"];
     [prof removeObjectForKey:@"appName"];
 
@@ -1101,10 +1243,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onSetDefaultFallback:(id)sender {
     (void)sender;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
-    if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
+    NSDictionary *prof = [self selectedProfile];
+    if (!prof) return;
 
-    NSDictionary *prof = _profiles[(NSUInteger)idx];
     _fallbackProfileId = prof[@"id"];
     [[NSUserDefaults standardUserDefaults] setObject:_fallbackProfileId forKey:kFallbackProfileIdKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
@@ -1309,17 +1450,16 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (NSString *)currentProfileName {
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
-    if (idx >= 0 && (NSUInteger)idx < _profiles.count) {
-        return _profiles[(NSUInteger)idx][@"name"] ?: CIYL(@"Profile");
+    NSDictionary *prof = [self selectedProfile];
+    if (prof) {
+        return prof[@"name"] ?: CIYL(@"Profile");
     }
     return CIYL(@"Profile");
 }
 
 - (BOOL)canvasMatchesSavedProfile {
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
-    if (idx < 0 || (NSUInteger)idx >= _profiles.count) return NO;
-    NSDictionary *prof = _profiles[(NSUInteger)idx];
+    NSDictionary *prof = [self selectedProfile];
+    if (!prof) return NO;
     return [_keyboardView matchesProfileSlots:prof[@"slots"]];
 }
 
@@ -1354,10 +1494,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
 
     _scheduleSwitchDeferredByEdits = NO;
-    [_profilesPopUp selectItemAtIndex:idx];
     NSDictionary *prof = _profiles[(NSUInteger)idx];
     _currentActiveProfileId = prof[@"id"];
     [self saveProfilesToDefaults];
+
+    [self refreshProfilesPopUp];
+    [self selectPopUpForProfileIndex:idx];
 
     [self loadProfileIntoView:prof];
     [_keyboardView clearUndoHistory];
@@ -1372,7 +1514,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (void)onSelectProfile:(NSPopUpButton *)sender {
-    [self activateProfileAtIndex:sender.indexOfSelectedItem];
+    NSInteger row = sender.indexOfSelectedItem;
+    if (row < 0 || !_visibleProfileIndices || (NSUInteger)row >= _visibleProfileIndices.count) return;
+    NSInteger profIdx = _visibleProfileIndices[(NSUInteger)row].integerValue;
+    [self activateProfileAtIndex:profIdx];
 }
 
 - (void)onStatusMenuSelectProfile:(NSMenuItem *)sender {
@@ -1389,7 +1534,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onSaveAndSendProfile:(id)sender {
     (void)sender;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    NSInteger idx = [self selectedProfileIndex];
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
 
     NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
@@ -1476,10 +1621,12 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
             [self->_profiles addObject:newProf];
             self->_currentActiveProfileId = newId;
+            self->_selectedFilterTag = nil;
             [self saveProfilesToDefaults];
+            [self refreshProfileFilterPopUp];
             [self refreshProfilesPopUp];
 
-            [self->_profilesPopUp selectItemAtIndex:(NSInteger)(self->_profiles.count - 1)];
+            [self selectPopUpForProfileIndex:(NSInteger)(self->_profiles.count - 1)];
             [self->_keyboardView clearUndoHistory];
             self->_scheduleSwitchDeferredByEdits = NO;
             [self setHasUnsavedEdits:NO];
@@ -1493,9 +1640,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onRenameProfile:(id)sender {
     (void)sender;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    NSInteger idx = [self selectedProfileIndex];
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
 
+    NSString *targetId = _profiles[(NSUInteger)idx][@"id"];
     NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
     NSString *currentName = prof[@"name"] ?: @"";
 
@@ -1515,10 +1663,19 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             NSString *name = [input.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (name.length > 0) {
                 if (name.length > 40) name = TruncateProfileName(name, 40);
-                prof[@"name"] = name;
+                NSInteger currentIdx = -1;
+                for (NSUInteger i = 0; i < self->_profiles.count; i++) {
+                    if ([self->_profiles[i][@"id"] isEqualToString:targetId]) {
+                        self->_profiles[i][@"name"] = name;
+                        currentIdx = (NSInteger)i;
+                        break;
+                    }
+                }
                 [self saveProfilesToDefaults];
                 [self refreshProfilesPopUp];
-                [self->_profilesPopUp selectItemAtIndex:idx];
+                if (currentIdx >= 0) {
+                    [self selectPopUpForProfileIndex:currentIdx];
+                }
                 [self updateButtonsState];
                 self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile renamed to “%@”"), name];
                 self->_statusLabel.textColor = [NSColor secondaryLabelColor];
@@ -1529,7 +1686,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onDeleteProfile:(id)sender {
     (void)sender;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    NSInteger idx = [self selectedProfileIndex];
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
 
     if (_profiles.count <= 1) {
@@ -1541,6 +1698,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         return;
     }
 
+    NSString *targetId = _profiles[(NSUInteger)idx][@"id"];
     NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
     NSString *name = prof[@"name"] ?: CIYL(@"Profile");
 
@@ -1553,10 +1711,19 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse returnCode) {
         if (returnCode == NSAlertFirstButtonReturn) {
-            NSString *deletedId = self->_profiles[(NSUInteger)idx][@"id"];
-            [self->_profiles removeObjectAtIndex:(NSUInteger)idx];
+            NSInteger deleteIdx = -1;
+            for (NSUInteger i = 0; i < self->_profiles.count; i++) {
+                if ([self->_profiles[i][@"id"] isEqualToString:targetId]) {
+                    deleteIdx = (NSInteger)i;
+                    break;
+                }
+            }
+            if (deleteIdx < 0) return;
 
-            NSUInteger nextIdx = (idx > 0) ? (NSUInteger)(idx - 1) : 0;
+            NSString *deletedId = self->_profiles[(NSUInteger)deleteIdx][@"id"];
+            [self->_profiles removeObjectAtIndex:(NSUInteger)deleteIdx];
+
+            NSUInteger nextIdx = (deleteIdx > 0) ? (NSUInteger)(deleteIdx - 1) : 0;
             self->_currentActiveProfileId = self->_profiles[nextIdx][@"id"];
             if ([self->_fallbackProfileId isEqualToString:deletedId]) {
                 self->_fallbackProfileId = self->_profiles[nextIdx][@"id"];
@@ -1565,8 +1732,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
             [self saveProfilesToDefaults]; // Erst speichern, nachdem activeProfileId aktualisiert wurde!
 
+            [self refreshProfileFilterPopUp];
             [self refreshProfilesPopUp];
-            [self->_profilesPopUp selectItemAtIndex:(NSInteger)nextIdx];
+            [self selectPopUpForProfileIndex:(NSInteger)nextIdx];
             [self loadProfileIntoView:self->_profiles[nextIdx]];
             [self->_keyboardView clearUndoHistory];
 
@@ -2232,6 +2400,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                     [copyProf removeObjectForKey:kCIYProfileScheduleMinuteKey];
                     [copyProf removeObjectForKey:kCIYProfileScheduleDaysMaskKey];
                 }
+                [CIYProfileTags sanitizeTagsInProfile:copyProf];
                 [exportList addObject:copyProf];
             }
 
@@ -2373,6 +2542,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                             newProf[kCIYProfileScheduleDaysMaskKey] = dict[kCIYProfileScheduleDaysMaskKey];
                         }
                         [CIYProfileScheduler sanitizeScheduleInProfile:newProf];
+
+                        id rawTags = dict[kCIYProfileTagsKey];
+                        NSArray<NSString *> *cleanTags = [CIYProfileTags sanitizeTags:rawTags];
+                        if (cleanTags.count > 0) {
+                            newProf[kCIYProfileTagsKey] = cleanTags;
+                        }
+
                         [self->_profiles addObject:newProf];
                         lastId = newId;
                         importedCount++;
@@ -2382,9 +2558,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
             if (importedCount > 0) {
                 self->_currentActiveProfileId = lastId;
+                self->_selectedFilterTag = nil;
                 [self saveProfilesToDefaults];
+                [self refreshProfileFilterPopUp];
                 [self refreshProfilesPopUp];
-                [self->_profilesPopUp selectItemAtIndex:(NSInteger)(self->_profiles.count - 1)];
+                [self selectPopUpForProfileIndex:(NSInteger)(self->_profiles.count - 1)];
                 [self loadProfileIntoView:self->_profiles.lastObject];
                 [self->_keyboardView clearUndoHistory];
                 self->_scheduleSwitchDeferredByEdits = NO;
@@ -2429,9 +2607,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             self->_currentActiveProfileId = self->_profiles.firstObject[@"id"];
             self->_fallbackProfileId = (self->_profiles.count > 6) ? self->_profiles[6][@"id"] : self->_profiles[0][@"id"];
             [[NSUserDefaults standardUserDefaults] setObject:self->_fallbackProfileId forKey:kFallbackProfileIdKey];
+            self->_selectedFilterTag = nil;
             [self saveProfilesToDefaults];
+            [self refreshProfileFilterPopUp];
             [self refreshProfilesPopUp];
-            [self->_profilesPopUp selectItemAtIndex:0];
+            [self selectPopUpForProfileIndex:0];
             [self loadProfileIntoView:self->_profiles.firstObject];
             [self->_keyboardView clearUndoHistory];
             self->_scheduleSwitchDeferredByEdits = NO;
@@ -2826,7 +3006,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     }
     if (menuItem.action == @selector(onOpenScheduleSheet:)) {
         if (self.window.attachedSheet != nil) return NO;
-        NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+        NSInteger idx = [self selectedProfileIndex];
         return (idx >= 0 && (NSUInteger)idx < _profiles.count);
     }
     return YES;
@@ -2883,7 +3063,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onOpenScheduleSheet:(id)sender {
     (void)sender;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    NSInteger idx = [self selectedProfileIndex];
     if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
     if (self.window.attachedSheet != nil) return;
 
@@ -3091,9 +3271,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     prof[kCIYProfileScheduleDaysMaskKey] = @(mask);
 
     NSString *selectedProfileId = nil;
-    NSInteger currentPopupIdx = _profilesPopUp.indexOfSelectedItem;
-    if (currentPopupIdx >= 0 && (NSUInteger)currentPopupIdx < _profiles.count) {
-        selectedProfileId = _profiles[(NSUInteger)currentPopupIdx][@"id"];
+    NSInteger currentProfIdx = [self selectedProfileIndex];
+    if (currentProfIdx >= 0 && (NSUInteger)currentProfIdx < _profiles.count) {
+        selectedProfileId = _profiles[(NSUInteger)currentProfIdx][@"id"];
     }
 
     [self saveProfilesToDefaults];
@@ -3102,7 +3282,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (selectedProfileId) {
         for (NSUInteger i = 0; i < _profiles.count; i++) {
             if ([_profiles[i][@"id"] isEqualToString:selectedProfileId]) {
-                [_profilesPopUp selectItemAtIndex:(NSInteger)i];
+                [self selectPopUpForProfileIndex:(NSInteger)i];
                 break;
             }
         }
@@ -3180,6 +3360,216 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     return NO;
 }
 
+#pragma mark - Profil-Tags UI & Sheet
+
+- (void)dismissTagSheet {
+    if (_tagSheet) {
+        [self.window endSheet:_tagSheet];
+        _tagSheet = nil;
+    }
+    _tagSheetProfileId = nil;
+    _tagSuggestedCheckboxes = nil;
+    _tagCustomField = nil;
+    _tagErrorLabel = nil;
+}
+
+- (void)onOpenTagSheet:(id)sender {
+    (void)sender;
+    NSInteger idx = [self selectedProfileIndex];
+    if (idx < 0 || (NSUInteger)idx >= _profiles.count) return;
+    if (self.window.attachedSheet != nil) return;
+
+    NSMutableDictionary *prof = _profiles[(NSUInteger)idx];
+    NSString *profName = prof[@"name"] ?: CIYL(@"Profile");
+
+    if (_tagSheet) {
+        [self dismissTagSheet];
+    }
+
+    _tagSheetProfileId = [prof[@"id"] copy];
+
+    _tagSheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 440, 260)
+                                            styleMask:NSWindowStyleMaskTitled
+                                              backing:NSBackingStoreBuffered
+                                                defer:NO];
+    _tagSheet.title = [NSString stringWithFormat:CIYL(@"Edit tags for “%@”"), profName];
+    NSView *content = _tagSheet.contentView;
+
+    // Vorschlag-Tags Label
+    NSTextField *lblSuggested = [self labelWithText:CIYL(@"Suggested tags:") fontSize:12 weight:NSFontWeightMedium];
+    lblSuggested.frame = NSMakeRect(20, 218, 300, 18);
+    [content addSubview:lblSuggested];
+
+    // Aktuell gesetzte Tags des Profils
+    NSArray<NSString *> *existingTags = prof[kCIYProfileTagsKey];
+    NSMutableSet<NSString *> *existingKeys = [NSMutableSet set];
+    NSMutableArray<NSString *> *customTagList = [NSMutableArray array];
+
+    NSArray<NSString *> *suggestions = [CIYProfileTags suggestedTags];
+    NSMutableSet<NSString *> *suggKeys = [NSMutableSet set];
+    for (NSString *sugg in suggestions) {
+        [suggKeys addObject:[CIYProfileTags normalizedTagKey:sugg]];
+    }
+
+    if ([existingTags isKindOfClass:[NSArray class]]) {
+        for (NSString *t in existingTags) {
+            NSString *k = [CIYProfileTags normalizedTagKey:t];
+            [existingKeys addObject:k];
+            if (![suggKeys containsObject:k]) {
+                [customTagList addObject:t];
+            }
+        }
+    }
+
+    // Checkboxen für Vorschläge
+    _tagSuggestedCheckboxes = [NSMutableArray arrayWithCapacity:suggestions.count];
+    CGFloat xPos = 20;
+    CGFloat yPos = 188;
+    for (NSUInteger i = 0; i < suggestions.count; i++) {
+        NSString *suggName = suggestions[i];
+        NSButton *cb = [NSButton checkboxWithTitle:CIYL(suggName) target:nil action:nil];
+        cb.frame = NSMakeRect(xPos, yPos, 90, 20);
+        NSString *k = [CIYProfileTags normalizedTagKey:suggName];
+        cb.state = [existingKeys containsObject:k] ? NSControlStateValueOn : NSControlStateValueOff;
+        [content addSubview:cb];
+        [_tagSuggestedCheckboxes addObject:cb];
+        xPos += 98;
+    }
+
+    // Eigene Tags Label
+    NSTextField *lblCustom = [self labelWithText:CIYL(@"Custom tags (comma-separated):") fontSize:12 weight:NSFontWeightMedium];
+    lblCustom.frame = NSMakeRect(20, 150, 400, 18);
+    [content addSubview:lblCustom];
+
+    // Textfeld für eigene Tags
+    _tagCustomField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 120, 400, 24)];
+    _tagCustomField.placeholderString = CIYL(@"e.g. Coding, Cyberpunk, CS:GO");
+    _tagCustomField.stringValue = [customTagList componentsJoinedByString:@", "];
+    [content addSubview:_tagCustomField];
+
+    // Info-Hinweis
+    NSTextField *lblInfo = [self labelWithText:[NSString stringWithFormat:CIYL(@"Max. %lu tags, max. %lu characters per tag"), (unsigned long)kCIYMaxTagsPerProfile, (unsigned long)kCIYMaxTagLength]
+                                      fontSize:11
+                                        weight:NSFontWeightRegular];
+    lblInfo.textColor = [NSColor secondaryLabelColor];
+    lblInfo.frame = NSMakeRect(20, 96, 400, 16);
+    [content addSubview:lblInfo];
+
+    // Fehler-Label (für Validierungswarnungen)
+    _tagErrorLabel = [self labelWithText:@"" fontSize:11 weight:NSFontWeightMedium];
+    _tagErrorLabel.textColor = [NSColor systemRedColor];
+    _tagErrorLabel.frame = NSMakeRect(20, 68, 400, 18);
+    [content addSubview:_tagErrorLabel];
+
+    // Buttons: Abbrechen & Speichern
+    NSButton *cancelBtn = [NSButton buttonWithTitle:CIYL(@"Cancel") target:self action:@selector(onCancelTagSheet:)];
+    cancelBtn.frame = NSMakeRect(220, 16, 96, 32);
+    cancelBtn.bezelStyle = NSBezelStyleRounded;
+    cancelBtn.keyEquivalent = @"\e"; // Esc
+    [content addSubview:cancelBtn];
+
+    NSButton *saveBtn = [NSButton buttonWithTitle:CIYL(@"Save") target:self action:@selector(onSaveTagSheet:)];
+    saveBtn.frame = NSMakeRect(324, 16, 96, 32);
+    saveBtn.bezelStyle = NSBezelStyleRounded;
+    saveBtn.keyEquivalent = @"\r"; // Enter
+    [content addSubview:saveBtn];
+
+    [self.window beginSheet:_tagSheet completionHandler:nil];
+}
+
+- (void)onCancelTagSheet:(id)sender {
+    (void)sender;
+    [self dismissTagSheet];
+}
+
+- (void)onSaveTagSheet:(id)sender {
+    (void)sender;
+    if (!_tagSheetProfileId) {
+        [self dismissTagSheet];
+        return;
+    }
+
+    NSInteger targetIdx = -1;
+    for (NSUInteger i = 0; i < _profiles.count; i++) {
+        if ([_profiles[i][@"id"] isEqualToString:_tagSheetProfileId]) {
+            targetIdx = (NSInteger)i;
+            break;
+        }
+    }
+
+    if (targetIdx < 0) {
+        [self dismissTagSheet];
+        return;
+    }
+
+    // 1. Ausgewählte Vorschläge sammeln
+    NSMutableArray<NSString *> *allRaw = [NSMutableArray array];
+    NSArray<NSString *> *suggestions = [CIYProfileTags suggestedTags];
+    for (NSUInteger i = 0; i < _tagSuggestedCheckboxes.count && i < suggestions.count; i++) {
+        if (_tagSuggestedCheckboxes[i].state == NSControlStateValueOn) {
+            [allRaw addObject:suggestions[i]];
+        }
+    }
+
+    // 2. Eigene Tags parsen (kommagetrennt)
+    NSString *customInput = _tagCustomField.stringValue;
+    if (customInput.length > 0) {
+        NSArray<NSString *> *parts = [customInput componentsSeparatedByString:@","];
+        for (NSString *p in parts) {
+            NSString *trimmed = [p stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (trimmed.length > 0) {
+                [allRaw addObject:trimmed];
+            }
+        }
+    }
+
+    // 3. Auf Duplikate und Limit prüfen
+    NSMutableSet<NSString *> *seenKeys = [NSMutableSet set];
+    NSUInteger uniqueCount = 0;
+    for (NSString *raw in allRaw) {
+        NSString *s = [CIYProfileTags sanitizeTag:raw];
+        if (!s) continue;
+        NSString *k = [CIYProfileTags normalizedTagKey:s];
+        if (k.length > 0 && ![seenKeys containsObject:k]) {
+            [seenKeys addObject:k];
+            uniqueCount++;
+        }
+    }
+
+    if (uniqueCount > kCIYMaxTagsPerProfile) {
+        _tagErrorLabel.stringValue = [NSString stringWithFormat:CIYL(@"A maximum of %lu tags can be assigned."), (unsigned long)kCIYMaxTagsPerProfile];
+        return;
+    }
+
+    // 4. Tags bereinigen und im Profil speichern
+    NSArray<NSString *> *finalTags = [CIYProfileTags sanitizeTags:allRaw];
+    NSMutableDictionary *prof = _profiles[(NSUInteger)targetIdx];
+    if (finalTags.count > 0) {
+        prof[kCIYProfileTagsKey] = finalTags;
+    } else {
+        [prof removeObjectForKey:kCIYProfileTagsKey];
+    }
+
+    NSString *selectedProfileId = _tagSheetProfileId;
+    [self saveProfilesToDefaults];
+    [self refreshProfileFilterPopUp];
+    [self refreshProfilesPopUp];
+
+    for (NSUInteger i = 0; i < _profiles.count; i++) {
+        if ([_profiles[i][@"id"] isEqualToString:selectedProfileId]) {
+            [self selectPopUpForProfileIndex:(NSInteger)i];
+            break;
+        }
+    }
+
+    [self updateButtonsState];
+    [self dismissTagSheet];
+
+    NSString *name = prof[@"name"] ?: CIYL(@"Profile");
+    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Tags updated for “%@”"), name];
+    _statusLabel.textColor = [NSColor colorWithCalibratedRed:0.2 green:0.85 blue:0.3 alpha:1.0];
+}
+
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
     (void)sender;
     (void)flag;
@@ -3203,6 +3593,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [_scheduler stop];
     }
     [self dismissScheduleSheet];
+    [self dismissTagSheet];
     [NSObject cancelPreviousPerformRequestsWithTarget:self];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];

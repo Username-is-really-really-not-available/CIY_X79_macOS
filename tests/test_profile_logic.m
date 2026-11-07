@@ -11,6 +11,7 @@
 #import "../src/app/CIYMiniWindowController.h"
 #import "../src/app/CIYProfileScheduler.h"
 #import "../src/app/CIYStatusItemPresenter.h"
+#import "../src/app/CIYProfileTags.h"
 
 #if !defined(CIY_ENABLE_TEST_HOOKS)
 #error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
@@ -2047,6 +2048,231 @@ static void test_scheduler_global_enabled_timer_rescheduling(void) {
     [scheduler stop];
 }
 
+// ============================================================================
+// Profil-Tags & Kategorien Tests (Roadmap 3.1)
+// ============================================================================
+
+static void test_profile_tags_normalization(void) {
+    // Whitespace trim & collapse
+    assert([[CIYProfileTags normalizedTagKey:@"  Gaming   "] isEqualToString:@"gaming"]);
+    assert([[CIYProfileTags normalizedTagKey:@"WASD   Gaming\nPro"] isEqualToString:@"wasd gaming pro"]);
+    assert([[CIYProfileTags normalizedTagKey:@""] isEqualToString:@""]);
+    assert([[CIYProfileTags normalizedTagKey:nil] isEqualToString:@""]);
+
+    // Umlaute bleiben distinkt erhalten
+    assert([[CIYProfileTags normalizedTagKey:@"Büro"] isEqualToString:@"büro"]);
+    assert([[CIYProfileTags normalizedTagKey:@"BÜRO"] isEqualToString:@"büro"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Buro"] isEqualToString:@"buro"]);
+    assert(![[CIYProfileTags normalizedTagKey:@"Büro"] isEqualToString:[CIYProfileTags normalizedTagKey:@"Buro"]]);
+
+    // Steuerzeichen werden entfernt
+    NSString *withControl = [NSString stringWithFormat:@"Dev%C%COps", 0x07, 0x1F];
+    assert([[CIYProfileTags normalizedTagKey:withControl] isEqualToString:@"devops"]);
+}
+
+static void test_profile_tags_sanitization(void) {
+    // Ungültige Typen und leere Strings
+    assert([CIYProfileTags sanitizeTag:nil] == nil);
+    assert([CIYProfileTags sanitizeTag:@123] == nil);
+    assert([CIYProfileTags sanitizeTag:[NSNull null]] == nil);
+    assert([CIYProfileTags sanitizeTag:@"   \n\t  "] == nil);
+
+    // Gültiger String & Whitespace-Bereinigung
+    assert([[CIYProfileTags sanitizeTag:@"  Coding  "] isEqualToString:@"Coding"]);
+    assert([[CIYProfileTags sanitizeTag:@"Code   Night"] isEqualToString:@"Code Night"]);
+
+    // Truncation auf max. 20 Einheiten (kCIYMaxTagLength)
+    NSString *longTag = @"12345678901234567890EXTRA";
+    NSString *truncated = [CIYProfileTags sanitizeTag:longTag];
+    assert(truncated != nil);
+    assert(truncated.length == 20);
+    assert([truncated isEqualToString:@"12345678901234567890"]);
+
+    // Truncation mit Whitespace am Schnittpunkt
+    NSString *longWithSpace = @"1234567890123456789  EXTRA";
+    NSString *truncatedSpace = [CIYProfileTags sanitizeTag:longWithSpace];
+    assert(truncatedSpace != nil);
+    assert(truncatedSpace.length <= 20);
+    assert(![truncatedSpace hasSuffix:@" "]);
+
+    // sanitizeTags: Filterung, Deduplizierung, Limit 5
+    NSArray *rawList = @[
+        @"Gaming",
+        @"  gaming  ",   // Duplikat
+        @"",              // Leer
+        @42,              // Nicht-String
+        @"Büro",
+        @"BÜRO",          // Duplikat
+        @"Coding",
+        @"Nacht",
+        @"Custom 1",
+        @"Custom 2"       // Über Limit 5
+    ];
+    NSArray<NSString *> *cleaned = [CIYProfileTags sanitizeTags:rawList];
+    assert(cleaned.count == 5);
+    assert([cleaned[0] isEqualToString:@"Gaming"]);
+    assert([cleaned[1] isEqualToString:@"Büro"]);
+    assert([cleaned[2] isEqualToString:@"Coding"]);
+    assert([cleaned[3] isEqualToString:@"Nacht"]);
+    assert([cleaned[4] isEqualToString:@"Custom 1"]);
+
+    // sanitizeTagsInProfile
+    NSMutableDictionary *prof = [NSMutableDictionary dictionary];
+    prof[kCIYProfileTagsKey] = @[@"Gaming", @"", @123];
+    [CIYProfileTags sanitizeTagsInProfile:prof];
+    assert([prof[kCIYProfileTagsKey] count] == 1);
+    assert([prof[kCIYProfileTagsKey][0] isEqualToString:@"Gaming"]);
+
+    // Leere Tags entfernen den Key
+    prof[kCIYProfileTagsKey] = @[@"", @999];
+    [CIYProfileTags sanitizeTagsInProfile:prof];
+    assert(prof[kCIYProfileTagsKey] == nil);
+}
+
+static void test_profile_tags_collection_and_filtering(void) {
+    NSDictionary *p1 = @{ @"name": @"P1", kCIYProfileTagsKey: @[@"Gaming", @"Büro"] };
+    NSDictionary *p2 = @{ @"name": @"P2", kCIYProfileTagsKey: @[@"coding", @"gaming"] };
+    NSDictionary *p3 = @{ @"name": @"P3" }; // Keine Tags
+    NSDictionary *p4 = @{ @"name": @"P4", kCIYProfileTagsKey: @[@"Nacht", @"BÜRO"] };
+    NSArray *profiles = @[p1, p2, p3, p4];
+
+    // allTagsInProfiles: dedupliziert & sortiert
+    NSArray<NSString *> *allTags = [CIYProfileTags allTagsInProfiles:profiles];
+    assert(allTags.count == 4);
+
+    // profile:matchesFilterTag:
+    assert([CIYProfileTags profile:p1 matchesFilterTag:nil] == YES);
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@""] == YES);
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@"All"] == YES);
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@"Alle"] == YES);
+
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@"gaming"] == YES);
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@"GAMING"] == YES);
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@"Büro"] == YES);
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@"Buro"] == NO);
+    assert([CIYProfileTags profile:p1 matchesFilterTag:@"Coding"] == NO);
+
+    assert([CIYProfileTags profile:p3 matchesFilterTag:@"Gaming"] == NO);
+    assert([CIYProfileTags profile:p3 matchesFilterTag:nil] == YES);
+
+    // filteredProfileIndicesForProfiles:filterTag:
+    NSArray<NSNumber *> *gamingIndices = [CIYProfileTags filteredProfileIndicesForProfiles:profiles filterTag:@"Gaming"];
+    assert(gamingIndices.count == 2);
+    assert([gamingIndices[0] isEqualToNumber:@0]);
+    assert([gamingIndices[1] isEqualToNumber:@1]);
+
+    NSArray<NSNumber *> *bueroIndices = [CIYProfileTags filteredProfileIndicesForProfiles:profiles filterTag:@"BÜRO"];
+    assert(bueroIndices.count == 2);
+    assert([bueroIndices[0] isEqualToNumber:@0]);
+    assert([bueroIndices[1] isEqualToNumber:@3]);
+
+    NSArray<NSNumber *> *noneIndices = [CIYProfileTags filteredProfileIndicesForProfiles:profiles filterTag:@"NonExistent"];
+    assert(noneIndices.count == 0);
+}
+
+static void test_profile_tags_popup_mapping_and_hidden_active(void) {
+    NSDictionary *p0 = @{ @"name": @"P0 - Default", @"id": @"id-p0" }; // Ohne Tags
+    NSDictionary *p1 = @{ @"name": @"P1 - Gaming",  @"id": @"id-p1", kCIYProfileTagsKey: @[@"Gaming"] };
+    NSDictionary *p2 = @{ @"name": @"P2 - Office",  @"id": @"id-p2", kCIYProfileTagsKey: @[@"Büro"] };
+    NSDictionary *p3 = @{ @"name": @"P3 - Gaming 2",@"id": @"id-p3", kCIYProfileTagsKey: @[@"Gaming"] };
+    NSArray *profiles = @[p0, p1, p2, p3];
+
+    // Fall 1: Filter ist "Alle" (nil) -> Alle Profile sichtbar, aktives Profil ist ganz normal an seinem Platz
+    BOOL prepended = NO;
+    NSArray<NSNumber *> *indicesAll = [CIYProfileTags popUpIndicesForProfiles:profiles
+                                                                   filterTag:nil
+                                                          activeProfileIndex:0
+                                                           activeIsPrepended:&prepended];
+    assert(!prepended);
+    assert(indicesAll.count == 4);
+    assert([indicesAll[0] isEqualToNumber:@0]);
+    assert([indicesAll[1] isEqualToNumber:@1]);
+    assert([indicesAll[2] isEqualToNumber:@2]);
+    assert([indicesAll[3] isEqualToNumber:@3]);
+
+    // Fall 2: Filter ist "Gaming", aktives Profil ist p1 (Index 1).
+    // p1 ist im Filter enthalten -> kein Prepended-Platzhalter
+    NSArray<NSNumber *> *indicesGamingActive1 = [CIYProfileTags popUpIndicesForProfiles:profiles
+                                                                             filterTag:@"Gaming"
+                                                                    activeProfileIndex:1
+                                                                     activeIsPrepended:&prepended];
+    assert(!prepended);
+    assert(indicesGamingActive1.count == 2);
+    assert([indicesGamingActive1[0] isEqualToNumber:@1]);
+    assert([indicesGamingActive1[1] isEqualToNumber:@3]);
+
+    // Fall 3: Filter ist "Gaming", aktives Profil ist p0 (Index 0).
+    // p0 hat KEIN "Gaming" -> aktives Profil wird an Index 0 vorangestellt!
+    NSArray<NSNumber *> *indicesGamingActive0 = [CIYProfileTags popUpIndicesForProfiles:profiles
+                                                                             filterTag:@"Gaming"
+                                                                    activeProfileIndex:0
+                                                                     activeIsPrepended:&prepended];
+    assert(prepended == YES);
+    assert(indicesGamingActive0.count == 3);
+    assert([indicesGamingActive0[0] isEqualToNumber:@0]); // Prepended aktives Profil
+    assert([indicesGamingActive0[1] isEqualToNumber:@1]); // Erstes Gaming-Profil
+    assert([indicesGamingActive0[2] isEqualToNumber:@3]); // Zweites Gaming-Profil
+
+    // Test Mapping-Funktionen
+    // Zeile 0 im PopUp muss auf Profil 0 zeigen
+    assert([CIYProfileTags profileIndexForRow:0 inPopUpIndices:indicesGamingActive0] == 0);
+    // Zeile 1 im PopUp muss auf Profil 1 zeigen
+    assert([CIYProfileTags profileIndexForRow:1 inPopUpIndices:indicesGamingActive0] == 1);
+    // Zeile 2 im PopUp muss auf Profil 3 zeigen
+    assert([CIYProfileTags profileIndexForRow:2 inPopUpIndices:indicesGamingActive0] == 3);
+    // Ungültige Zeilen geben -1
+    assert([CIYProfileTags profileIndexForRow:-1 inPopUpIndices:indicesGamingActive0] == -1);
+    assert([CIYProfileTags profileIndexForRow:99 inPopUpIndices:indicesGamingActive0] == -1);
+
+    // Umkehr-Mapping: Profil-Index -> PopUp-Zeile
+    assert([CIYProfileTags rowForProfileIndex:0 inPopUpIndices:indicesGamingActive0] == 0);
+    assert([CIYProfileTags rowForProfileIndex:1 inPopUpIndices:indicesGamingActive0] == 1);
+    assert([CIYProfileTags rowForProfileIndex:3 inPopUpIndices:indicesGamingActive0] == 2);
+    // Profil 2 ("Büro") ist ausgeblendet und nicht aktiv -> nicht im PopUp -> -1
+    assert([CIYProfileTags rowForProfileIndex:2 inPopUpIndices:indicesGamingActive0] == -1);
+
+    // Fall 4: Filter hat KEINE Treffer (z. B. "Nacht"), aktives Profil ist p2 (Index 2).
+    // Das aktive Profil wird als einziger Eintrag an Index 0 vorangestellt
+    NSArray<NSNumber *> *indicesEmpty = [CIYProfileTags popUpIndicesForProfiles:profiles
+                                                                     filterTag:@"Nacht"
+                                                            activeProfileIndex:2
+                                                             activeIsPrepended:&prepended];
+    assert(prepended == YES);
+    assert(indicesEmpty.count == 1);
+    assert([indicesEmpty[0] isEqualToNumber:@2]);
+    assert([CIYProfileTags profileIndexForRow:0 inPopUpIndices:indicesEmpty] == 2);
+}
+
+static void test_profile_tags_json_roundtrip_and_export_import(void) {
+    NSMutableDictionary *prof = [NSMutableDictionary dictionary];
+    prof[@"id"] = @"test-tags-uuid";
+    prof[@"name"] = @"Tagged Profile";
+    prof[@"slots"] = @{ @"0": @"#FF0000" };
+    prof[kCIYProfileTagsKey] = @[@"Gaming", @"Coding", @"Nacht", @"  Super Long Custom Tag 1234567890  "];
+
+    [CIYProfileTags sanitizeTagsInProfile:prof];
+    assert([prof[kCIYProfileTagsKey] count] == 4);
+    assert([prof[kCIYProfileTagsKey][3] length] <= 20);
+
+    // JSON Serialisierung
+    NSError *err = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@[prof] options:0 error:&err];
+    assert(err == nil && data != nil);
+
+    // JSON Deserialisierung
+    NSArray *imported = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&err];
+    assert(err == nil && [imported isKindOfClass:[NSArray class]] && imported.count == 1);
+
+    NSMutableDictionary *importedProf = imported[0];
+    [CIYProfileTags sanitizeTagsInProfile:importedProf];
+
+    NSArray<NSString *> *tags = importedProf[kCIYProfileTagsKey];
+    assert(tags.count == 4);
+    assert([tags[0] isEqualToString:@"Gaming"]);
+    assert([tags[1] isEqualToString:@"Coding"]);
+    assert([tags[2] isEqualToString:@"Nacht"]);
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -2098,6 +2324,11 @@ int main(void) {
         test_scheduler_timezone_notification();
         test_scheduler_reschedule_timer_only();
         test_scheduler_global_enabled_timer_rescheduling();
+        test_profile_tags_normalization();
+        test_profile_tags_sanitization();
+        test_profile_tags_collection_and_filtering();
+        test_profile_tags_popup_mapping_and_hidden_active();
+        test_profile_tags_json_roundtrip_and_export_import();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

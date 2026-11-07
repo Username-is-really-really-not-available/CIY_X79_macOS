@@ -43,6 +43,7 @@ clang -arch arm64 -arch x86_64 \
     src/app/CIYMiniWindowController.m \
     src/app/CIYProfileScheduler.m \
     src/app/CIYStatusItemPresenter.m \
+    src/app/CIYProfileTags.m \
     src/app/AppDelegate.m \
     src/app/main.m \
     -o "${MACOS_DIR}/${APP_NAME}"
