@@ -134,6 +134,8 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     src/app/KeyboardBackend.m \
     src/app/CIYKeyboardView.m \
     src/app/CIYBatteryMonitor.m \
+    src/app/CIYLocalization.m \
+    src/app/CIYMiniWindowController.m \
     tests/test_profile_logic.m \
     -o "${TEST_TMP_DIR}/test_profile_logic"
 "${TEST_TMP_DIR}/test_profile_logic"

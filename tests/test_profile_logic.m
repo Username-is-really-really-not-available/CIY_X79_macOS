@@ -7,6 +7,8 @@
 #import "../src/app/KeyboardBackend.h"
 #import "../src/app/CIYKeyboardView.h"
 #import "../src/app/CIYBatteryMonitor.h"
+#import "../src/app/CIYLocalization.h"
+#import "../src/app/CIYMiniWindowController.h"
 
 #if !defined(CIY_ENABLE_TEST_HOOKS)
 #error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
@@ -1055,6 +1057,184 @@ static void test_matches_profile_slots_and_dirty_state(void) {
     assert([view matchesProfileSlots:fullRedSlots]);
 }
 
+@interface CIYMiniTestDelegate : NSObject <CIYMiniWindowControllerDelegate>
+@property (nonatomic, assign) NSInteger selectedIndex;
+@property (nonatomic, assign) BOOL sendRequested;
+@property (nonatomic, assign) BOOL closed;
+@end
+
+@implementation CIYMiniTestDelegate
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _selectedIndex = -1;
+        _sendRequested = NO;
+        _closed = NO;
+    }
+    return self;
+}
+- (void)miniWindowController:(CIYMiniWindowController *)controller didSelectProfileAtIndex:(NSInteger)index {
+    (void)controller;
+    self.selectedIndex = index;
+}
+- (void)miniWindowControllerDidRequestSend:(CIYMiniWindowController *)controller {
+    (void)controller;
+    self.sendRequested = YES;
+}
+- (void)miniWindowControllerDidClose:(CIYMiniWindowController *)controller {
+    (void)controller;
+    self.closed = YES;
+}
+@end
+
+static void test_mini_window_controller(void) {
+    [NSApplication sharedApplication];
+
+    CIYMiniWindowController *ctrl = [[CIYMiniWindowController alloc] init];
+    assert(ctrl != nil);
+    assert(!ctrl.isVisible);
+
+    CIYMiniTestDelegate *del = [[CIYMiniTestDelegate alloc] init];
+    ctrl.delegate = del;
+
+    // 1. Initiales Setzen der Daten darf KEINE Delegate-Aktionen auslösen
+    NSArray<NSString *> *names = @[@"WASD Gaming", @"Cyberpunk", @"Clean Office"];
+    [ctrl setProfileNames:names selectedIndex:1];
+    assert(del.selectedIndex == -1);
+    assert(!del.sendRequested);
+
+    [ctrl setSelectedIndex:2];
+    assert(del.selectedIndex == -1);
+
+    [ctrl setConnected:YES];
+    [ctrl noteSendResult:YES atDate:[NSDate date]];
+
+    // 2. Fenster anzeigen und Window-Eigenschaften prüfen
+    [ctrl show];
+    assert(ctrl.isVisible);
+
+    NSWindow *panelWin = nil;
+    NSView *content = nil;
+    for (NSWindow *win in [NSApp windows]) {
+        if ((id)win.delegate == (id)ctrl && ([win.title isEqualToString:@"Mini Mode"] || [win.title isEqualToString:CIYL(@"Mini Mode")])) {
+            panelWin = win;
+            content = win.contentView;
+            assert(win.level == NSFloatingWindowLevel);
+            assert((win.styleMask & NSWindowStyleMaskUtilityWindow) != 0);
+            assert((win.styleMask & NSWindowStyleMaskTitled) != 0);
+            assert((win.styleMask & NSWindowStyleMaskClosable) != 0);
+            assert(win.hidesOnDeactivate == NO);
+            break;
+        }
+    }
+    assert(panelWin != nil);
+    assert(content != nil);
+
+    NSPopUpButton *pop = nil;
+    NSButton *sendButton = nil;
+    BOOL foundPopUp = NO;
+    BOOL foundSendButton = NO;
+    for (NSView *sub in content.subviews) {
+        if ([sub isKindOfClass:[NSPopUpButton class]]) {
+            pop = (NSPopUpButton *)sub;
+            foundPopUp = YES;
+        } else if ([sub isKindOfClass:[NSButton class]]) {
+            NSButton *btn = (NSButton *)sub;
+            if ([btn.keyEquivalent isEqualToString:@"\r"]) {
+                sendButton = btn;
+                foundSendButton = YES;
+            }
+        }
+    }
+    assert(foundPopUp && foundSendButton);
+    assert(pop != nil);
+    assert(sendButton != nil);
+
+    assert(pop.numberOfItems == 3);
+    // Benutzerinteraktion simulieren
+    [pop selectItemAtIndex:0];
+    [pop sendAction:pop.action to:pop.target];
+    assert(del.selectedIndex == 0);
+
+    [sendButton performClick:nil];
+    assert(del.sendRequested == YES);
+
+    // Regression 1: Gleichnamige Profile
+    NSArray<NSString *> *dupNames = @[@"Gaming", @"Gaming", @"Office"];
+    [ctrl setProfileNames:dupNames selectedIndex:2];
+    assert(pop.numberOfItems == 3);
+    assert(pop.indexOfSelectedItem == 2);
+    [pop selectItemAtIndex:2];
+    [pop sendAction:pop.action to:pop.target];
+    assert(del.selectedIndex == 2);
+
+    // Regression 2: Ungültiger Auswahl-Index
+    [ctrl setSelectedIndex:-1];
+    assert(pop.indexOfSelectedItem == -1);
+    assert(sendButton.enabled == NO);
+
+    [ctrl setProfileNames:names selectedIndex:-1];
+    assert(pop.indexOfSelectedItem == -1);
+    assert(sendButton.enabled == NO);
+
+    // 3. Ausblenden und Umschalten
+    [ctrl hide];
+    assert(!ctrl.isVisible);
+
+    [ctrl toggle];
+    assert(ctrl.isVisible);
+
+    [ctrl toggle];
+    assert(!ctrl.isVisible);
+
+    // 4. Close-Delegate & Re-Show nach teardown
+    [ctrl show];
+    assert(ctrl.isVisible);
+
+    // Reguläres Schließen des Panels setzt del.closed == YES
+    del.closed = NO;
+    [panelWin close];
+    assert(del.closed == YES);
+    assert(!ctrl.isVisible);
+
+    // [ctrl teardown] darf del.closed nicht auslösen
+    panelWin = nil;
+    del.closed = NO;
+    [ctrl teardown];
+    assert(!ctrl.isVisible);
+    assert(del.closed == NO);
+
+    // Doppelter Aufruf darf nicht crashen
+    [ctrl teardown];
+    assert(del.closed == NO);
+
+    // Re-Show nach teardown: Erneuter Zyklus ctrl.delegate = del; [ctrl show];
+    ctrl.delegate = del;
+    [ctrl show];
+    assert(ctrl.isVisible);
+
+    NSWindow *reopenedWin = nil;
+    for (NSWindow *win in [NSApp windows]) {
+        if ((id)win.delegate == (id)ctrl && ([win.title isEqualToString:@"Mini Mode"] || [win.title isEqualToString:CIYL(@"Mini Mode")])) {
+            reopenedWin = win;
+            break;
+        }
+    }
+    assert(reopenedWin != nil);
+
+    // Reguläres Schließen des wiedergeöffneten Panels
+    del.closed = NO;
+    [reopenedWin close];
+    assert(del.closed == YES);
+    assert(!ctrl.isVisible);
+
+    // Abschließendes teardown
+    del.closed = NO;
+    [ctrl teardown];
+    assert(!ctrl.isVisible);
+    assert(del.closed == NO);
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -1090,6 +1270,7 @@ int main(void) {
         test_color_mutators_return_change_flag();
         test_undo_redo_delegate_and_validation();
         test_matches_profile_slots_and_dirty_state();
+        test_mini_window_controller();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

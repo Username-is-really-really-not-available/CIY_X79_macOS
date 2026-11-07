@@ -30,6 +30,7 @@
 "Close window" = "Fenster schließen";
 "Color all keys" = "Alle Tasten färben";
 "Color:" = "Farbe:";
+"Connected" = "Verbunden";
 "Copy ciy_ctl command" = "ciy_ctl kopieren";
 "Create and save a new profile from the current key colors" = "Aktuelle Tastenfarben als neues Profil anlegen und speichern";
 "Create new lighting profile" = "Neues Beleuchtungsprofil anlegen";
@@ -39,6 +40,7 @@
 "Delete" = "Löschen";
 "Delete profile “%@”?" = "Profil „%@“ löschen?";
 "Direction:" = "Richtung:";
+"Disconnected" = "Getrennt";
 "Do you really want to permanently delete this lighting profile?" = "Möchten Sie dieses Beleuchtungsprofil wirklich endgültig löschen?";
 "Documentation & guide" = "Dokumentation & Anleitung";
 "Edit" = "Bearbeiten";
@@ -74,11 +76,13 @@
 "Key editor (65% ISO-DE layout)" = "Tasten-Editor (65% ISO-DE Layout)";
 "Keyboard" = "Tastatur";
 "Language change requires restart" = "Sprachänderung erfordert einen Neustart";
+"Last sent: %@" = "Zuletzt gesendet: %@";
 "Letters (Alpha)" = "Buchstaben (Alpha)";
 "Link" = "Verknüpfen";
 "Link an application (e.g. from /Applications) to this profile" = "Eine Applikation (z. B. aus /Applications) mit diesem Profil verknüpfen";
 "Link app to current profile..." = "App mit aktuellem Profil verknüpfen...";
 "Linked app:" = "Verknüpfte App:";
+"Mini Mode" = "Mini-Modus";
 "Minimize" = "Minimieren";
 "Modifiers" = "Modifikatoren";
 "More ▾" = "Mehr ▾";
@@ -99,6 +103,7 @@
 "Profile cannot be deleted" = "Profil kann nicht gelöscht werden";
 "Profile limit reached" = "Profillimit erreicht";
 "Profile management & hardware transmission" = "Profil-Verwaltung & Hardware-Übertragung";
+"Profile:" = "Profil:";
 "Profiles:" = "Profile:";
 "Purple" = "Lila";
 "Quit CIY X79 Control" = "CIY X79 Control beenden";
@@ -119,8 +124,10 @@
 "Saves current color adjustments in the profile and sends them directly to the keyboard" = "Aktuelle Farbanpassungen im Profil sichern und direkt an die Tastatur senden";
 "Select app..." = "App wählen...";
 "Select application for automatic profile" = "Anwendung auswählen für automatisches Profil";
+"Select profile" = "Profil auswählen";
 "Selected key: [ %@ ] (Slot %d)" = "Ausgewählte Taste: [ %@ ] (Slot %d)";
 "Selected key: [ W ] (Slot 14)" = "Ausgewählte Taste: [ W ] (Slot 14)";
+"Send (↵)" = "Senden (↵)";
 "Send active profile to keyboard" = "Aktives Profil an Tastatur senden";
 "Set as default fallback" = "Als Standard-Fallback festlegen";
 "Set current profile as default fallback" = "Aktuelles Profil als Standard-Fallback setzen";

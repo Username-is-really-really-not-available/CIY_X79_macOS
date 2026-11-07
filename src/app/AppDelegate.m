@@ -5,8 +5,9 @@
 #import "../core/ciy_gradient.h"
 #import "CIYBatteryMonitor.h"
 #import "CIYLocalization.h"
+#import "CIYMiniWindowController.h"
 
-@interface AppDelegate () {
+@interface AppDelegate () <CIYMiniWindowControllerDelegate, NSMenuItemValidation> {
     NSTextField *_statusLabel;
     NSTextField *_selectedKeyLabel;
     CIYKeyboardView *_keyboardView;
@@ -61,7 +62,12 @@
     CFAbsoluteTime _lastSendTime;
     NSUInteger _wakeRetryCount;
     NSStatusItem *_statusItem;
+    CIYMiniWindowController *_miniController;
+    BOOL _hasLastSendResult;
+    BOOL _lastSendOk;
+    NSDate *_lastSendDate;
 }
+- (void)recordSendResult:(BOOL)ok;
 @end
 
 static NSString * const kCustomProfilesKey = @"CIYX79CustomProfiles_v1";
@@ -839,8 +845,19 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [_profilesPopUp removeAllItems];
     for (NSDictionary *prof in _profiles) {
         NSString *name = prof[@"name"] ?: CIYL(@"Unnamed");
-        [_profilesPopUp addItemWithTitle:name];
+        [_profilesPopUp.menu addItemWithTitle:name action:nil keyEquivalent:@""];
     }
+    [self syncMiniWindowProfiles];
+}
+
+- (void)syncMiniWindowProfiles {
+    if (!_miniController) return;
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:_profiles.count];
+    for (NSDictionary *prof in _profiles) {
+        NSString *name = prof[@"name"] ?: CIYL(@"Unnamed");
+        [names addObject:name];
+    }
+    [_miniController setProfileNames:names selectedIndex:_profilesPopUp.indexOfSelectedItem];
 }
 
 - (void)updateButtonsState {
@@ -852,6 +869,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _renameProfileBtn.enabled = hasSelection;
     _deleteProfileBtn.enabled = (hasSelection && _profiles.count > 1);
     [self updateAppTriggerUI];
+    if (_miniController) {
+        [_miniController setSelectedIndex:idx];
+    }
 }
 
 #pragma mark - Auto-Trigger (App-Fokus & Profilwechsel)
@@ -1143,6 +1163,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self updateButtonsState];
 
     // Direkt das ausgewählte Profil an die Tastatur senden
+    if (![KeyboardBackend shared].isConnected) {
+        [self recordSendResult:NO];
+    }
     [self sendCurrentProfileToHardware];
 }
 
@@ -1156,6 +1179,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onApplyProfileClicked:(id)sender {
     (void)sender;
+    if (![KeyboardBackend shared].isConnected) {
+        [self recordSendResult:NO];
+    }
     [self sendCurrentProfileToHardware];
 }
 
@@ -1275,6 +1301,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
                 [self saveProfilesToDefaults];
                 [self refreshProfilesPopUp];
                 [self->_profilesPopUp selectItemAtIndex:idx];
+                [self updateButtonsState];
                 self->_statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile renamed to “%@”"), name];
                 self->_statusLabel.textColor = [NSColor secondaryLabelColor];
             }
@@ -1768,6 +1795,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             self->_lastSendTime = CFAbsoluteTimeGetCurrent();
             self->_sendInFlight = NO;
             [self reportResult:ok];
+            if (ok || ![KeyboardBackend shared].lastOperationWasCancelled) {
+                [self recordSendResult:ok];
+            }
             if (ok) {
                 NSString *profName = [self currentProfileName];
                 if (self->_hasUnsavedEdits) {
@@ -1899,6 +1929,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         _statusLabel.textColor = [NSColor systemRedColor];
     }
     [self updateStatusItemMenu];
+    if (_miniController) {
+        [_miniController setConnected:connected];
+    }
 }
 
 #pragma mark - Profil Export & Import
@@ -2243,6 +2276,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     NSMenuItem *openWinItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Open main window") action:@selector(onOpenMainWindow:) keyEquivalent:@""];
     openWinItem.target = self;
     [windowMenu addItem:openWinItem];
+    NSMenuItem *miniModeItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Mini Mode") action:@selector(onToggleMiniMode:) keyEquivalent:@"m"];
+    miniModeItem.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagCommand;
+    miniModeItem.target = self;
+    [windowMenu addItem:miniModeItem];
     [windowMenu addItem:[NSMenuItem separatorItem]];
     [windowMenu addItemWithTitle:CIYL(@"Minimize") action:@selector(performMiniaturize:) keyEquivalent:@"m"];
     [windowMenu addItemWithTitle:CIYL(@"Zoom") action:@selector(performZoom:) keyEquivalent:@""];
@@ -2434,7 +2471,54 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+- (void)onToggleMiniMode:(id)sender {
+    (void)sender;
+    if (!_miniController) {
+        _miniController = [[CIYMiniWindowController alloc] init];
+        _miniController.delegate = self;
+        [self syncMiniWindowProfiles];
+        [_miniController setConnected:[KeyboardBackend shared].isConnected];
+        if (_hasLastSendResult) {
+            [_miniController noteSendResult:_lastSendOk atDate:_lastSendDate];
+        }
+    }
+    [_miniController toggle];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(onToggleMiniMode:)) {
+        menuItem.state = (_miniController && _miniController.isVisible) ? NSControlStateValueOn : NSControlStateValueOff;
+        return YES;
+    }
+    return YES;
+}
+
+#pragma mark - CIYMiniWindowControllerDelegate
+
+- (void)miniWindowController:(CIYMiniWindowController *)controller didSelectProfileAtIndex:(NSInteger)index {
+    (void)controller;
+    [self activateProfileAtIndex:index];
+}
+
+- (void)miniWindowControllerDidRequestSend:(CIYMiniWindowController *)controller {
+    (void)controller;
+    [self onApplyProfileClicked:nil];
+}
+
+- (void)miniWindowControllerDidClose:(CIYMiniWindowController *)controller {
+    (void)controller;
+}
+
 #pragma mark - Helpers
+
+- (void)recordSendResult:(BOOL)ok {
+    _hasLastSendResult = YES;
+    _lastSendOk = ok;
+    _lastSendDate = [NSDate date];
+    if (_miniController) {
+        [_miniController noteSendResult:ok atDate:_lastSendDate];
+    }
+}
 
 /// Führt USB-Operationen asynchron auf der seriellen Queue aus und meldet das Ergebnis auf dem Main-Thread
 - (void)runHardware:(BOOL (^)(void))work completion:(void (^_Nullable)(BOOL ok))completion {
@@ -2474,10 +2558,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
     (void)sender;
+    (void)flag;
     if (self.window.isMiniaturized) {
         [self.window deminiaturize:nil];
     }
-    if (!flag) {
+    if (!self.window.isVisible) {
         [self.window makeKeyAndOrderFront:nil];
     }
     [NSApp activateIgnoringOtherApps:YES];
@@ -2486,6 +2571,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    if (_miniController) {
+        [_miniController teardown];
+        _miniController = nil;
+    }
     [NSObject cancelPreviousPerformRequestsWithTarget:self];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];

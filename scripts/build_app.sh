@@ -40,6 +40,7 @@ clang -arch arm64 -arch x86_64 \
     src/app/CIYKeyboardView.m \
     src/app/CIYBatteryMonitor.m \
     src/app/CIYLocalization.m \
+    src/app/CIYMiniWindowController.m \
     src/app/AppDelegate.m \
     src/app/main.m \
     -o "${MACOS_DIR}/${APP_NAME}"
