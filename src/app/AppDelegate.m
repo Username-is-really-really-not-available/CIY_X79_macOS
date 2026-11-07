@@ -7,6 +7,7 @@
 #import "CIYLocalization.h"
 #import "CIYMiniWindowController.h"
 #import "CIYProfileScheduler.h"
+#import "CIYStatusItemPresenter.h"
 
 @interface AppDelegate () <CIYMiniWindowControllerDelegate, NSMenuItemValidation, CIYProfileSchedulerDelegate> {
     NSTextField *_statusLabel;
@@ -2653,19 +2654,37 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 #pragma mark - Menüleisten-Statusobjekt (Tray Icon)
 
+- (void)refreshStatusItemIcon {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self refreshStatusItemIcon];
+        });
+        return;
+    }
+    if (!_statusItem) return;
+
+    NSString *name = [self currentProfileName];
+    NSDictionary *currentProf = nil;
+    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
+    if (idx >= 0 && (NSUInteger)idx < _profiles.count) {
+        currentProf = _profiles[(NSUInteger)idx];
+    }
+
+    NSColor *profColor = [CIYStatusItemPresenter dominantColorFromSlots:currentProf[@"slots"]];
+    BOOL connected = [KeyboardBackend shared].isConnected;
+
+    NSImage *icon = [CIYStatusItemPresenter iconForProfileName:name
+                                                  profileColor:profColor
+                                                     connected:connected];
+    _statusItem.button.image = icon;
+    _statusItem.button.title = @"";
+    _statusItem.button.toolTip = [CIYStatusItemPresenter toolTipForProfileName:name connected:connected];
+    _statusItem.button.accessibilityLabel = [CIYStatusItemPresenter accessibilityDescriptionForProfileName:name connected:connected];
+}
+
 - (void)setupStatusItem {
     _statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength];
-    NSImage *icon = nil;
-    if (@available(macOS 11.0, *)) {
-        icon = [NSImage imageWithSystemSymbolName:@"keyboard" accessibilityDescription:@"CIY X79 Control"];
-    }
-    if (icon) {
-        icon.template = YES;
-        _statusItem.button.image = icon;
-    } else {
-        _statusItem.button.title = @"⌨";
-    }
-    _statusItem.button.toolTip = @"CIY X79 RGB Control";
+    [self refreshStatusItemIcon];
     [self updateStatusItemMenu];
 }
 
@@ -2730,6 +2749,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         item.target = self;
         item.tag = (NSInteger)i;
         item.state = isActive ? NSControlStateValueOn : NSControlStateValueOff;
+
+        NSString *keyEq = [CIYStatusItemPresenter keyEquivalentForIndex:(NSInteger)i];
+        if (keyEq.length > 0) {
+            item.keyEquivalent = keyEq;
+            item.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+        }
+
         [menu addItem:item];
     }
 
@@ -2763,6 +2789,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     _statusItem.menu = menu;
     [self refreshLanguageMenuStates];
+    [self refreshStatusItemIcon];
 }
 
 - (void)onOpenMainWindow:(id)sender {

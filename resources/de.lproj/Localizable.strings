@@ -90,6 +90,13 @@
 "Mon" = "Mo";
 "Mon–Fri" = "Werktags Mo–Fr";
 "Minimize" = "Minimieren";
+
+/* Status item */
+"CIY X79 Control – %@" = "CIY X79 Steuerung – %@";
+"CIY X79 Control – %@ (disconnected)" = "CIY X79 Steuerung – %@ (getrennt)";
+"CIY X79, profile “%@”, connected" = "CIY X79, Profil „%@“, verbunden";
+"CIY X79, profile “%@”, disconnected" = "CIY X79, Profil „%@“, getrennt";
+
 "Modifiers" = "Modifikatoren";
 "More ▾" = "Mehr ▾";
 "Nav column" = "Nav-Spalte";

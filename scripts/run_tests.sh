@@ -162,6 +162,7 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     src/app/CIYLocalization.m \
     src/app/CIYMiniWindowController.m \
     src/app/CIYProfileScheduler.m \
+    src/app/CIYStatusItemPresenter.m \
     tests/test_profile_logic.m \
     -o "${TEST_TMP_DIR}/test_profile_logic"
 "${TEST_TMP_DIR}/test_profile_logic"

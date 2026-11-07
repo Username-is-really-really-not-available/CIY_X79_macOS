@@ -10,6 +10,7 @@
 #import "../src/app/CIYLocalization.h"
 #import "../src/app/CIYMiniWindowController.h"
 #import "../src/app/CIYProfileScheduler.h"
+#import "../src/app/CIYStatusItemPresenter.h"
 
 #if !defined(CIY_ENABLE_TEST_HOOKS)
 #error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
@@ -1236,6 +1237,242 @@ static void test_mini_window_controller(void) {
     assert(del.closed == NO);
 }
 
+#pragma mark - Status item presenter Tests (Roadmap 2.3)
+
+static void test_status_item_presenter_initial(void) {
+    assert([[CIYStatusItemPresenter initialForProfileName:nil] isEqualToString:@"•"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@""] isEqualToString:@"•"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"   "] isEqualToString:@"•"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"🎮 🕹"] isEqualToString:@"•"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"---"] isEqualToString:@"•"]);
+
+    assert([[CIYStatusItemPresenter initialForProfileName:@"🎮 WASD Gaming"] isEqualToString:@"W"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"🎯 Arrow keys"] isEqualToString:@"A"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"🕹 WASD + Arrows"] isEqualToString:@"W"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"🔴 Full red"] isEqualToString:@"F"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"⚫ Lighting off"] isEqualToString:@"L"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"🌌 Cyberpunk"] isEqualToString:@"C"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"💼 Office / Clean"] isEqualToString:@"O"]);
+
+    assert([[CIYStatusItemPresenter initialForProfileName:@"custom"] isEqualToString:@"C"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"1st Preset"] isEqualToString:@"1"]);
+    assert([[CIYStatusItemPresenter initialForProfileName:@"Öffentlich"] isEqualToString:@"Ö"]);
+}
+
+static void test_status_item_presenter_dominant_color(void) {
+    // 1. Nil / leer / ungültig -> controlAccentColor
+    NSColor *fallback = [CIYStatusItemPresenter dominantColorFromSlots:nil];
+    assert(fallback != nil);
+
+    fallback = [CIYStatusItemPresenter dominantColorFromSlots:@{}];
+    assert(fallback != nil);
+
+    fallback = [CIYStatusItemPresenter dominantColorFromSlots:(id)@"invalid"];
+    assert(fallback != nil);
+
+    // 2. Nur Schwarz -> controlAccentColor
+    NSDictionary *blackSlots = @{@"0": @"#000000", @"1": @"#000000"};
+    NSColor *blackFallback = [CIYStatusItemPresenter dominantColorFromSlots:blackSlots];
+    assert(blackFallback != nil);
+
+    // 3. Eindeutige Farbe
+    NSDictionary *single = @{@"0": @"#FF0000"};
+    NSColor *red = [CIYStatusItemPresenter dominantColorFromSlots:single];
+    NSColor *redSRGB = [red colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    assert(redSRGB.redComponent > 0.9 && redSRGB.greenComponent < 0.1 && redSRGB.blueComponent < 0.1);
+
+    // 4. Häufigste Farbe gewinnt
+    NSDictionary *freqSlots = @{
+        @"0": @"#FF0000",
+        @"1": @"#00FF00",
+        @"2": @"#FF0000",
+        @"3": @"#000000"
+    };
+    NSColor *freqColor = [CIYStatusItemPresenter dominantColorFromSlots:freqSlots];
+    NSColor *freqSRGB = [freqColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    assert(freqSRGB.redComponent > 0.9 && freqSRGB.greenComponent < 0.1);
+
+    // 5. Gleichstand: niedrigster Slot gewinnt (deterministisch)
+    NSDictionary *tieSlots = @{
+        @"5": @"#FF0000",
+        @"2": @"#00FF00"
+    };
+    NSColor *tieColor = [CIYStatusItemPresenter dominantColorFromSlots:tieSlots];
+    NSColor *tieSRGB = [tieColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    // Slot 2 (Grün) < Slot 5 (Rot) -> Grün gewinnt
+    assert(tieSRGB.greenComponent > 0.9 && tieSRGB.redComponent < 0.1);
+
+    // Weiterer Gleichstandstest mit mehreren Tasten
+    NSDictionary *tieSlots2 = @{
+        @"10": @"#0000FF",
+        @"20": @"#0000FF",
+        @"3": @"#FFFF00",
+        @"40": @"#FFFF00"
+    };
+    NSColor *tieColor2 = [CIYStatusItemPresenter dominantColorFromSlots:tieSlots2];
+    NSColor *tieSRGB2 = [tieColor2 colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    // Slot 3 (Gelb) < Slot 10 (Blau) -> Gelb gewinnt
+    assert(tieSRGB2.redComponent > 0.9 && tieSRGB2.greenComponent > 0.9 && tieSRGB2.blueComponent < 0.1);
+
+    // Ungültige Slots/Hex-Einträge werden sicher ignoriert
+    NSDictionary *dirtySlots = @{
+        @"invalid_slot": @"#FF0000",
+        @"-5": @"#FF0000",
+        @"1": @"not_hex",
+        @"2": @"#00FF00"
+    };
+    NSColor *dirtyColor = [CIYStatusItemPresenter dominantColorFromSlots:dirtySlots];
+    NSColor *dirtySRGB = [dirtyColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    assert(dirtySRGB.greenComponent > 0.9);
+}
+
+static void test_status_item_presenter_key_equivalents(void) {
+    for (NSInteger i = 0; i < 7; i++) {
+        NSString *eq = [CIYStatusItemPresenter keyEquivalentForIndex:i];
+        NSString *expected = [NSString stringWithFormat:@"%ld", (long)(i + 1)];
+        assert([eq isEqualToString:expected]);
+    }
+
+    assert([[CIYStatusItemPresenter keyEquivalentForIndex:7] isEqualToString:@""]);
+    assert([[CIYStatusItemPresenter keyEquivalentForIndex:8] isEqualToString:@""]);
+    assert([[CIYStatusItemPresenter keyEquivalentForIndex:100] isEqualToString:@""]);
+    assert([[CIYStatusItemPresenter keyEquivalentForIndex:-1] isEqualToString:@""]);
+
+    // Sicherstellen, dass kein Konflikt mit bestehenden Shortcuts besteht:
+    // Belegte Tasten: e, o, h, q, n, s, w, z, r, u, t, m, ?
+    NSSet *existingKeys = [NSSet setWithObjects:@"e", @"o", @"h", @"q", @"n", @"s", @"w", @"z", @"r", @"u", @"t", @"m", @"?", nil];
+    for (NSInteger i = 0; i < 7; i++) {
+        NSString *eq = [CIYStatusItemPresenter keyEquivalentForIndex:i];
+        assert(![existingKeys containsObject:eq]);
+    }
+}
+
+static void test_status_item_presenter_tooltips_and_accessibility(void) {
+    NSString *tipConn = [CIYStatusItemPresenter toolTipForProfileName:@"Gaming" connected:YES];
+    assert([tipConn containsString:@"Gaming"]);
+    assert(![tipConn containsString:@"disconnected"]);
+    assert(![tipConn containsString:@"getrennt"]);
+
+    NSString *tipDisc = [CIYStatusItemPresenter toolTipForProfileName:@"Gaming" connected:NO];
+    assert([tipDisc containsString:@"Gaming"]);
+    assert([tipDisc containsString:@"disconnected"] || [tipDisc containsString:@"getrennt"]);
+
+    NSString *accConn = [CIYStatusItemPresenter accessibilityDescriptionForProfileName:@"Work" connected:YES];
+    assert([accConn containsString:@"Work"]);
+    assert([accConn containsString:@"connected"] || [accConn containsString:@"verbunden"]);
+
+    NSString *accDisc = [CIYStatusItemPresenter accessibilityDescriptionForProfileName:@"Work" connected:NO];
+    assert([accDisc containsString:@"Work"]);
+    assert([accDisc containsString:@"disconnected"] || [accDisc containsString:@"getrennt"]);
+
+    // Nil / leer Name Fallback
+    NSString *tipNil = [CIYStatusItemPresenter toolTipForProfileName:nil connected:YES];
+    assert(tipNil.length > 0);
+    NSString *accNil = [CIYStatusItemPresenter accessibilityDescriptionForProfileName:@"" connected:NO];
+    assert(accNil.length > 0);
+}
+
+static void test_status_item_presenter_icon_rendering(void) {
+    NSColor *testColor = [NSColor colorWithSRGBRed:0.0 green:0.5 blue:1.0 alpha:1.0];
+
+    // 1. Icon-Erzeugung und Grundeigenschaften
+    NSImage *connIcon = [CIYStatusItemPresenter iconForProfileName:@"Gaming"
+                                                      profileColor:testColor
+                                                         connected:YES];
+    assert(connIcon != nil);
+    assert(connIcon.size.width == 18.0 && connIcon.size.height == 18.0);
+    assert(connIcon.isTemplate == NO);
+    assert(connIcon.accessibilityDescription != nil);
+    assert([connIcon.accessibilityDescription containsString:@"Gaming"]);
+
+    NSImage *discIcon = [CIYStatusItemPresenter iconForProfileName:@"Gaming"
+                                                      profileColor:testColor
+                                                         connected:NO];
+    assert(discIcon != nil);
+    assert(discIcon.size.width == 18.0 && discIcon.size.height == 18.0);
+    assert(discIcon.isTemplate == NO);
+    assert(discIcon.accessibilityDescription != nil);
+
+    // Nil Name & Color ohne Absturz
+    NSImage *nilIcon = [CIYStatusItemPresenter iconForProfileName:nil
+                                                     profileColor:nil
+                                                        connected:YES];
+    assert(nilIcon != nil);
+
+    // 2. Offscreen-Zeichnung & Pixelprüfung (soweit ohne WindowServer stabil)
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:NULL
+                      pixelsWide:18
+                      pixelsHigh:18
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSCalibratedRGBColorSpace
+                     bytesPerRow:0
+                    bitsPerPixel:0];
+
+    if (rep) {
+        NSGraphicsContext *ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+        if (ctx) {
+            // Verbundenes Icon rendern
+            [NSGraphicsContext saveGraphicsState];
+            [NSGraphicsContext setCurrentContext:ctx];
+            [connIcon drawInRect:NSMakeRect(0, 0, 18, 18)
+                        fromRect:NSZeroRect
+                       operation:NSCompositingOperationCopy
+                        fraction:1.0];
+            [NSGraphicsContext restoreGraphicsState];
+
+            // Badge-Zentrum bei verbunden: ausgefüllter grüner Punkt
+            NSColor *badgePixel = [rep colorAtX:14 y:14];
+            if (badgePixel && badgePixel.alphaComponent > 0.2) {
+                // Verbunden: Grünanteil dominiert
+                assert(badgePixel.greenComponent > 0.3);
+            }
+
+            // Getrenntes Icon rendern
+            [NSGraphicsContext saveGraphicsState];
+            [NSGraphicsContext setCurrentContext:ctx];
+            [discIcon drawInRect:NSMakeRect(0, 0, 18, 18)
+                        fromRect:NSZeroRect
+                       operation:NSCompositingOperationCopy
+                        fraction:1.0];
+            [NSGraphicsContext restoreGraphicsState];
+
+            // Getrennt: roter Ring (Rand ist rot, Zentrum ist hohl)
+            NSColor *ringEdge = [rep colorAtX:14 y:16];
+            if (ringEdge && ringEdge.alphaComponent > 0.3) {
+                assert(ringEdge.redComponent > 0.4);
+            }
+            NSColor *ringHole = [rep colorAtX:14 y:14];
+            if (ringHole) {
+                assert(ringHole.alphaComponent < 0.6);
+            }
+        } else {
+            printf("  [Info] Offscreen-Grafikkontext nicht verfügbar – Pixelprobe übersprungen.\n");
+        }
+    } else {
+        printf("  [Info] NSBitmapImageRep nicht initialisierbar – Pixelprobe übersprungen.\n");
+    }
+
+    // 3. Dynamic Appearance Check (drawingHandler bleibt aktiv für Light und Dark Mode)
+    if (@available(macOS 11.0, *)) {
+        NSAppearance *aqua = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+        NSAppearance *darkAqua = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        if (aqua && darkAqua) {
+            [aqua performAsCurrentDrawingAppearance:^{
+                NSRect r = NSMakeRect(0, 0, 18, 18);
+                [connIcon drawInRect:r fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+            }];
+            [darkAqua performAsCurrentDrawingAppearance:^{
+                NSRect r = NSMakeRect(0, 0, 18, 18);
+                [connIcon drawInRect:r fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+            }];
+        }
+    }
+}
+
 @interface TestSchedulerDelegate : NSObject <CIYProfileSchedulerDelegate>
 @property (nonatomic, strong, nullable) NSString *lastProfileId;
 @property (nonatomic, assign) NSInteger callCount;
@@ -1846,6 +2083,11 @@ int main(void) {
         test_undo_redo_delegate_and_validation();
         test_matches_profile_slots_and_dirty_state();
         test_mini_window_controller();
+        test_status_item_presenter_initial();
+        test_status_item_presenter_dominant_color();
+        test_status_item_presenter_key_equivalents();
+        test_status_item_presenter_tooltips_and_accessibility();
+        test_status_item_presenter_icon_rendering();
         test_scheduler_weekday_and_mask_filtering();
         test_scheduler_midnight_and_day_transitions();
         test_scheduler_tie_breaking_and_overlap();
