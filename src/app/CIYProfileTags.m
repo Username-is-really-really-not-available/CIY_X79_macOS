@@ -1,4 +1,5 @@
 #import "CIYProfileTags.h"
+#import "CIYLocalization.h"
 
 NSString * const kCIYProfileTagsKey = @"tags";
 const NSUInteger kCIYMaxTagsPerProfile = 5;
@@ -33,13 +34,27 @@ static NSString *NormalizeWhitespace(NSString *str) {
 @implementation CIYProfileTags
 
 + (NSArray<NSString *> *)suggestedTags {
-    return @[@"Gaming", @"Büro", @"Coding", @"Nacht"];
+    return @[CIYL(@"Gaming"), CIYL(@"Office"), CIYL(@"Coding"), CIYL(@"Night")];
 }
 
 + (NSString *)normalizedTagKey:(nullable NSString *)tag {
     if (!tag || ![tag isKindOfClass:[NSString class]]) return @"";
     NSString *normalized = NormalizeWhitespace(tag);
-    return [normalized lowercaseString];
+    NSString *lower = [[normalized lowercaseString] precomposedStringWithCanonicalMapping];
+    if (lower.length == 0) return @"";
+
+    static NSDictionary<NSString *, NSString *> *sTagAliases = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sTagAliases = @{
+            @"büro":  @"office",
+            @"buero": @"office",
+            @"nacht": @"night"
+        };
+    });
+
+    NSString *canonical = sTagAliases[lower];
+    return canonical ?: lower;
 }
 
 + (nullable NSString *)sanitizeTag:(nullable id)rawTag {
@@ -172,6 +187,16 @@ static NSString *NormalizeWhitespace(NSString *str) {
     NSNumber *target = @(profileIndex);
     NSUInteger idx = [popUpIndices indexOfObject:target];
     return (idx != NSNotFound) ? (NSInteger)idx : -1;
+}
+
++ (nullable NSDictionary *)profileForRow:(NSInteger)row
+                          inPopUpIndices:(nullable NSArray<NSNumber *> *)popUpIndices
+                                profiles:(nullable NSArray<NSDictionary *> *)profiles {
+    if (![profiles isKindOfClass:[NSArray class]]) return nil;
+    NSInteger profIdx = [self profileIndexForRow:row inPopUpIndices:popUpIndices];
+    if (profIdx < 0 || (NSUInteger)profIdx >= profiles.count) return nil;
+    NSDictionary *prof = profiles[(NSUInteger)profIdx];
+    return [prof isKindOfClass:[NSDictionary class]] ? prof : nil;
 }
 
 @end

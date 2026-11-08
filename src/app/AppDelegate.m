@@ -90,6 +90,7 @@
     CFAbsoluteTime _lastSendTime;
     NSUInteger _wakeRetryCount;
     NSStatusItem *_statusItem;
+    NSMenu *_quickSwitchMenu;
     CIYMiniWindowController *_miniController;
     BOOL _hasLastSendResult;
     BOOL _lastSendOk;
@@ -519,10 +520,10 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     NSPopUpButton *actionsBtn = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(806, 44, 66, 26) pullsDown:YES];
     [actionsBtn addItemWithTitle:CIYL(@"More ▾")];
-    NSMenuItem *exportItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Export profiles...") action:@selector(onExportProfiles:) keyEquivalent:@"e"];
+    NSMenuItem *exportItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Export profiles...") action:@selector(onExportProfiles:) keyEquivalent:@""];
     exportItem.target = self;
     [actionsBtn.menu addItem:exportItem];
-    NSMenuItem *importItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Import profiles...") action:@selector(onImportProfiles:) keyEquivalent:@"o"];
+    NSMenuItem *importItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Import profiles...") action:@selector(onImportProfiles:) keyEquivalent:@""];
     importItem.target = self;
     [actionsBtn.menu addItem:importItem];
     [actionsBtn.menu addItem:[NSMenuItem separatorItem]];
@@ -935,11 +936,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (NSInteger)selectedProfileIndex {
-    NSInteger row = _profilesPopUp.indexOfSelectedItem;
-    if (row < 0 || !_visibleProfileIndices || (NSUInteger)row >= _visibleProfileIndices.count) {
-        return -1;
-    }
-    NSInteger profIdx = _visibleProfileIndices[(NSUInteger)row].integerValue;
+    NSInteger profIdx = [CIYProfileTags profileIndexForRow:_profilesPopUp.indexOfSelectedItem inPopUpIndices:_visibleProfileIndices];
     if (profIdx < 0 || (NSUInteger)profIdx >= _profiles.count) {
         return -1;
     }
@@ -947,8 +944,9 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (nullable NSMutableDictionary *)selectedProfile {
-    NSInteger idx = [self selectedProfileIndex];
-    return (idx >= 0 && (NSUInteger)idx < _profiles.count) ? _profiles[(NSUInteger)idx] : nil;
+    return (NSMutableDictionary *)[CIYProfileTags profileForRow:_profilesPopUp.indexOfSelectedItem
+                                                 inPopUpIndices:_visibleProfileIndices
+                                                       profiles:_profiles];
 }
 
 - (void)selectPopUpForProfileIndex:(NSInteger)targetIdx {
@@ -1818,12 +1816,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     }
 
     BOOL matches = [self canvasMatchesSavedProfile];
+    NSString *prevActiveId = [_currentActiveProfileId copy];
     [self setHasUnsavedEdits:!matches];
     [self updateButtonsState];
 
-    NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Undo (profile “%@”)"), profName];
-    _statusLabel.textColor = matches ? [NSColor systemCyanColor] : [NSColor systemOrangeColor];
+    if (prevActiveId == _currentActiveProfileId || (prevActiveId && [_currentActiveProfileId isEqualToString:prevActiveId])) {
+        NSString *profName = [self currentProfileName];
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Undo (profile “%@”)"), profName];
+        _statusLabel.textColor = matches ? [NSColor systemCyanColor] : [NSColor systemOrangeColor];
+    }
 }
 
 - (void)keyboardViewDidRedo:(CIYKeyboardView *)view {
@@ -1836,12 +1837,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     }
 
     BOOL matches = [self canvasMatchesSavedProfile];
+    NSString *prevActiveId = [_currentActiveProfileId copy];
     [self setHasUnsavedEdits:!matches];
     [self updateButtonsState];
 
-    NSString *profName = [self currentProfileName];
-    _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Redo (profile “%@”)"), profName];
-    _statusLabel.textColor = matches ? [NSColor systemCyanColor] : [NSColor systemOrangeColor];
+    if (prevActiveId == _currentActiveProfileId || (prevActiveId && [_currentActiveProfileId isEqualToString:prevActiveId])) {
+        NSString *profName = [self currentProfileName];
+        _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Redo (profile “%@”)"), profName];
+        _statusLabel.textColor = matches ? [NSColor systemCyanColor] : [NSColor systemOrangeColor];
+    }
 }
 
 - (void)onKeyColorChosen:(NSButton *)sender {
@@ -2252,6 +2256,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     // Scheduler-Timer stoppen und invalidieren (AGENTS.md Regel 3)
     [_scheduler stop];
     [self dismissScheduleSheet];
+    [self dismissTagSheet];
     // Akku-Überwachung während Ruhezustand pausieren
     [[CIYBatteryMonitor sharedMonitor] stopMonitoring];
     // Verbindung vorübergehend trennen, um verwaiste USB-Handles nach dem Aufwachen zu verhindern
@@ -2734,6 +2739,13 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     _scheduleActiveMenuItem.target = self;
     _scheduleActiveMenuItem.state = (_scheduler && _scheduler.globalEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
     [hwMenu addItem:_scheduleActiveMenuItem];
+
+    NSMenuItem *quickSwitchItem = [[NSMenuItem alloc] initWithTitle:CIYL(@"Switch profile") action:nil keyEquivalent:@""];
+    _quickSwitchMenu = [[NSMenu alloc] initWithTitle:CIYL(@"Switch profile")];
+    quickSwitchItem.submenu = _quickSwitchMenu;
+    [hwMenu addItem:[NSMenuItem separatorItem]];
+    [hwMenu addItem:quickSwitchItem];
+
     hwMenuItem.submenu = hwMenu;
     [mainMenu addItem:hwMenuItem];
 
@@ -2764,6 +2776,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
     [NSApp setMainMenu:mainMenu];
     [self refreshLanguageMenuStates];
+    [self updateQuickSwitchMenu];
 }
 
 - (NSMenu *)buildLanguageMenu {
@@ -2844,11 +2857,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (!_statusItem) return;
 
     NSString *name = [self currentProfileName];
-    NSDictionary *currentProf = nil;
-    NSInteger idx = _profilesPopUp.indexOfSelectedItem;
-    if (idx >= 0 && (NSUInteger)idx < _profiles.count) {
-        currentProf = _profiles[(NSUInteger)idx];
-    }
+    NSDictionary *currentProf = [self selectedProfile];
 
     NSColor *profColor = [CIYStatusItemPresenter dominantColorFromSlots:currentProf[@"slots"]];
     BOOL connected = [KeyboardBackend shared].isConnected;
@@ -2868,6 +2877,56 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     [self updateStatusItemMenu];
 }
 
+- (void)updateQuickSwitchMenu {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self updateQuickSwitchMenu];
+        });
+        return;
+    }
+    if (!_quickSwitchMenu) return;
+
+    [_quickSwitchMenu removeAllItems];
+    for (NSUInteger i = 0; i < _profiles.count; i++) {
+        NSDictionary *prof = _profiles[i];
+        NSString *name = prof[@"name"] ?: [NSString stringWithFormat:CIYL(@"Profile %lu"), (unsigned long)(i + 1)];
+        NSString *profId = prof[@"id"];
+        BOOL isActive = (profId && [profId isEqualToString:_currentActiveProfileId]);
+
+        NSString *itemTitle = name;
+        NSString *appName = prof[@"appName"];
+        NSString *schedBadge = [CIYProfileScheduler shortScheduleSummaryForProfile:prof];
+        if (appName.length > 0) {
+            if (schedBadge) {
+                itemTitle = [NSString stringWithFormat:@"%@  [%@]  (⏰ %@)", name, appName, schedBadge];
+            } else {
+                itemTitle = [NSString stringWithFormat:@"%@  [%@]", name, appName];
+            }
+        } else if (_fallbackProfileId && [profId isEqualToString:_fallbackProfileId]) {
+            if (schedBadge) {
+                itemTitle = [NSString stringWithFormat:@"%@  [Fallback]  (⏰ %@)", name, schedBadge];
+            } else {
+                itemTitle = [NSString stringWithFormat:@"%@  [Fallback]", name];
+            }
+        } else if (schedBadge) {
+            itemTitle = [NSString stringWithFormat:@"%@  (⏰ %@)", name, schedBadge];
+        }
+
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:itemTitle action:@selector(onStatusMenuSelectProfile:) keyEquivalent:@""];
+        item.target = self;
+        item.tag = (NSInteger)i;
+        item.state = isActive ? NSControlStateValueOn : NSControlStateValueOff;
+
+        NSString *keyEq = [CIYStatusItemPresenter keyEquivalentForIndex:(NSInteger)i];
+        if (keyEq.length > 0) {
+            item.keyEquivalent = keyEq;
+            item.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+        }
+
+        [_quickSwitchMenu addItem:item];
+    }
+}
+
 - (void)updateStatusItemMenu {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -2875,6 +2934,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         });
         return;
     }
+    [self updateQuickSwitchMenu];
     if (!_statusItem) return;
 
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"CIY X79 Status"];
@@ -2996,6 +3056,15 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(onStatusMenuSelectProfile:)) {
+        NSInteger idx = menuItem.tag;
+        if (idx < 0 || (NSUInteger)idx >= _profiles.count) return NO;
+        NSDictionary *prof = _profiles[(NSUInteger)idx];
+        NSString *profId = prof[@"id"];
+        menuItem.state = (profId && [profId isEqualToString:_currentActiveProfileId]) ? NSControlStateValueOn : NSControlStateValueOff;
+        if (menuItem.menu == _quickSwitchMenu && self.window.attachedSheet != nil) return NO;
+        return YES;
+    }
     if (menuItem.action == @selector(onToggleMiniMode:)) {
         menuItem.state = (_miniController && _miniController.isVisible) ? NSControlStateValueOn : NSControlStateValueOff;
         return YES;
@@ -3427,7 +3496,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     CGFloat yPos = 188;
     for (NSUInteger i = 0; i < suggestions.count; i++) {
         NSString *suggName = suggestions[i];
-        NSButton *cb = [NSButton checkboxWithTitle:CIYL(suggName) target:nil action:nil];
+        NSButton *cb = [NSButton checkboxWithTitle:suggName target:nil action:nil];
         cb.frame = NSMakeRect(xPos, yPos, 90, 20);
         NSString *k = [CIYProfileTags normalizedTagKey:suggName];
         cb.state = [existingKeys containsObject:k] ? NSControlStateValueOn : NSControlStateValueOff;

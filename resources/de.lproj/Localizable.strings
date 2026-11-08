@@ -5,7 +5,6 @@
 "● Tags updated for “%@”" = "● Tags aktualisiert für „%@“";
 "A maximum of %lu tags can be assigned." = "Es können maximal %lu Tags vergeben werden.";
 "All" = "Alle";
-"Büro" = "Büro";
 "Coding" = "Coding";
 "Custom tags (comma-separated):" = "Eigene Tags (kommagetrennt):";
 "Edit tags for “%@”" = "Tags bearbeiten für „%@“";
@@ -13,7 +12,8 @@
 "Filter by tag:" = "Nach Tag filtern:";
 "Gaming" = "Gaming";
 "Max. %lu tags, max. %lu characters per tag" = "Max. %lu Tags, max. %lu Zeichen pro Tag";
-"Nacht" = "Nacht";
+"Night" = "Nacht";
+"Office" = "Büro";
 "Suggested tags:" = "Vorgeschlagene Tags:";
 "Tags..." = "Tags...";
 
@@ -172,6 +172,7 @@
 "Space bar" = "Leertaste";
 "Start color:" = "Startfarbe:";
 "Sun" = "So";
+"Switch profile" = "Profil wechseln";
 "Switch time:" = "Uhrzeit:";
 "Switches profiles automatically when linked games or apps become active (no keylogger, 100% unprivileged)" = "Wechselt Profile automatisch, sobald verknüpfte Spiele oder Anwendungen aktiv werden (ohne Keylogger, 100% unprivilegiert)";
 "Symbolic links cannot be imported for security reasons." = "Symbolische Links können aus Sicherheitsgründen nicht importiert werden.";

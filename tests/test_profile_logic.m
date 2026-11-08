@@ -2059,9 +2059,17 @@ static void test_profile_tags_normalization(void) {
     assert([[CIYProfileTags normalizedTagKey:@""] isEqualToString:@""]);
     assert([[CIYProfileTags normalizedTagKey:nil] isEqualToString:@""]);
 
-    // Umlaute bleiben distinkt erhalten
-    assert([[CIYProfileTags normalizedTagKey:@"Büro"] isEqualToString:@"büro"]);
-    assert([[CIYProfileTags normalizedTagKey:@"BÜRO"] isEqualToString:@"büro"]);
+    // Umlaute bleiben distinkt erhalten (für Tags ohne Alias)
+    assert([[CIYProfileTags normalizedTagKey:@"Grün"] isEqualToString:@"grün"]);
+    assert([[CIYProfileTags normalizedTagKey:@"GRÜN"] isEqualToString:@"grün"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Grun"] isEqualToString:@"grun"]);
+    assert(![[CIYProfileTags normalizedTagKey:@"Grün"] isEqualToString:[CIYProfileTags normalizedTagKey:@"Grun"]]);
+
+    // Bekannte Aliase mappen auf kanonischen Schlüssel ("büro"/"buero" -> "office", "Buro" bleibt "buro")
+    assert([[CIYProfileTags normalizedTagKey:@"Büro"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"BÜRO"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"buero"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Office"] isEqualToString:@"office"]);
     assert([[CIYProfileTags normalizedTagKey:@"Buro"] isEqualToString:@"buro"]);
     assert(![[CIYProfileTags normalizedTagKey:@"Büro"] isEqualToString:[CIYProfileTags normalizedTagKey:@"Buro"]]);
 
@@ -2273,6 +2281,216 @@ static void test_profile_tags_json_roundtrip_and_export_import(void) {
     assert([tags[2] isEqualToString:@"Nacht"]);
 }
 
+static void test_status_item_color_with_tag_filter(void) {
+    NSDictionary *p0 = @{
+        @"name": @"P0 - Default",
+        @"id": @"id-p0",
+        @"slots": @{ @"0": @"#FF0000" }
+    };
+    NSDictionary *p1 = @{
+        @"name": @"P1 - Gaming",
+        @"id": @"id-p1",
+        @"slots": @{ @"0": @"#00FF00" },
+        kCIYProfileTagsKey: @[@"Gaming"]
+    };
+    NSDictionary *p2 = @{
+        @"name": @"P2 - Office",
+        @"id": @"id-p2",
+        @"slots": @{ @"0": @"#0000FF" },
+        kCIYProfileTagsKey: @[@"Office"]
+    };
+    NSArray *profiles = @[p0, p1, p2];
+
+    // Szenario A: Filter "Gaming", aktives Profil = 1 (p1).
+    // popUpIndicesForProfiles liefert @[@1] (PopUp-Zeile 0 entspricht p1).
+    BOOL prependedA = NO;
+    NSArray<NSNumber *> *visibleA = [CIYProfileTags popUpIndicesForProfiles:profiles
+                                                                 filterTag:@"Gaming"
+                                                        activeProfileIndex:1
+                                                         activeIsPrepended:&prependedA];
+    assert(!prependedA);
+    assert(visibleA.count == 1);
+    assert([visibleA[0] isEqualToNumber:@1]);
+
+    NSDictionary *resolvedA = [CIYProfileTags profileForRow:0 inPopUpIndices:visibleA profiles:profiles];
+    assert(resolvedA == p1);
+    NSColor *colorA = [CIYStatusItemPresenter dominantColorFromSlots:resolvedA[@"slots"]];
+    NSColor *srgbA = [colorA colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    assert(srgbA != nil);
+    assert(srgbA.greenComponent > 0.9 && srgbA.redComponent < 0.1);
+
+    // Szenario B: Filter "Gaming", aktives Profil = 2 (p2 hat kein "Gaming").
+    // p2 wird an Zeile 0 vorangestellt -> prepended == YES, visible[0] ist @2.
+    BOOL prependedB = NO;
+    NSArray<NSNumber *> *visibleB = [CIYProfileTags popUpIndicesForProfiles:profiles
+                                                                 filterTag:@"Gaming"
+                                                        activeProfileIndex:2
+                                                         activeIsPrepended:&prependedB];
+    assert(prependedB);
+    assert(visibleB.count == 2);
+    assert([visibleB[0] isEqualToNumber:@2]);
+
+    NSDictionary *resolvedB = [CIYProfileTags profileForRow:0 inPopUpIndices:visibleB profiles:profiles];
+    assert(resolvedB == p2);
+    NSColor *colorB = [CIYStatusItemPresenter dominantColorFromSlots:resolvedB[@"slots"]];
+    NSColor *srgbB = [colorB colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    assert(srgbB != nil);
+    assert(srgbB.blueComponent > 0.9 && srgbB.redComponent < 0.1);
+}
+
+static void test_profile_tags_suggested_localization(void) {
+    NSString *suiteName = @"com.juliengenau.ciy-x79-control.tag-loc-tests";
+    NSUserDefaults *suite = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
+    assert(suite != nil);
+    [suite removePersistentDomainForName:suiteName];
+
+    [CIYLocalization setUserDefaultsForTesting:suite];
+    NSString *resDir = @"resources";
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[resDir stringByAppendingPathComponent:@"de.lproj"]]) {
+        resDir = [[[NSFileManager defaultManager] currentDirectoryPath] stringByAppendingPathComponent:@"resources"];
+    }
+    [CIYLocalization setTestResourceDirectory:resDir];
+
+    [CIYLocalization setPreferredLanguage:CIYLanguageEnglish];
+    [CIYLocalization loadEffectiveLanguage];
+    NSArray<NSString *> *enExpected = @[@"Gaming", @"Office", @"Coding", @"Night"];
+    assert([[CIYProfileTags suggestedTags] isEqualToArray:enExpected]);
+
+    [CIYLocalization setPreferredLanguage:CIYLanguageGerman];
+    [CIYLocalization loadEffectiveLanguage];
+    NSArray<NSString *> *deExpected = @[@"Gaming", @"Büro", @"Coding", @"Nacht"];
+    assert([[CIYProfileTags suggestedTags] isEqualToArray:deExpected]);
+
+    // Cleanup
+    [CIYLocalization setPreferredLanguage:CIYLanguageEnglish];
+    [CIYLocalization loadEffectiveLanguage];
+    [CIYLocalization setUserDefaultsForTesting:nil];
+    [CIYLocalization setTestResourceDirectory:nil];
+    [suite removePersistentDomainForName:suiteName];
+}
+
+static void test_profile_tags_alias_normalization(void) {
+    // 1. Alias-Mapping auf kanonische Schlüssel
+    // Büro / buero / Office -> office
+    assert([[CIYProfileTags normalizedTagKey:@"Büro"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"büro"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"BÜRO"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"buero"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Buero"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"BUERO"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Office"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"office"] isEqualToString:@"office"]);
+    assert([[CIYProfileTags normalizedTagKey:@"OFFICE"] isEqualToString:@"office"]);
+
+    // Unicode Decomposed (NFD) "Büro" (u + combining diaeresis \u0308)
+    assert([[CIYProfileTags normalizedTagKey:@"Bu\u0308ro"] isEqualToString:@"office"]);
+
+    // Nacht / Night -> night
+    assert([[CIYProfileTags normalizedTagKey:@"Nacht"] isEqualToString:@"night"]);
+    assert([[CIYProfileTags normalizedTagKey:@"nacht"] isEqualToString:@"night"]);
+    assert([[CIYProfileTags normalizedTagKey:@"NACHT"] isEqualToString:@"night"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Night"] isEqualToString:@"night"]);
+    assert([[CIYProfileTags normalizedTagKey:@"night"] isEqualToString:@"night"]);
+    assert([[CIYProfileTags normalizedTagKey:@"NIGHT"] isEqualToString:@"night"]);
+
+    // Gaming und Coding sowie Nicht-Aliase bleiben unverändert
+    assert([[CIYProfileTags normalizedTagKey:@"Gaming"] isEqualToString:@"gaming"]);
+    assert([[CIYProfileTags normalizedTagKey:@"gaming"] isEqualToString:@"gaming"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Coding"] isEqualToString:@"coding"]);
+    assert([[CIYProfileTags normalizedTagKey:@"coding"] isEqualToString:@"coding"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Buro"] isEqualToString:@"buro"]);
+    assert([[CIYProfileTags normalizedTagKey:@"Custom Tag"] isEqualToString:@"custom tag"]);
+
+    // 2. Tag-Deduplizierung: ["Büro", "Office"] ergibt exakt 1 Tag
+    NSArray<NSString *> *dedup1 = [CIYProfileTags sanitizeTags:@[@"Büro", @"Office"]];
+    assert(dedup1.count == 1);
+    assert([dedup1[0] isEqualToString:@"Büro"]);
+
+    NSArray<NSString *> *dedup2 = [CIYProfileTags sanitizeTags:@[@"Office", @"Büro"]];
+    assert(dedup2.count == 1);
+    assert([dedup2[0] isEqualToString:@"Office"]);
+
+    NSArray<NSString *> *dedup3 = [CIYProfileTags sanitizeTags:@[@"buero", @"Office", @"BÜRO"]];
+    assert(dedup3.count == 1);
+    assert([dedup3[0] isEqualToString:@"buero"]);
+
+    // Nacht / Night Deduplizierung
+    NSArray<NSString *> *dedupNight1 = [CIYProfileTags sanitizeTags:@[@"Nacht", @"Night"]];
+    assert(dedupNight1.count == 1);
+    assert([dedupNight1[0] isEqualToString:@"Nacht"]);
+
+    NSArray<NSString *> *dedupNight2 = [CIYProfileTags sanitizeTags:@[@"Night", @"Nacht"]];
+    assert(dedupNight2.count == 1);
+    assert([dedupNight2[0] isEqualToString:@"Night"]);
+
+    // In-place Profile Sanitization
+    NSMutableDictionary *prof = [NSMutableDictionary dictionary];
+    prof[kCIYProfileTagsKey] = @[@"Büro", @"Office", @"buero", @"Nacht", @"Night"];
+    [CIYProfileTags sanitizeTagsInProfile:prof];
+    NSArray<NSString *> *sanitizedInProf = prof[kCIYProfileTagsKey];
+    assert(sanitizedInProf.count == 2);
+    assert([sanitizedInProf[0] isEqualToString:@"Büro"]);
+    assert([sanitizedInProf[1] isEqualToString:@"Nacht"]);
+
+    // 3. Gemeinsamer Filter- und Aggregationsschlüssel für Büro und Office
+    NSDictionary *pBuero = @{
+        @"name": @"Office DE",
+        kCIYProfileTagsKey: @[@"Büro"]
+    };
+    NSDictionary *pOffice = @{
+        @"name": @"Office EN",
+        kCIYProfileTagsKey: @[@"Office"]
+    };
+    NSArray<NSDictionary *> *profiles = @[pBuero, pOffice];
+
+    // Filter "Office" matcht Profil mit "Büro" und Profil mit "Office"
+    assert([CIYProfileTags profile:pBuero matchesFilterTag:@"Office"] == YES);
+    assert([CIYProfileTags profile:pBuero matchesFilterTag:@"office"] == YES);
+    assert([CIYProfileTags profile:pBuero matchesFilterTag:@"buero"] == YES);
+    assert([CIYProfileTags profile:pBuero matchesFilterTag:@"Büro"] == YES);
+
+    assert([CIYProfileTags profile:pOffice matchesFilterTag:@"Office"] == YES);
+    assert([CIYProfileTags profile:pOffice matchesFilterTag:@"Büro"] == YES);
+    assert([CIYProfileTags profile:pOffice matchesFilterTag:@"buero"] == YES);
+
+    // Indizes für beide Profile
+    NSArray<NSNumber *> *indicesOffice = [CIYProfileTags filteredProfileIndicesForProfiles:profiles filterTag:@"Office"];
+    assert(indicesOffice.count == 2);
+    assert([indicesOffice[0] isEqualToNumber:@0]);
+    assert([indicesOffice[1] isEqualToNumber:@1]);
+
+    NSArray<NSNumber *> *indicesBuero = [CIYProfileTags filteredProfileIndicesForProfiles:profiles filterTag:@"Büro"];
+    assert(indicesBuero.count == 2);
+    assert([indicesBuero[0] isEqualToNumber:@0]);
+    assert([indicesBuero[1] isEqualToNumber:@1]);
+
+    NSArray<NSNumber *> *indicesBueroAscii = [CIYProfileTags filteredProfileIndicesForProfiles:profiles filterTag:@"buero"];
+    assert(indicesBueroAscii.count == 2);
+    assert([indicesBueroAscii[0] isEqualToNumber:@0]);
+    assert([indicesBueroAscii[1] isEqualToNumber:@1]);
+
+    // allTagsInProfiles aggregiert über beide Profile auf 1 gemeinsamen Eintrag
+    NSArray<NSString *> *allTags = [CIYProfileTags allTagsInProfiles:profiles];
+    assert(allTags.count == 1);
+    assert([allTags[0] isEqualToString:@"Büro"]);
+
+    NSArray<NSString *> *allTagsReverse = [CIYProfileTags allTagsInProfiles:@[pOffice, pBuero]];
+    assert(allTagsReverse.count == 1);
+    assert([allTagsReverse[0] isEqualToString:@"Office"]);
+
+    // Nacht / Night Profil-Filterung und Aggregation
+    NSDictionary *pNacht = @{ @"name": @"Night DE", kCIYProfileTagsKey: @[@"Nacht"] };
+    NSDictionary *pNight = @{ @"name": @"Night EN", kCIYProfileTagsKey: @[@"Night"] };
+    NSArray<NSDictionary *> *nightProfiles = @[pNacht, pNight];
+
+    assert([CIYProfileTags profile:pNacht matchesFilterTag:@"Night"] == YES);
+    assert([CIYProfileTags profile:pNight matchesFilterTag:@"Nacht"] == YES);
+
+    NSArray<NSString *> *allNightTags = [CIYProfileTags allTagsInProfiles:nightProfiles];
+    assert(allNightTags.count == 1);
+    assert([allNightTags[0] isEqualToString:@"Nacht"]);
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -2325,10 +2543,13 @@ int main(void) {
         test_scheduler_reschedule_timer_only();
         test_scheduler_global_enabled_timer_rescheduling();
         test_profile_tags_normalization();
+        test_profile_tags_alias_normalization();
         test_profile_tags_sanitization();
         test_profile_tags_collection_and_filtering();
         test_profile_tags_popup_mapping_and_hidden_active();
         test_profile_tags_json_roundtrip_and_export_import();
+        test_status_item_color_with_tag_filter();
+        test_profile_tags_suggested_localization();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

@@ -13,7 +13,8 @@ extern const NSUInteger kCIYMaxTagLength;
 
 /// Normalisiert einen Tag-String für Vergleiche:
 /// Trimmt Whitespace/Newlines, fasst mehrere Whitespaces zusammen und konvertiert zu Kleinbuchstaben.
-/// Umlaute und Diakritika bleiben distinkt erhalten (z. B. "Büro" -> "büro", "BÜRO" -> "büro", aber "Buro" -> "buro").
+/// Mappt bekannte Aliase auf kanonische Schlüssel ("büro"/"buero" -> "office", "nacht" -> "night").
+/// Andere Umlaute und Diakritika bleiben distinkt erhalten (z. B. "Grün" -> "grün", "GRÜN" -> "grün", aber "Grun" -> "grun").
 + (NSString *)normalizedTagKey:(nullable NSString *)tag;
 
 /// Bereinigt einen einzelnen Tag:
@@ -57,6 +58,11 @@ extern const NSUInteger kCIYMaxTagLength;
 
 /// Mappt einen Index in profiles auf die entsprechende Zeile im PopUp-Menü (-1 wenn nicht enthalten).
 + (NSInteger)rowForProfileIndex:(NSInteger)profileIndex inPopUpIndices:(NSArray<NSNumber *> *)popUpIndices;
+
+/// Liefert das Profil-Dictionary für eine Zeile im gefilterten PopUp (oder nil bei ungültigem Index).
++ (nullable NSDictionary *)profileForRow:(NSInteger)row
+                          inPopUpIndices:(nullable NSArray<NSNumber *> *)popUpIndices
+                                profiles:(nullable NSArray<NSDictionary *> *)profiles;
 
 @end
 
