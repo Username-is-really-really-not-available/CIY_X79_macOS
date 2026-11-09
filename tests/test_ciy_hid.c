@@ -1378,6 +1378,36 @@ static void test_transfer_plan_delay_eintr(void) {
     ciy_close(&dev);
 }
 
+static void test_nanosleep_uninterrupted_eintr(void) {
+    s_sigalrm_fired = 0;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_sigalrm;
+    sigaction(SIGALRM, &sa, NULL);
+
+    struct itimerval itv = {
+        .it_interval = {.tv_sec = 0, .tv_usec = 0},
+        .it_value = {.tv_sec = 0, .tv_usec = 5000} // Alarm nach 5 ms
+    };
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    setitimer(ITIMER_REAL, &itv, NULL);
+
+    ciy_test_nanosleep_uninterrupted(30000000L); // 30 ms
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double elapsed = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+
+    assert(s_sigalrm_fired == 1);
+    assert(elapsed >= 0.028); // garantiert volle Schlafdauer trotz EINTR
+
+    struct itimerval disarm;
+    memset(&disarm, 0, sizeof(disarm));
+    setitimer(ITIMER_REAL, &disarm, NULL);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGALRM, &sa, NULL);
+}
+
 static void test_bus_lock_fork_safety(void) {
     assert(ciy_bus_lock());
     char parent_lock_path[PATH_MAX];
@@ -1457,6 +1487,7 @@ int main(void) {
     test_read_text_file_validation_result_init();
     test_transfer_plan();
     test_transfer_plan_delay_eintr();
+    test_nanosleep_uninterrupted_eintr();
     test_build_profile_wasd();
     test_build_profile_yellow_no_base();
     test_build_profile_ignores_out_of_range();

@@ -1339,3 +1339,9 @@ bool ciy_load_profile_file(const char *path, const char *target_profile,
     return ciy_load_profile_file_with_brightness(path, target_profile, rgb, out_name, max_name_len, out_slots_count, NULL);
 }
 
+#if defined(CIY_ENABLE_TEST_HOOKS)
+void ciy_test_nanosleep_uninterrupted(long ns) {
+    ciy_nanosleep_uninterrupted(ns);
+}
+#endif
+

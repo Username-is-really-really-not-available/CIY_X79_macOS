@@ -7,7 +7,7 @@
 #error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1"
 #endif
 
-static NSString * const kTestSuiteName = @"com.juliengenau.ciy-x79-control.localization-tests";
+static NSString * const kTestSuiteName = @"com.julien.ciy-x79-control.localization-tests";
 
 static void test_language_codes(void) {
     assert([CIYLocalization languageFromCode:nil] == CIYLanguageEnglish);

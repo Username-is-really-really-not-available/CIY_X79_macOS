@@ -97,7 +97,7 @@ cat << EOF > "${APP_BUNDLE}/Contents/Info.plist"
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.juliengenau.ciy-x79-control</string>
+    <string>com.julien.ciy-x79-control</string>
     <key>CFBundleLocalizations</key>
     <array>
         <string>en</string>

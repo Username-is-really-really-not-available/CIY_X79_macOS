@@ -12,6 +12,7 @@
 #import "../src/app/CIYProfileScheduler.h"
 #import "../src/app/CIYStatusItemPresenter.h"
 #import "../src/app/CIYProfileTags.h"
+#import "../src/app/AppDelegate.h"
 
 #if !defined(CIY_ENABLE_TEST_HOOKS)
 #error "Tests must be compiled with -DCIY_ENABLE_TEST_HOOKS=1 to prevent real hardware I/O"
@@ -2339,7 +2340,7 @@ static void test_status_item_color_with_tag_filter(void) {
 }
 
 static void test_profile_tags_suggested_localization(void) {
-    NSString *suiteName = @"com.juliengenau.ciy-x79-control.tag-loc-tests";
+    NSString *suiteName = @"com.julien.ciy-x79-control.tag-loc-tests";
     NSUserDefaults *suite = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
     assert(suite != nil);
     [suite removePersistentDomainForName:suiteName];
@@ -2491,6 +2492,137 @@ static void test_profile_tags_alias_normalization(void) {
     assert([allNightTags[0] isEqualToString:@"Nacht"]);
 }
 
+static void test_app_delegate_sleep_wake_lifecycle(void) {
+    assert([[KeyboardBackend shared] connect]);
+    AppDelegate *delegate = [[AppDelegate alloc] initForTestingWithKeyboardView:nil];
+    assert(![delegate ciy_isSleeping]);
+    assert(![delegate ciy_isWakingUp]);
+    assert(![delegate ciy_isWakeSyncScheduled]);
+
+    // 1. Hardware-Sync vormerken (z. B. nach Hotplug)
+    [delegate ciy_scheduleHardwareSyncWithDelay:0.5];
+    assert([delegate ciy_isWakeSyncScheduled]);
+
+    // 2. System-Suspend (onSystemWillSleep): muss Hardware-Sync sofort stornieren
+    [delegate ciy_triggerSystemWillSleep];
+    assert([delegate ciy_isSleeping]);
+    assert([delegate ciy_isWakingUp]);
+    assert(![delegate ciy_isWakeSyncScheduled]); // Timer muss gecancelt sein!
+
+    // RunLoop laufen lassen: performHardwareSync darf im Ruhezustand NICHT ausgeführt werden
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
+    [delegate ciy_waitForPendingHardwareOperations];
+    assert([delegate ciy_isSleeping]);
+    assert([delegate ciy_isWakingUp]);
+    assert(![delegate ciy_isWakeSyncScheduled]);
+    assert(![KeyboardBackend shared].isConnected);
+
+    // 3. System-Wakeup (onSystemDidWake): plant Reconnect mit 500 ms Pacing
+    [delegate ciy_triggerSystemDidWake];
+    assert(![delegate ciy_isSleeping]);
+    assert([delegate ciy_isWakeSyncScheduled]);
+
+    // 4. Wenn vor Ablauf der 500 ms erneut Sleep eintrifft: Reconnect muss sofort storniert werden
+    [delegate ciy_triggerSystemWillSleep];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
+    [delegate ciy_waitForPendingHardwareOperations];
+    assert([delegate ciy_isSleeping]);
+    assert([delegate ciy_isWakingUp]);
+    assert(![delegate ciy_isWakeSyncScheduled]);
+    assert(![KeyboardBackend shared].isConnected);
+}
+
+static void test_app_delegate_termination_cleanup(void) {
+    assert([[KeyboardBackend shared] connect]);
+    AppDelegate *delegate = [[AppDelegate alloc] initForTestingWithKeyboardView:nil];
+    [delegate ciy_scheduleHardwareSyncWithDelay:0.15];
+    assert([delegate ciy_isWakeSyncScheduled]);
+
+    // Simuliere App-Terminierung
+    [delegate ciy_triggerAppWillTerminate];
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+    [delegate ciy_waitForPendingHardwareOperations];
+    assert(![delegate ciy_isWakeSyncScheduled]);
+    assert(![KeyboardBackend shared].isConnected);
+
+    // Zweiter Aufruf muss idempotent und crash-frei sein
+    [delegate ciy_triggerAppWillTerminate];
+    assert(![delegate ciy_isWakeSyncScheduled]);
+    assert(![KeyboardBackend shared].isConnected);
+}
+
+static void test_app_delegate_overlay_profile_protection(void) {
+    CIYKeyboardView *kv = [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+    NSColor *red = [NSColor colorWithSRGBRed:1.0 green:0.0 blue:0.0 alpha:1.0];
+    [kv resetAllKeysToColor:red];
+
+    AppDelegate *delegate = [[AppDelegate alloc] initForTestingWithKeyboardView:kv];
+
+    // Basis-Profil anlegen: Slot 14 (W) ist rot (#FF0000)
+    NSDictionary *baseProfile = @{
+        @"id": @"test-profile-1",
+        @"name": @"Test Profile",
+        @"slots": @{
+            @"14": @"#FF0000"
+        }
+    };
+    [delegate ciy_setProfilesForTesting:@[baseProfile] activeId:@"test-profile-1"];
+    assert(delegate.ciy_profiles.count == 1);
+
+    // Ephemeres Akku-Overlay auf Slot 14 setzen (Grün #00FF00) und Akku-Mirror aktivieren
+    NSColor *green = [NSColor colorWithSRGBRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+    [kv setOverlayColors:@{@14: green}];
+    [delegate ciy_setBatteryMirrorCheckboxState:NSControlStateValueOn];
+
+    // Hardware-Canvas hat temporäres Overlay
+    assert(kv.overlayColors[@14] != nil);
+    assert([HexFromColor(kv.overlayColors[@14]) isEqualToString:@"#00FF00"]);
+
+    // Vor dem Speichern: Backend verbinden und Test-Payload zurücksetzen
+    assert([[KeyboardBackend shared] connect]);
+    [KeyboardBackend resetTestingPayload];
+
+    // Profil speichern (onSaveAndSendProfile)
+    [delegate ciy_saveCurrentProfile];
+    [delegate ciy_waitForPendingHardwareOperations];
+
+    // KRITISCH (Regel 4):
+    // 1. Transiente USB-Übertragung enthält das grüne Overlay auf Slot 14 (LED index 15)
+    NSData *payload = [KeyboardBackend lastSentPlanarPayload];
+    assert(payload != nil && payload.length == CIY_PLANAR_RGB_SIZE);
+    const uint8_t *bytes = (const uint8_t *)payload.bytes;
+
+    // Slot 14 -> LED Index = 14 + 1 = 15 -> Overlaid with Green (#00FF00)
+    assert(bytes[15] == 0x00);
+    assert(bytes[CIY_LED_COUNT + 15] == 0xFF);
+    assert(bytes[2 * CIY_LED_COUNT + 15] == 0x00);
+
+    // Nicht überlagerte Taste Slot 15 -> LED Index = 15 + 1 = 16 -> Unverändert Rot (#FF0000)
+    assert(bytes[16] == 0xFF);
+    assert(bytes[CIY_LED_COUNT + 16] == 0x00);
+    assert(bytes[2 * CIY_LED_COUNT + 16] == 0x00);
+
+    // 2. Persistente Speicherung bleibt frei vom Overlay (#FF0000)
+    NSDictionary *savedProfile = delegate.ciy_profiles[0];
+    NSDictionary *savedSlots = savedProfile[@"slots"];
+    assert([savedSlots[@"14"] isEqualToString:@"#FF0000"]);
+
+    NSArray *defaultsProfiles = [[delegate ciy_userDefaults] arrayForKey:@"CIYX79CustomProfiles_v1"];
+    assert(defaultsProfiles != nil && defaultsProfiles.count > 0);
+    assert([defaultsProfiles[0][@"slots"][@"14"] isEqualToString:@"#FF0000"]);
+
+    // Auch allKeyColors bleibt unberührt
+    assert([HexFromColor([kv allKeyColors][@14]) isEqualToString:@"#FF0000"]);
+
+    // Overlay entfernen
+    [kv clearOverlayColors];
+    assert(kv.overlayColors == nil);
+    assert([HexFromColor([kv allKeyColors][@14]) isEqualToString:@"#FF0000"]);
+
+    [[KeyboardBackend shared] disconnect];
+    [KeyboardBackend resetTestingPayload];
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -2550,6 +2682,9 @@ int main(void) {
         test_profile_tags_json_roundtrip_and_export_import();
         test_status_item_color_with_tag_filter();
         test_profile_tags_suggested_localization();
+        test_app_delegate_sleep_wake_lifecycle();
+        test_app_delegate_termination_cleanup();
+        test_app_delegate_overlay_profile_protection();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

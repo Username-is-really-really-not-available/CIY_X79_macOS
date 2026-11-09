@@ -153,6 +153,7 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -framework Cocoa \
     -framework IOKit \
     -framework CoreFoundation \
+    -framework UniformTypeIdentifiers \
     "${HOOK_FLAGS[@]}" \
     src/core/ciy_hid.c \
     src/layouts/ciy_x79_iso_de.c \
@@ -164,6 +165,7 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     src/app/CIYProfileScheduler.m \
     src/app/CIYStatusItemPresenter.m \
     src/app/CIYProfileTags.m \
+    src/app/AppDelegate.m \
     tests/test_profile_logic.m \
     -o "${TEST_TMP_DIR}/test_profile_logic"
 "${TEST_TMP_DIR}/test_profile_logic"

@@ -95,7 +95,12 @@
     BOOL _hasLastSendResult;
     BOOL _lastSendOk;
     NSDate *_lastSendDate;
+    NSUserDefaults *_userDefaults;
+#if defined(CIY_ENABLE_TEST_HOOKS)
+    NSString *_testDefaultsSuiteName;
+#endif
 }
+- (NSUserDefaults *)userDefaults;
 - (void)recordSendResult:(BOOL)ok;
 - (void)dismissScheduleSheet;
 @end
@@ -276,6 +281,10 @@ static NSString *SanitizeAppMetadata(id raw) {
 
 @implementation AppDelegate
 
+- (NSUserDefaults *)userDefaults {
+    return _userDefaults ?: [NSUserDefaults standardUserDefaults];
+}
+
 /// Gemeinsame Farbpalette für Tastenbuttons (Reihenfolge = Button-Tag).
 static NSArray<NSDictionary *> *KeyPalette(void) {
     return @[
@@ -292,7 +301,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     (void)aNotification;
-    _hwQueue = dispatch_queue_create("com.juliengenau.ciy-x79-control.hardware", DISPATCH_QUEUE_SERIAL);
+    _hwQueue = dispatch_queue_create("com.julien.ciy-x79-control.hardware", DISPATCH_QUEUE_SERIAL);
     _currentSelectedSlot = 14; // Standard-Auswahl: Taste W
     _currentBrightness = 5;    // Standard: Maximale Helligkeit (1..5)
     _hasUnsavedEdits = NO;
@@ -332,8 +341,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         return strongSelf ? strongSelf->_profiles : @[];
     };
-    _scheduler.globalEnabled = [[NSUserDefaults standardUserDefaults] objectForKey:kCIYScheduleEnabledDefaultsKey]
-        ? [[NSUserDefaults standardUserDefaults] boolForKey:kCIYScheduleEnabledDefaultsKey]
+    _scheduler.globalEnabled = [[self userDefaults] objectForKey:kCIYScheduleEnabledDefaultsKey]
+        ? [[self userDefaults] boolForKey:kCIYScheduleEnabledDefaultsKey]
         : YES;
     [self refreshScheduleMenuStates];
 
@@ -399,14 +408,14 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         });
     };
 
-    BOOL batteryMirrorOn = [[NSUserDefaults standardUserDefaults] boolForKey:kBatteryMirrorEnabledKey];
-    NSInteger savedSource = [[NSUserDefaults standardUserDefaults] integerForKey:kBatterySourceKey];
+    BOOL batteryMirrorOn = [[self userDefaults] boolForKey:kBatteryMirrorEnabledKey];
+    NSInteger savedSource = [[self userDefaults] integerForKey:kBatterySourceKey];
     [_batterySourcePopUp selectItemWithTag:savedSource];
     [CIYBatteryMonitor sharedMonitor].preferredSource = (CIYBatterySourceType)savedSource;
 
-    NSInteger savedTarget = [[NSUserDefaults standardUserDefaults] integerForKey:kBatteryTargetKey];
+    NSInteger savedTarget = [[self userDefaults] integerForKey:kBatteryTargetKey];
     [_batteryTargetPopUp selectItemWithTag:savedTarget];
-    _customBatterySlots = [[NSUserDefaults standardUserDefaults] stringForKey:kBatteryCustomSlotsKey] ?: @"14,9,15,21";
+    _customBatterySlots = [[self userDefaults] stringForKey:kBatteryCustomSlotsKey] ?: @"14,9,15,21";
 
     if (batteryMirrorOn) {
         _batteryMirrorCheckbox.state = NSControlStateValueOn;
@@ -743,7 +752,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 #pragma mark - Profilverwaltung
 
 - (void)loadProfiles {
-    NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:kCustomProfilesKey];
+    NSArray *saved = [[self userDefaults] arrayForKey:kCustomProfilesKey];
     if (saved && [saved isKindOfClass:[NSArray class]] && saved.count > 0) {
         _profiles = [NSMutableArray arrayWithCapacity:MIN(saved.count, kMaxProfilesCount)];
         NSMutableSet<NSString *> *seenIds = [NSMutableSet set];
@@ -804,7 +813,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [self saveProfilesToDefaults];
     }
 
-    NSString *lastActiveId = [[NSUserDefaults standardUserDefaults] stringForKey:kActiveProfileIdKey];
+    NSString *lastActiveId = [[self userDefaults] stringForKey:kActiveProfileIdKey];
     NSUInteger selIdx = 0;
     if (lastActiveId) {
         for (NSUInteger i = 0; i < _profiles.count; i++) {
@@ -824,8 +833,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [_keyboardView clearUndoHistory];
     }
 
-    _autoTriggerEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:kAutoTriggerEnabledKey];
-    _fallbackProfileId = [[NSUserDefaults standardUserDefaults] stringForKey:kFallbackProfileIdKey];
+    _autoTriggerEnabled = [[self userDefaults] boolForKey:kAutoTriggerEnabledKey];
+    _fallbackProfileId = [[self userDefaults] stringForKey:kFallbackProfileIdKey];
     BOOL fallbackFound = NO;
     if (_fallbackProfileId) {
         for (NSDictionary *p in _profiles) {
@@ -838,7 +847,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (!fallbackFound && _profiles.count > 0) {
         NSUInteger fallbackIdx = (_profiles.count > 6) ? 6 : 0;
         _fallbackProfileId = _profiles[fallbackIdx][@"id"];
-        [[NSUserDefaults standardUserDefaults] setObject:_fallbackProfileId forKey:kFallbackProfileIdKey];
+        [[self userDefaults] setObject:_fallbackProfileId forKey:kFallbackProfileIdKey];
     }
 
     [self setHasUnsavedEdits:NO];
@@ -918,11 +927,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (void)saveProfilesToDefaults {
-    [[NSUserDefaults standardUserDefaults] setObject:_profiles forKey:kCustomProfilesKey];
+    [[self userDefaults] setObject:_profiles forKey:kCustomProfilesKey];
     if (_currentActiveProfileId) {
-        [[NSUserDefaults standardUserDefaults] setObject:_currentActiveProfileId forKey:kActiveProfileIdKey];
+        [[self userDefaults] setObject:_currentActiveProfileId forKey:kActiveProfileIdKey];
     }
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[self userDefaults] synchronize];
 }
 
 - (NSInteger)activeProfileIndex {
@@ -1099,8 +1108,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onToggleAutoTrigger:(NSButton *)sender {
     _autoTriggerEnabled = (sender.state == NSControlStateValueOn);
-    [[NSUserDefaults standardUserDefaults] setBool:_autoTriggerEnabled forKey:kAutoTriggerEnabledKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[self userDefaults] setBool:_autoTriggerEnabled forKey:kAutoTriggerEnabledKey];
+    [[self userDefaults] synchronize];
     [self updateAppTriggerUI];
 
     if (_autoTriggerEnabled) {
@@ -1136,8 +1145,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 - (void)toggleAutoTriggerMenu:(id)sender {
     (void)sender;
     _autoTriggerEnabled = !_autoTriggerEnabled;
-    [[NSUserDefaults standardUserDefaults] setBool:_autoTriggerEnabled forKey:kAutoTriggerEnabledKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[self userDefaults] setBool:_autoTriggerEnabled forKey:kAutoTriggerEnabledKey];
+    [[self userDefaults] synchronize];
     [self updateAppTriggerUI];
 
     if (_autoTriggerEnabled) {
@@ -1245,8 +1254,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     if (!prof) return;
 
     _fallbackProfileId = prof[@"id"];
-    [[NSUserDefaults standardUserDefaults] setObject:_fallbackProfileId forKey:kFallbackProfileIdKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[self userDefaults] setObject:_fallbackProfileId forKey:kFallbackProfileIdKey];
+    [[self userDefaults] synchronize];
 
     [self updateAppTriggerUI];
     _statusLabel.stringValue = [NSString stringWithFormat:CIYL(@"● Profile “%@” set as default fallback"), prof[@"name"] ?: @""];
@@ -1725,7 +1734,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             self->_currentActiveProfileId = self->_profiles[nextIdx][@"id"];
             if ([self->_fallbackProfileId isEqualToString:deletedId]) {
                 self->_fallbackProfileId = self->_profiles[nextIdx][@"id"];
-                [[NSUserDefaults standardUserDefaults] setObject:self->_fallbackProfileId forKey:kFallbackProfileIdKey];
+                [[self userDefaults] setObject:self->_fallbackProfileId forKey:kFallbackProfileIdKey];
             }
 
             [self saveProfilesToDefaults]; // Erst speichern, nachdem activeProfileId aktualisiert wurde!
@@ -2064,7 +2073,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 
 - (void)onToggleBatteryMirror:(NSButton *)sender {
     BOOL enabled = (sender.state == NSControlStateValueOn);
-    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kBatteryMirrorEnabledKey];
+    [[self userDefaults] setBool:enabled forKey:kBatteryMirrorEnabledKey];
 
     if (enabled) {
         [[CIYBatteryMonitor sharedMonitor] startMonitoring];
@@ -2078,7 +2087,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (void)onBatterySourceChanged:(NSPopUpButton *)sender {
-    [[NSUserDefaults standardUserDefaults] setInteger:sender.selectedItem.tag forKey:kBatterySourceKey];
+    [[self userDefaults] setInteger:sender.selectedItem.tag forKey:kBatterySourceKey];
     [CIYBatteryMonitor sharedMonitor].preferredSource = (CIYBatterySourceType)sender.selectedItem.tag;
     if (_batteryMirrorCheckbox.state == NSControlStateValueOn) {
         [self updateBatteryDisplay];
@@ -2099,11 +2108,11 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             NSString *val = [input.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (val.length > 0) {
                 _customBatterySlots = val;
-                [[NSUserDefaults standardUserDefaults] setObject:_customBatterySlots forKey:kBatteryCustomSlotsKey];
+                [[self userDefaults] setObject:_customBatterySlots forKey:kBatteryCustomSlotsKey];
             }
         }
     }
-    [[NSUserDefaults standardUserDefaults] setInteger:sender.selectedItem.tag forKey:kBatteryTargetKey];
+    [[self userDefaults] setInteger:sender.selectedItem.tag forKey:kBatteryTargetKey];
     if (_batteryMirrorCheckbox.state == NSControlStateValueOn) {
         [self updateBatteryDisplay];
     }
@@ -2611,7 +2620,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
             [self addDefaultProfiles];
             self->_currentActiveProfileId = self->_profiles.firstObject[@"id"];
             self->_fallbackProfileId = (self->_profiles.count > 6) ? self->_profiles[6][@"id"] : self->_profiles[0][@"id"];
-            [[NSUserDefaults standardUserDefaults] setObject:self->_fallbackProfileId forKey:kFallbackProfileIdKey];
+            [[self userDefaults] setObject:self->_fallbackProfileId forKey:kFallbackProfileIdKey];
             self->_selectedFilterTag = nil;
             [self saveProfilesToDefaults];
             [self refreshProfileFilterPopUp];
@@ -2809,7 +2818,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
 }
 
 - (void)loadLanguagePreference {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSUserDefaults *defaults = [self userDefaults];
     NSString *storedCode = [defaults stringForKey:CIYLanguagePreferenceKey];
     NSArray *savedProfiles = [defaults arrayForKey:kCustomProfilesKey];
     BOOL hasProfiles = [savedProfiles isKindOfClass:[NSArray class]] && savedProfiles.count > 0;
@@ -3381,8 +3390,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     (void)sender;
     BOOL newState = !_scheduler.globalEnabled;
     _scheduler.globalEnabled = newState;
-    [[NSUserDefaults standardUserDefaults] setBool:newState forKey:kCIYScheduleEnabledDefaultsKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[self userDefaults] setBool:newState forKey:kCIYScheduleEnabledDefaultsKey];
+    [[self userDefaults] synchronize];
 
     [self updateStatusItemMenu];
     [self refreshScheduleMenuStates];
@@ -3663,6 +3672,7 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
     }
     [self dismissScheduleSheet];
     [self dismissTagSheet];
+    [self cancelHardwareSync];
     [NSObject cancelPreviousPerformRequestsWithTarget:self];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
@@ -3677,5 +3687,135 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         [[KeyboardBackend shared] disconnect];
     }
 }
+
+- (void)dealloc {
+#if defined(CIY_ENABLE_TEST_HOOKS)
+    if (_testDefaultsSuiteName && _userDefaults) {
+        [_userDefaults removePersistentDomainForName:_testDefaultsSuiteName];
+        _testDefaultsSuiteName = nil;
+    }
+#endif
+}
+
+#if defined(CIY_ENABLE_TEST_HOOKS)
+- (instancetype)initForTestingWithKeyboardView:(nullable CIYKeyboardView *)keyboardView {
+    self = [super init];
+    if (self) {
+        _testDefaultsSuiteName = [NSString stringWithFormat:@"com.julien.ciy-x79-control.test.%@", [NSUUID UUID].UUIDString];
+        _userDefaults = [[NSUserDefaults alloc] initWithSuiteName:_testDefaultsSuiteName];
+        [_userDefaults removePersistentDomainForName:_testDefaultsSuiteName];
+        _hwQueue = dispatch_queue_create("com.julien.ciy-x79-control.test.hardware", DISPATCH_QUEUE_SERIAL);
+        _keyboardView = keyboardView ?: [[CIYKeyboardView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
+        _scheduler = [[CIYProfileScheduler alloc] init];
+        _profiles = [NSMutableArray array];
+        _batteryMirrorCheckbox = [[NSButton alloc] init];
+        _batteryMirrorCheckbox.state = NSControlStateValueOff;
+        _batteryStatusLabel = [[NSTextField alloc] init];
+        _statusLabel = [[NSTextField alloc] init];
+        _currentBrightness = 5;
+    }
+    return self;
+}
+
+- (void)ciy_triggerSystemWillSleep {
+    [self onSystemWillSleep:[NSNotification notificationWithName:NSWorkspaceWillSleepNotification object:nil]];
+}
+
+- (void)ciy_triggerSystemDidWake {
+    [self onSystemDidWake:[NSNotification notificationWithName:NSWorkspaceDidWakeNotification object:nil]];
+}
+
+- (void)ciy_triggerAppWillTerminate {
+    [self applicationWillTerminate:[NSNotification notificationWithName:NSApplicationWillTerminateNotification object:nil]];
+}
+
+- (BOOL)ciy_isSleeping {
+    return _isSleeping;
+}
+
+- (BOOL)ciy_isWakingUp {
+    return _isWakingUp;
+}
+
+- (BOOL)ciy_isWakeSyncScheduled {
+    return _wakeSyncScheduled;
+}
+
+- (void)ciy_scheduleHardwareSyncWithDelay:(NSTimeInterval)delay {
+    [self cancelHardwareSync];
+    _wakeRetryCount = 0;
+    _wakeSyncScheduled = YES;
+    [self performSelector:@selector(performHardwareSync) withObject:nil afterDelay:delay];
+}
+
+- (void)ciy_cancelHardwareSync {
+    [self cancelHardwareSync];
+}
+
+- (void)ciy_setProfilesForTesting:(NSArray<NSDictionary *> *)profiles activeId:(nullable NSString *)activeId {
+    _profiles = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *indices = [NSMutableArray array];
+    for (NSUInteger i = 0; i < profiles.count; i++) {
+        [_profiles addObject:[profiles[i] mutableCopy]];
+        [indices addObject:@(i)];
+    }
+    _visibleProfileIndices = [indices copy];
+    if (!_profilesPopUp) {
+        _profilesPopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 100, 24) pullsDown:NO];
+    }
+    [_profilesPopUp removeAllItems];
+    for (NSDictionary *p in _profiles) {
+        [_profilesPopUp addItemWithTitle:p[@"name"] ?: @"Profile"];
+    }
+    _currentActiveProfileId = [activeId copy];
+    NSInteger activeIdx = 0;
+    if (activeId) {
+        for (NSUInteger i = 0; i < _profiles.count; i++) {
+            if ([_profiles[i][@"id"] isEqualToString:activeId]) {
+                activeIdx = (NSInteger)i;
+                break;
+            }
+        }
+    }
+    if (_profiles.count > 0) {
+        [_profilesPopUp selectItemAtIndex:activeIdx];
+    }
+}
+
+- (NSArray<NSDictionary *> *)ciy_profiles {
+    return [_profiles copy];
+}
+
+- (NSUserDefaults *)ciy_userDefaults {
+    return [self userDefaults];
+}
+
+- (void)ciy_saveCurrentProfile {
+    [self onSaveAndSendProfile:nil];
+}
+
+- (void)ciy_waitForPendingHardwareOperations {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2.0];
+    while (_sendInFlight && [deadline timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    if (_hwQueue) {
+        dispatch_sync(_hwQueue, ^{});
+    }
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+}
+
+- (void)ciy_setBatteryMirrorCheckboxState:(NSControlStateValue)state {
+    _batteryMirrorCheckbox.state = state;
+}
+
+- (CIYKeyboardView *)ciy_keyboardView {
+    return _keyboardView;
+}
+
+- (CIYProfileScheduler *)ciy_scheduler {
+    return _scheduler;
+}
+#endif
 
 @end

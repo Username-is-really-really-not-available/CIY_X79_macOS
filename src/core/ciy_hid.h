@@ -164,6 +164,10 @@ bool ciy_load_profile_file_with_brightness(const char *path, const char *target_
                                            int *out_slots_count,
                                            uint8_t *out_brightness);
 
+#if defined(CIY_ENABLE_TEST_HOOKS)
+void ciy_test_nanosleep_uninterrupted(long ns);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

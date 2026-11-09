@@ -554,6 +554,117 @@ SWEEP_AUTO_DRY="$("${CIY_CTL}" --dry-run sweep --auto < /dev/null)"
 echo "${SWEEP_AUTO_DRY}" | grep -q "DRY RUN"
 echo "${SWEEP_AUTO_DRY}" | grep -q "Sweep Simulation"
 
+# 6.9 sweep interaktives Pacing via Pseudo-Terminal (PTY): [Enter], [p], [q] (Regel 2)
+if command -v /usr/bin/python3 >/dev/null 2>&1; then
+    SWEEP_PTY_OUT="$(/usr/bin/python3 -c '
+import pty, os, select, sys, time, signal
+
+master, slave = pty.openpty()
+pid = os.fork()
+if pid == 0:
+    os.close(master)
+    os.setsid()
+    os.dup2(slave, 0)
+    os.dup2(slave, 1)
+    os.dup2(slave, 2)
+    os.close(slave)
+    os.environ["CIY_TESTING"] = "1"
+    os.execl(sys.argv[1], sys.argv[1], "sweep")
+os.close(slave)
+
+all_chunks = []
+
+def read_until(expected_list, timeout=5.0):
+    if isinstance(expected_list, bytes):
+        expected_list = [expected_list]
+    deadline = time.monotonic() + timeout
+    buf = b""
+    while True:
+        if all(exp in buf for exp in expected_list):
+            return buf
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"Timeout waiting for {expected_list}, received: {buf!r}")
+        r, _, _ = select.select([master], [], [], remaining)
+        if not r:
+            raise TimeoutError(f"Timeout waiting for {expected_list}, received: {buf!r}")
+        try:
+            chunk = os.read(master, 1024)
+            if not chunk:
+                if all(exp in buf for exp in expected_list):
+                    return buf
+                raise EOFError(f"EOF waiting for {expected_list}, received: {buf!r}")
+            buf += chunk
+            all_chunks.append(chunk)
+        except OSError:
+            if all(exp in buf for exp in expected_list):
+                return buf
+            raise
+
+child_reaped = False
+master_closed = False
+try:
+    # 1. Initialer Prompt Slot 0
+    read_until([b"CIY X79 Matrix Sweep (Interaktiv)", b"[Slot   0 / LED   1] Taste: Unbelegt", b"-> "], timeout=5.0)
+
+    # 2. [Enter] -> Vorwärts zu Slot 1 Esc
+    os.write(master, b"\n")
+    read_until([b"[Slot   1 / LED   2] Taste: Esc", b"-> "], timeout=5.0)
+
+    # 3. [p] -> Rückwärts zurück zu Slot 0 Unbelegt
+    os.write(master, b"p")
+    read_until([b"[Slot   0 / LED   1] Taste: Unbelegt", b"-> "], timeout=5.0)
+
+    # 4. [q] -> Sauberer Abschluss
+    os.write(master, b"q")
+    read_until([b"Sweep abgeschlossen"], timeout=5.0)
+
+    # Drain any remaining bytes until EOF/OSError (with short timeout)
+    while True:
+        r, _, _ = select.select([master], [], [], 0.5)
+        if not r:
+            break
+        try:
+            chunk = os.read(master, 1024)
+            if not chunk:
+                break
+            all_chunks.append(chunk)
+        except OSError:
+            break
+
+    os.close(master)
+    master_closed = True
+    _, status = os.waitpid(pid, 0)
+    child_reaped = True
+    exit_code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+    if exit_code != 0:
+        sys.exit(exit_code)
+    sys.stdout.buffer.write(b"".join(all_chunks))
+except Exception as e:
+    sys.stderr.write(f"PTY test failed: {e}\n")
+    sys.exit(1)
+finally:
+    if not child_reaped:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    if not master_closed:
+        try:
+            os.close(master)
+        except OSError:
+            pass
+' "${CIY_CTL}")"
+    echo "${SWEEP_PTY_OUT}" | grep -q "CIY X79 Matrix Sweep (Interaktiv)"
+    echo "${SWEEP_PTY_OUT}" | grep -q "Unbelegt"
+    echo "${SWEEP_PTY_OUT}" | grep -q "Esc"
+    echo "${SWEEP_PTY_OUT}" | grep -q "Sweep abgeschlossen"
+fi
+
 echo "=== Test CLI: 7. battery Subcommand (Mocks, Quellen, Dry-Run & JSON) ==="
 # 7.1 Hilfe enthält battery
 "${CIY_CTL}" --help | grep -q "battery"
