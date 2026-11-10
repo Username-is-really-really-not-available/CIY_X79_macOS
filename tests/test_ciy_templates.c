@@ -548,7 +548,9 @@ static void test_cli_integration(const char *cli_path) {
     const char *const args_5_16c[] = {cli_path, "template", "wasd-only", "--name", name_63, "--export", file_roundtrip, NULL};
     run_cli_argv(cli_path, args_5_16c, out, sizeof(out), &exit_code);
     assert(exit_code == 0);
-    assert(access(file_roundtrip, F_OK) == 0);
+    int exported_fd = open(file_roundtrip, O_RDONLY);
+    assert(exported_fd >= 0);
+    close(exported_fd);
 
     const char *const args_5_16d[] = {cli_path, "validate-profile", file_roundtrip, "--json", NULL};
     run_cli_argv(cli_path, args_5_16d, out, sizeof(out), &exit_code);
