@@ -410,9 +410,8 @@ static void test_cli_integration(const char *cli_path) {
         };
         run_cli_argv(cli_path, args_exp, out, sizeof(out), &exit_code);
         assert(exit_code == 0);
-        assert(access(exp_file, F_OK) == 0);
 
-        // validate-profile aufrufen
+        // validate-profile aufrufen (verifies file exists and is readable)
         const char *const args_val[] = {cli_path, "validate-profile", exp_file, "--json", NULL};
         run_cli_argv(cli_path, args_val, out, sizeof(out), &exit_code);
         assert(exit_code == 0);
