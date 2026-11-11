@@ -159,5 +159,19 @@ ROADMAP.md
 ROADMAP*.md
 security/
 
+# ------------------------------------------------------------------------------
+# 10. LibFuzzer Binaries, Arbeits-Corpus & Crash-Artefakte
+# ------------------------------------------------------------------------------
+tests/fuzz/fuzzer
+tests/fuzz/fuzzer.dSYM/
+tests/fuzz/corpus_work/
+tests/fuzz/artifacts/
+fuzz-*.log
+crash-*
+leak-*
+timeout-*
+oom-*
+slow-unit-*
+
 
 

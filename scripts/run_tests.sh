@@ -123,6 +123,24 @@ clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
 
 "${TEST_TMP_DIR}/test_ciy_templates" "${TEST_TMP_DIR}/ciy_ctl_templates_test"
 
+echo "=== Test 0f: Isolated JSON Parser & Fuzz Harness Smoke Test (ASan/UBSan, Pure C11 & C++17) ==="
+if grep -nE '#include *[<"](IOKit|Cocoa|CoreFoundation|Foundation|AppKit|hidapi|ciy_hid\.h|pthread|unistd|fcntl|strings\.h|sys/)' \
+    src/core/ciy_json.h src/core/ciy_json.c tests/fuzz/fuzz_json_parser.c; then
+    echo "FEHLER: Isolierter JSON-Parser / Fuzz-Harness enthält verbotene OS-/HID-/POSIX-Includes!" >&2
+    exit 1
+fi
+
+clang++ -Wall -Wextra -Werror -std=c++17 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    -x c++ -c src/core/ciy_json.h -o /dev/null
+
+clang -Wall -Wextra -Werror -std=c11 -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
+    -DCIY_FUZZ_STANDALONE=1 -Isrc/core \
+    tests/fuzz/fuzz_json_parser.c \
+    src/core/ciy_json.c \
+    -o "${TEST_TMP_DIR}/fuzz_json_parser_smoke"
+
+"${TEST_TMP_DIR}/fuzz_json_parser_smoke" tests/fuzz_corpus/*
+
 echo "=== Test 1: HID & Protokoll Tests (macOS IOKit, ASan/UBSan) ==="
 clang -Wall -Wextra -Werror -mmacosx-version-min=12.0 "${SAN_FLAGS[@]}" \
     -framework IOKit \
