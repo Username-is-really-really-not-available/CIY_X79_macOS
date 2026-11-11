@@ -4,7 +4,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 APP_NAME="CIYX79Control"
-VERSION="${1:-${VERSION:-1.5.0}}"
+VERSION="${1:-${VERSION:-1.6.0}}"
 VERSION="${VERSION#v}"
 if [[ ! "${VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
     echo "FEHLER: Ungültige Version '${VERSION}'. Erlaubt sind Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich." >&2

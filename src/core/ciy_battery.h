@@ -357,6 +357,7 @@ CIY_INLINE bool ciy_battery_get_info(CIYBatterySourceType preferred_type, CIYBat
     if (count == 0) {
         memset(out_info, 0, sizeof(*out_info));
         strncpy(out_info->name, "Keine Stromquelle erkannt", sizeof(out_info->name) - 1);
+        out_info->type = preferred_type;
         out_info->percent = -1;
         out_info->is_present = false;
         return false;
