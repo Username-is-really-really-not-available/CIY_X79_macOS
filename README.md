@@ -19,6 +19,7 @@ Eine native, vollständige macOS-Lösung (Apple Silicon & Intel) zur Ansteuerung
 10. [Automatisierte Tests & Hardware-Diagnose](#10-automatisierte-tests--hardware-diagnose)
 11. [Kompilierung & Build-Prozess](#11-kompilierung--build-prozess)
 12. [Sicherheit, Datenschutz & Ressourcen](#12-sicherheit-datenschutz--ressourcen)
+    * [🛡️ Sicherheit & Fuzzing (CWE-Top-25)](#-sicherheit--fuzzing-cwe-top-25)
 13. [Lizenz, Markenhinweis & Haftungsausschluss](#13-lizenz-markenhinweis--haftungsausschluss)
 
 ---
@@ -588,6 +589,27 @@ clang -O2 -arch arm64 -arch x86_64 -Wall -Wextra -framework IOKit -framework Cor
   Die Binärdateien enthalten keine Netzwerk-Sockets, keine Telemetrie und keine externen Server-Verbindungen.
 * **0,0 % CPU-Ruhelast:**
   Nach dem Senden eines Profils verbraucht das Programm im Ruhezustand 0,0 % Prozessorleistung. Es gibt keine ressourcenfressenden Abfrage-Schleifen.
+
+---
+
+## 🛡️ Sicherheit & Fuzzing (CWE-Top-25)
+
+Wir legen höchsten Wert auf Speichersicherheit, deterministisches Fehler-Handling und robustes Parsing. Da Tastaturtreiber direkt mit Hardware- und System-APIs kommunizieren, setzt dieses Projekt auf strikte Defense-in-Depth:
+
+- **Allokationsfreier Domain-Parser:** Eigener C11-Parser nach RFC 8259 und RFC 3629 (strikte UTF-8-Validierung) ohne externe Heap-Abhängigkeiten.
+- **Sanitizer-Verifikation:** Alle Tests werden unter Clang **AddressSanitizer (ASan)** und **UndefinedBehaviorSanitizer (UBSan)** mit `-fno-sanitize-recover=all` kompiliert und verifiziert.
+- **CWE-Top-25 Härtung:** Explizite Testabdeckung gegen Integer-Überläufe/Wraparounds, Byte-für-Byte Präfix-Truncation, Rekursionstiefen-Limits (`CIY_JSON_MAX_DEPTH = 64`), rohe Steuerzeichen (`0x01..0x1F`), Overlong-UTF-8/NUL-Kodierungen und TOCTOU-Race-Conditions im Dateisystem (`O_NOFOLLOW`).
+- **Memory-Poisoning:** Defensives `0xAA`-Poisoning auf Fehlerpfaden, um uninitialisierte Speicherzustände auszuschließen.
+
+### Testsuite lokal ausführen
+```bash
+./scripts/run_tests.sh
+```
+
+### Fuzzing & Mitwirken
+Glaubst du, du kannst den Parser knacken? Unter `tests/fuzz_corpus/` pflegen wir ein Seed-Corpus mit extremen Grenzfällen (Deep Nesting, abgeschnittene Payloads, ungültiges UTF-8 und rohe Steuerbytes).
+
+Falls du ein Payload findest, das ein ASan-Leak, einen Crash oder unerwartetes Verhalten auslöst: Öffne gerne ein Issue oder sende einen Pull Request mit dem Testfall!
 
 ---
 

@@ -19,6 +19,7 @@ A native, lightweight macOS solution (Apple Silicon & Intel) for controlling the
 10. [Automated Test Suite & Hardware Diagnostics](#10-automated-test-suite--hardware-diagnostics)
 11. [Compilation & Packaging](#11-compilation--packaging)
 12. [Security, Privacy & Performance](#12-security-privacy--performance)
+    * [🛡️ Security & Fuzzing (CWE-Top-25)](#-security--fuzzing-cwe-top-25)
 13. [License, Trademark Notice & Disclaimer](#13-license-trademark-notice--disclaimer)
 
 ---
@@ -503,6 +504,27 @@ clang -O2 -arch arm64 -arch x86_64 -Wall -Wextra -framework IOKit -framework Cor
 * **Zero Kernel Extensions:** Operates purely in unprivileged user space via official Apple IOKit APIs.
 * **100% Offline:** No network sockets, zero telemetry, no third-party analytic trackers.
 * **0.0% Idle CPU Usage:** Event-driven architecture with zero background polling loops.
+
+---
+
+## 🛡️ Security & Fuzzing (CWE-Top-25)
+
+We take memory safety, deterministic error handling, and robust parsing seriously. Because keyboard drivers communicate directly with hardware and userland APIs, this project enforces strict defense-in-depth:
+
+- **Zero-Allocation Domain Parser:** Custom RFC 8259- and RFC 3629-compliant C11 parser without external heap dependencies.
+- **Sanitizer Verification:** All tests are compiled and validated under Clang **AddressSanitizer (ASan)** and **UndefinedBehaviorSanitizer (UBSan)** with `-fno-sanitize-recover=all`.
+- **CWE-Top-25 Hardening:** Explicit test coverage against integer overflows/wraparounds, byte-by-byte prefix truncation, recursion limits (`CIY_JSON_MAX_DEPTH = 64`), raw control characters (`0x01..0x1F`), overlong UTF-8/NUL encodings, and TOCTOU filesystem races (`O_NOFOLLOW`).
+- **Memory Poisoning:** Defensive `0xAA`-poisoning on failure paths to eliminate uninitialized struct risks.
+
+### Run the Test Suite Locally
+```bash
+./scripts/run_tests.sh
+```
+
+### Fuzzing & Contributing
+Think you can break it? We maintain a dedicated binary seed corpus under `tests/fuzz_corpus/` containing edge cases (deep nesting, truncated tokens, malformed UTF-8, and raw bytes).
+
+If you discover a payload that triggers an ASan leak, crash, or unexpected behavior, please open an Issue or submit a Pull Request with a reproduction case. We love security hardening!
 
 ---
 
