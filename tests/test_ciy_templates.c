@@ -1,10 +1,13 @@
 #include <assert.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <fcntl.h>
 
@@ -293,7 +296,70 @@ static void test_json_export_and_roundtrip(void) {
     assert(ciy_template_to_json(t_first, ctrl_name, NULL, NULL, json_buf, sizeof(json_buf)));
     assert(strstr(json_buf, "\"name\": \"Test\\b\\f\\u0001\\u001bName\"") != NULL);
 
-    printf("[Test 4] JSON-Export Struktur & Validität (125 Slots)... PASSED\n");
+    // 1b: Exakte Puffergrenzen für ciy_template_to_json (511, 512, exact_len vs. exact_len + 1) unter ASan
+    assert(ciy_template_to_json(t_first, "ExactLen", NULL, NULL, json_buf, sizeof(json_buf)));
+    size_t exact_len = strlen(json_buf);
+    assert(exact_len > 512);
+
+    char *buf_511 = (char *)malloc(511);
+    char *buf_512 = (char *)malloc(512);
+    char *buf_exact_fail = (char *)malloc(exact_len);     // 1 Byte zu klein (kein Platz für '\0')
+    char *buf_exact_ok = (char *)malloc(exact_len + 1);   // Exakt passend inkl. '\0'
+    assert(buf_511 && buf_512 && buf_exact_fail && buf_exact_ok);
+
+    memset(buf_511, 0xAA, 511);
+    assert(!ciy_template_to_json(t_first, "ExactLen", NULL, NULL, buf_511, 511));
+    assert(buf_511[0] == '\0');
+
+    memset(buf_512, 0xAA, 512);
+    assert(!ciy_template_to_json(t_first, "ExactLen", NULL, NULL, buf_512, 512));
+    assert(buf_512[0] == '\0');
+
+    memset(buf_exact_fail, 0xAA, exact_len);
+    assert(!ciy_template_to_json(t_first, "ExactLen", NULL, NULL, buf_exact_fail, exact_len));
+    assert(buf_exact_fail[0] == '\0');
+
+    memset(buf_exact_ok, 0xAA, exact_len + 1);
+    assert(ciy_template_to_json(t_first, "ExactLen", NULL, NULL, buf_exact_ok, exact_len + 1));
+    assert(strlen(buf_exact_ok) == exact_len);
+    assert(memcmp(buf_exact_ok, json_buf, exact_len + 1) == 0);
+
+    free(buf_511);
+    free(buf_512);
+    free(buf_exact_fail);
+    free(buf_exact_ok);
+
+    // 1c & 3b: Vollständige NULL-Guards & 0xAA-Poisoning für alle Template-Header-APIs
+    assert(ciy_template_get(SIZE_MAX) == NULL);
+    assert(ciy_template_get_slot_role(NULL, 14) == CIY_TEMPLATE_ROLE_OFF);
+    assert(ciy_template_get_slot_role(t_first, -1) == CIY_TEMPLATE_ROLE_OFF);
+    assert(ciy_template_get_slot_role(t_first, 125) == CIY_TEMPLATE_ROLE_OFF);
+    assert(ciy_template_get_slot_role(t_first, INT_MIN) == CIY_TEMPLATE_ROLE_OFF);
+    assert(ciy_template_get_slot_role(t_first, INT_MAX) == CIY_TEMPLATE_ROLE_OFF);
+
+    uint8_t poisoned_slots[CIY_MAX_MATRIX_SLOT + 1][3];
+    memset(poisoned_slots, 0xAA, sizeof(poisoned_slots));
+    assert(!ciy_template_generate_slots(NULL, NULL, NULL, poisoned_slots));
+    assert(!ciy_template_generate_slots(t_first, NULL, NULL, NULL));
+    assert(!ciy_template_generate_slots(NULL, NULL, NULL, NULL));
+    assert(poisoned_slots[0][0] == 0);
+
+    uint8_t poisoned_planar[CIY_PLANAR_RGB_SIZE];
+    memset(poisoned_planar, 0xAA, sizeof(poisoned_planar));
+    assert(!ciy_template_generate_planar(NULL, NULL, NULL, poisoned_planar));
+    assert(!ciy_template_generate_planar(t_first, NULL, NULL, NULL));
+    assert(!ciy_template_generate_planar(NULL, NULL, NULL, NULL));
+    assert(poisoned_planar[0] == 0);
+
+    memset(json_buf, 0xAA, sizeof(json_buf));
+    assert(!ciy_template_to_json(NULL, NULL, NULL, NULL, json_buf, sizeof(json_buf)));
+    assert(json_buf[0] == '\0');
+    assert(!ciy_template_to_json(t_first, NULL, NULL, NULL, NULL, sizeof(json_buf)));
+    json_buf[0] = (char)0xAA;
+    assert(!ciy_template_to_json(t_first, NULL, NULL, NULL, json_buf, 0));
+    assert((unsigned char)json_buf[0] == 0xAA); // max_len == 0 darf Puffer nicht beschreiben
+
+    printf("[Test 4] JSON-Export Struktur, Exakt-Längenkanten & NULL/Poisoning... PASSED\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -507,21 +573,45 @@ static void test_cli_integration(const char *cli_path) {
     assert(strstr(out, "--list kann nicht mit anderen Vorlagen-Optionen kombiniert werden") != NULL);
 
     // 5.15 Fehlerbehandlung: --export mit nachfolgendem Flag (--json, --list) oder leer
+    // TOCTOU-freie Prüfung ohne access(..., F_OK): open(..., O_RDONLY | O_NOFOLLOW) == -1 && errno == ENOENT
     unlink("--json");
     unlink("--list");
     const char *const args_5_15a[] = {cli_path, "template", "wasd-only", "--export", "--json", NULL};
     run_cli_argv(cli_path, args_5_15a, out, sizeof(out), &exit_code);
     assert(exit_code == 1);
-    assert(access("--json", F_OK) != 0);
+    errno = 0;
+    int probe_fd_a = open("--json", O_RDONLY | O_NOFOLLOW);
+    assert(probe_fd_a == -1 && errno == ENOENT);
 
     const char *const args_5_15b[] = {cli_path, "template", "wasd-only", "--export", "--list", NULL};
     run_cli_argv(cli_path, args_5_15b, out, sizeof(out), &exit_code);
     assert(exit_code == 1);
-    assert(access("--list", F_OK) != 0);
+    errno = 0;
+    int probe_fd_b = open("--list", O_RDONLY | O_NOFOLLOW);
+    assert(probe_fd_b == -1 && errno == ENOENT);
 
     const char *const args_5_15c[] = {cli_path, "template", "wasd-only", "--export=", NULL};
     run_cli_argv(cli_path, args_5_15c, out, sizeof(out), &exit_code);
     assert(exit_code == 1);
+
+    // 5.15d/e CLI-Export gegen Verzeichnis und FIFO (O_CREAT | O_EXCL | O_NOFOLLOW lehnt sofort ohne Blockieren ab)
+    char export_dir[512];
+    snprintf(export_dir, sizeof(export_dir), "/tmp/ciy_test_exp_dir_%ld", (long)getpid());
+    rmdir(export_dir);
+    assert(mkdir(export_dir, 0700) == 0);
+    const char *const args_5_15d[] = {cli_path, "template", "wasd-only", "--export", export_dir, NULL};
+    run_cli_argv(cli_path, args_5_15d, out, sizeof(out), &exit_code);
+    assert(exit_code == 1);
+    assert(rmdir(export_dir) == 0);
+
+    char export_fifo[512];
+    snprintf(export_fifo, sizeof(export_fifo), "/tmp/ciy_test_exp_fifo_%ld.fifo", (long)getpid());
+    unlink(export_fifo);
+    assert(mkfifo(export_fifo, 0600) == 0);
+    const char *const args_5_15e[] = {cli_path, "template", "wasd-only", "--export", export_fifo, NULL};
+    run_cli_argv(cli_path, args_5_15e, out, sizeof(out), &exit_code);
+    assert(exit_code == 1);
+    assert(unlink(export_fifo) == 0);
 
     // 5.16 --name Validierung: 64 Zeichen abgelehnt, 63 Zeichen inkl. Steuerzeichen akzeptiert
     char name_64[65];

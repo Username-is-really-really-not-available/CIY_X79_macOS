@@ -1421,7 +1421,8 @@ int main(int argc, char **argv) {
         if (batt_target_count == 1) {
             active_count = 1;
         } else if (info.percent > 0) {
-            active_count = (size_t)((info.percent * batt_target_count + 99) / 100);
+            uint64_t pct = (info.percent > 100) ? 100ULL : (uint64_t)info.percent;
+            active_count = (size_t)((pct * (uint64_t)batt_target_count + 99ULL) / 100ULL);
             if (active_count > batt_target_count) active_count = batt_target_count;
         }
 
@@ -2644,7 +2645,8 @@ int main(int argc, char **argv) {
             if (batt_target_count == 1) {
                 active_count = 1;
             } else if (info.percent > 0) {
-                active_count = (size_t)((info.percent * batt_target_count + 99) / 100);
+                uint64_t pct = (info.percent > 100) ? 100ULL : (uint64_t)info.percent;
+                active_count = (size_t)((pct * (uint64_t)batt_target_count + 99ULL) / 100ULL);
                 if (active_count > batt_target_count) active_count = batt_target_count;
             }
 

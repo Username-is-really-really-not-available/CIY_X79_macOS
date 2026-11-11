@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -254,6 +256,161 @@ static void test_transfer_plans(void) {
     assert(state_plan.steps[0].data[3] == 1); // 4 - 3 = 1
 }
 
+static void test_overflow_and_size_max_boundaries(void) {
+    uint8_t planar_rgb[CIY_PLANAR_RGB_SIZE] = {0};
+    uint8_t wire[CIY_REPORT_0B_SIZE] = {0};
+    CIYTransferPlan plan;
+
+    // 1a: encode_0b & build_transfer_plan mit rgb_len = 0, 377, 379 (+1), SIZE_MAX
+    assert(!ciy_protocol_encode_0b(planar_rgb, 0, wire));
+    assert(!ciy_protocol_encode_0b(planar_rgb, CIY_PLANAR_RGB_SIZE - 1, wire));
+    assert(!ciy_protocol_encode_0b(planar_rgb, CIY_REPORT_0B_SIZE, wire)); // 379 != 378
+    assert(!ciy_protocol_encode_0b(planar_rgb, SIZE_MAX, wire));
+
+    assert(!ciy_build_transfer_plan(&plan, planar_rgb, 0, 5, "Test", 69));
+    assert(!ciy_build_transfer_plan(&plan, planar_rgb, CIY_REPORT_0B_SIZE, 5, "Test", 69)); // 379
+    assert(!ciy_build_transfer_plan(&plan, planar_rgb, SIZE_MAX, 5, "Test", 69));
+
+    // Helligkeits-Clamping und Profilnamen-Truncation bei build_transfer_plan
+    char overlong_name[96];
+    memset(overlong_name, 'P', sizeof(overlong_name) - 1);
+    overlong_name[sizeof(overlong_name) - 1] = '\0';
+    assert(ciy_build_transfer_plan(&plan, planar_rgb, CIY_PLANAR_RGB_SIZE, 255, overlong_name, INT_MAX));
+    assert(plan.brightness == CIY_MAX_BRIGHTNESS);
+    assert(plan.keys_count == INT_MAX);
+    assert(strlen(plan.profile_name) == sizeof(plan.profile_name) - 1);
+    assert(plan.profile_name[sizeof(plan.profile_name) - 1] == '\0');
+
+    assert(ciy_build_transfer_plan(&plan, planar_rgb, CIY_PLANAR_RGB_SIZE, 0, NULL, 0));
+    assert(plan.profile_name[0] == '\0');
+    assert(plan.brightness == 0);
+
+    // 1a: Offset-Helper mit INT_MIN und INT_MAX
+    assert(ciy_protocol_report_0b_r_offset(INT_MIN) == -1);
+    assert(ciy_protocol_report_0b_r_offset(INT_MAX) == -1);
+    assert(ciy_protocol_report_0b_g_offset(INT_MIN) == -1);
+    assert(ciy_protocol_report_0b_g_offset(INT_MAX) == -1);
+    assert(ciy_protocol_report_0b_b_offset(INT_MIN) == -1);
+    assert(ciy_protocol_report_0b_b_offset(INT_MAX) == -1);
+}
+
+static void test_decode_0a_exact_clamping_and_lengths(void) {
+    uint8_t raw[43];
+    memset(raw, 0, sizeof(raw));
+    raw[0] = CIY_REPORT_0A_ID;
+
+    CIYLightingState st = {0};
+
+    // 1b: Exakte Längenkanten 0, 41, 42, 43
+    assert(!ciy_protocol_decode_0a(raw, 0, &st));
+    assert(!ciy_protocol_decode_0a(raw, 41, &st));
+    assert(ciy_protocol_decode_0a(raw, 42, &st));
+    assert(ciy_protocol_decode_0a(raw, 43, &st));
+
+    // 1b: Obere Feldgrenzen exakt an Kante vs. +1
+    // mode: 20 (gültig) vs. 21 (geklemmt auf 0)
+    raw[1] = 20; raw[2] = 10; raw[3] = 4; raw[4] = 5;
+    assert(ciy_protocol_decode_0a(raw, 42, &st));
+    assert(st.mode == 20);
+    assert(st.color == 10);
+    assert(st.speed == 0); // 4 - 4 = 0
+    assert(st.brightness == 5);
+
+    raw[1] = 21; raw[2] = 11; raw[3] = 5; raw[4] = 6;
+    assert(ciy_protocol_decode_0a(raw, 42, &st));
+    assert(st.mode == 0);
+    assert(st.color == 0);
+    assert(st.speed == 0);
+    assert(st.brightness == CIY_MAX_BRIGHTNESS);
+
+    // Wire-Speed 0 entspricht maximalem logischem Tempo 4
+    raw[1] = 0; raw[2] = 0; raw[3] = 0; raw[4] = 0;
+    assert(ciy_protocol_decode_0a(raw, 42, &st));
+    assert(st.mode == 0 && st.color == 0 && st.speed == 4 && st.brightness == 0);
+}
+
+static void test_non_null_terminated_asan_buffers(void) {
+    // 2b: Exakte Heap-Allokation ohne NUL-Terminator für Binär-APIs unter ASan
+    const size_t decode_lens[] = {1, 5, 41, 42, 43};
+    for (size_t i = 0; i < sizeof(decode_lens) / sizeof(decode_lens[0]); i++) {
+        size_t len = decode_lens[i];
+        uint8_t *exact = (uint8_t *)malloc(len);
+        assert(exact != NULL);
+        memset(exact, 0x7F, len); // kein einziges 0x00-Byte im Puffer
+        exact[0] = CIY_REPORT_0A_ID;
+
+        CIYLightingState st = {0};
+        bool ok = ciy_protocol_decode_0a(exact, len, &st);
+        if (len < CIY_REPORT_0A_SIZE) {
+            assert(!ok);
+        } else {
+            assert(ok);
+            assert(st.mode == 0 && st.color == 0 && st.speed == 0 && st.brightness == CIY_MAX_BRIGHTNESS);
+        }
+        free(exact);
+    }
+
+    const size_t encode_lens[] = {1, 377, 378, 379};
+    for (size_t i = 0; i < sizeof(encode_lens) / sizeof(encode_lens[0]); i++) {
+        size_t len = encode_lens[i];
+        uint8_t *exact_rgb = (uint8_t *)malloc(len);
+        uint8_t *exact_out = (uint8_t *)malloc(CIY_REPORT_0B_SIZE);
+        assert(exact_rgb != NULL && exact_out != NULL);
+        memset(exact_rgb, 0xCC, len);
+        memset(exact_out, 0xEE, CIY_REPORT_0B_SIZE);
+
+        bool ok = ciy_protocol_encode_0b(exact_rgb, len, exact_out);
+        if (len == CIY_PLANAR_RGB_SIZE) {
+            assert(ok);
+            assert(exact_out[0] == CIY_REPORT_0B_ID);
+            assert(exact_out[CIY_REPORT_0B_SIZE - 1] == 0xCC);
+        } else {
+            assert(!ok);
+        }
+        free(exact_rgb);
+        free(exact_out);
+    }
+}
+
+static void test_layout_null_guards_and_poisoned_protocol_outputs(void) {
+    // 1c: Layout-Header NULL-Guards
+    const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
+    assert(layout != NULL);
+    assert(ciy_layout_find_key_by_slot(NULL, 1) == NULL);
+    assert(ciy_layout_find_key_by_slot(layout, INT_MIN) == NULL);
+    assert(ciy_layout_find_key_by_slot(layout, INT_MAX) == NULL);
+    assert(ciy_layout_find_key_by_name(NULL, "Esc") == NULL);
+    assert(ciy_layout_find_key_by_name(layout, NULL) == NULL);
+    assert(ciy_layout_find_key_by_name(NULL, NULL) == NULL);
+
+    CIYKeyboardLayout empty_layout = {"empty", "Empty", 5, NULL, 5, NULL};
+    assert(ciy_layout_find_key_by_slot(&empty_layout, 1) == NULL);
+    assert(ciy_layout_find_key_by_name(&empty_layout, "Esc") == NULL);
+
+    // 3b: 0xAA-Poisoning bei Fehlerpfaden der Protokoll-Funktionen
+    CIYLightingState poisoned_st;
+    memset(&poisoned_st, 0xAA, sizeof(poisoned_st));
+    uint8_t bad_0a[42];
+    memset(bad_0a, 0xFF, sizeof(bad_0a)); // ungültige Report-ID 0xFF
+    assert(!ciy_protocol_decode_0a(bad_0a, sizeof(bad_0a), &poisoned_st));
+    assert(poisoned_st.mode == 0 && poisoned_st.color == 0 && poisoned_st.speed == 0 && poisoned_st.brightness == 0);
+
+    uint8_t poisoned_0a[CIY_REPORT_0A_SIZE];
+    memset(poisoned_0a, 0xAA, sizeof(poisoned_0a));
+    CIYLightingState invalid_st = {99, 99, 99, 99};
+    assert(!ciy_protocol_encode_0a(invalid_st, poisoned_0a));
+    assert(poisoned_0a[0] == 0);
+
+    CIYTransferPlan poisoned_plan;
+    memset(&poisoned_plan, 0xAA, sizeof(poisoned_plan));
+    assert(!ciy_build_transfer_plan(&poisoned_plan, NULL, CIY_PLANAR_RGB_SIZE, 5, "X", 1));
+    assert(poisoned_plan.step_count == 0 && poisoned_plan.profile_name[0] == '\0');
+
+    memset(&poisoned_plan, 0xAA, sizeof(poisoned_plan));
+    assert(!ciy_build_state_transfer_plan(&poisoned_plan, invalid_st));
+    assert(poisoned_plan.step_count == 0 && poisoned_plan.profile_name[0] == '\0');
+}
+
 int main(void) {
     printf("=== Starte Standalone Protocol Tests (Zero OS-Lock-in) ===\n");
     test_protocol_constants_and_sizes();
@@ -263,6 +420,10 @@ int main(void) {
     test_encode_report_0b();
     test_report_0b_offsets();
     test_transfer_plans();
+    test_overflow_and_size_max_boundaries();
+    test_decode_0a_exact_clamping_and_lengths();
+    test_non_null_terminated_asan_buffers();
+    test_layout_null_guards_and_poisoned_protocol_outputs();
     printf("Alle Protocol-Tests erfolgreich bestanden!\n");
     return 0;
 }

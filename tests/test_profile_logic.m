@@ -1,6 +1,9 @@
 #import <Cocoa/Cocoa.h>
 #import <assert.h>
+#import <errno.h>
+#import <fcntl.h>
 #import <stdlib.h>
+#import <sys/stat.h>
 #import <unistd.h>
 #import "../src/core/ciy_hid.h"
 #import "../src/layouts/ciy_layout.h"
@@ -2623,6 +2626,85 @@ static void test_app_delegate_overlay_profile_protection(void) {
     [KeyboardBackend resetTestingPayload];
 }
 
+static void test_gui_import_export_symlink_and_toctou_safety(void) {
+    // 3a: GUI-Import nutzt ciy_read_text_file_with_result ([panel.URL.path fileSystemRepresentation])
+    // Prüfe O_NOFOLLOW + fstat(fd) Abweisung für Symlink, Dangling-Symlink, Zyklus, FIFO, Verzeichnis, 0B, 524288B vs. 524289B
+    NSString *baseDir = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"ciy_gui_toctou_%d", (int)getpid()]];
+    [[NSFileManager defaultManager] removeItemAtPath:baseDir error:nil];
+    assert([[NSFileManager defaultManager] createDirectoryAtPath:baseDir
+                                     withIntermediateDirectories:YES
+                                                      attributes:@{NSFilePosixPermissions: @(0700)}
+                                                           error:nil]);
+
+    NSString *validTarget = [baseDir stringByAppendingPathComponent:@"target.json"];
+    NSString *validJson = @"{\"name\":\"GUI Target\",\"slots\":{\"14\":\"#FF0000\"}}";
+    assert([validJson writeToFile:validTarget atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+
+    // 1. Symlink auf reguläre Datei -> CIYFileReadErrorSymlinkRejected
+    NSString *symReg = [baseDir stringByAppendingPathComponent:@"sym_reg.json"];
+    assert(symlink([validTarget fileSystemRepresentation], [symReg fileSystemRepresentation]) == 0);
+    size_t rawSize = 999;
+    CIYValidationResult valRes;
+    memset(&valRes, 0xAA, sizeof(valRes));
+    char *rawBuf = ciy_read_text_file_with_result([symReg fileSystemRepresentation], &rawSize, &valRes);
+    assert(rawBuf == NULL && rawSize == 0);
+    assert(valRes.read_error == CIYFileReadErrorSymlinkRejected);
+
+    // 2. Zyklischer Symlink -> CIYFileReadErrorSymlinkRejected
+    NSString *symLoop = [baseDir stringByAppendingPathComponent:@"sym_loop.json"];
+    assert(symlink([symLoop fileSystemRepresentation], [symLoop fileSystemRepresentation]) == 0);
+    memset(&valRes, 0xAA, sizeof(valRes));
+    rawBuf = ciy_read_text_file_with_result([symLoop fileSystemRepresentation], &rawSize, &valRes);
+    assert(rawBuf == NULL && rawSize == 0);
+    assert(valRes.read_error == CIYFileReadErrorSymlinkRejected);
+
+    // 3. FIFO -> CIYFileReadErrorNotRegularFile (ohne Blockieren!)
+    NSString *fifoPath = [baseDir stringByAppendingPathComponent:@"pipe.json"];
+    assert(mkfifo([fifoPath fileSystemRepresentation], 0600) == 0);
+    memset(&valRes, 0xAA, sizeof(valRes));
+    rawBuf = ciy_read_text_file_with_result([fifoPath fileSystemRepresentation], &rawSize, &valRes);
+    assert(rawBuf == NULL && rawSize == 0);
+    assert(valRes.read_error == CIYFileReadErrorNotRegularFile);
+
+    // 4. Verzeichnis -> CIYFileReadErrorNotRegularFile
+    memset(&valRes, 0xAA, sizeof(valRes));
+    rawBuf = ciy_read_text_file_with_result([baseDir fileSystemRepresentation], &rawSize, &valRes);
+    assert(rawBuf == NULL && rawSize == 0);
+    assert(valRes.read_error == CIYFileReadErrorNotRegularFile);
+
+    // 5. Exakt 524288 Bytes (512 KB) gültiges JSON -> Erfolg in Reader + NSJSONSerialization
+    NSString *exact512k = [baseDir stringByAppendingPathComponent:@"exact_512k.json"];
+    const char *prefix = "{\"name\":\"512K\",\"slots\":{\"14\":\"#00FF00\"}}";
+    size_t prefixLen = strlen(prefix);
+    size_t limitBytes = 512 * 1024; // 524288
+    NSMutableData *exactData = [NSMutableData dataWithLength:limitBytes];
+    memset(exactData.mutableBytes, ' ', limitBytes);
+    memcpy(exactData.mutableBytes, prefix, prefixLen);
+    assert([exactData writeToFile:exact512k atomically:YES]);
+
+    memset(&valRes, 0xAA, sizeof(valRes));
+    rawBuf = ciy_read_text_file_with_result([exact512k fileSystemRepresentation], &rawSize, &valRes);
+    assert(rawBuf != NULL && rawSize == limitBytes);
+    assert(valRes.read_error == CIYFileReadErrorNone);
+    NSData *importedData = [NSData dataWithBytesNoCopy:rawBuf length:rawSize freeWhenDone:YES];
+    NSError *jsonErr = nil;
+    id parsedObj = [NSJSONSerialization JSONObjectWithData:importedData options:0 error:&jsonErr];
+    assert(parsedObj != nil && jsonErr == nil && [parsedObj isKindOfClass:[NSDictionary class]]);
+
+    // 6. 524289 Bytes (512 KB + 1 Byte) -> CIYFileReadErrorTooLarge
+    NSString *over512k = [baseDir stringByAppendingPathComponent:@"over_512k.json"];
+    [exactData appendBytes:" " length:1];
+    assert(exactData.length == limitBytes + 1);
+    assert([exactData writeToFile:over512k atomically:YES]);
+    memset(&valRes, 0xAA, sizeof(valRes));
+    rawBuf = ciy_read_text_file_with_result([over512k fileSystemRepresentation], &rawSize, &valRes);
+    assert(rawBuf == NULL && rawSize == 0);
+    assert(valRes.read_error == CIYFileReadErrorTooLarge);
+
+    [[NSFileManager defaultManager] removeItemAtPath:baseDir error:nil];
+}
+
 int main(void) {
     @autoreleasepool {
         [KeyboardBackend setTestingMode:YES];
@@ -2685,6 +2767,7 @@ int main(void) {
         test_app_delegate_sleep_wake_lifecycle();
         test_app_delegate_termination_cleanup();
         test_app_delegate_overlay_profile_protection();
+        test_gui_import_export_symlink_and_toctou_safety();
         puts("Profil-Logik Tests bestanden.");
     }
     return 0;

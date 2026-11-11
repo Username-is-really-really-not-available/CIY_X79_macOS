@@ -43,6 +43,9 @@ void hid_mock_set_device(unsigned short vid, unsigned short pid, int interface_n
 void hid_mock_set_feature_report_response(const unsigned char *data, size_t len);
 void hid_mock_set_fail_get(bool fail);
 void hid_mock_set_fail_send(bool fail);
+void hid_mock_set_init_fail(bool fail);
+void hid_mock_set_open_fail(bool fail);
+void hid_mock_set_enumerate_null_path(bool null_path);
 size_t hid_mock_get_sent_count(void);
 const unsigned char *hid_mock_get_last_sent(size_t *out_len);
 

@@ -1,0 +1,15 @@
+[
+  {
+    "name": "Alpha \b\f\n\r\t\"\\/",
+    "brightness": 5,
+    "tags": ["Gaming", "FPS"],
+    "meta": {"rev": 2, "active": true, "archived": false, "note": null},
+    "slots": {"0": "#FF0000", "14": "#00FF00"}
+  },
+  {
+    "name": "Beta Flat",
+    "brightness": 3,
+    "81": "#0000FF",
+    "124": "FFFFFF"
+  }
+]

@@ -77,7 +77,10 @@ static char s_test_lock_path[PATH_MAX > 1024 ? PATH_MAX : 1024] = {0};
 
 static void ciy_cleanup_test_lockfile(void) {
     if (s_test_lock_path[0] != '\0') {
-        (void)unlink(s_test_lock_path);
+        struct stat st;
+        if (lstat(s_test_lock_path, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid()) {
+            (void)unlink(s_test_lock_path);
+        }
         s_test_lock_path[0] = '\0';
     }
 }
@@ -134,7 +137,7 @@ const char *ciy_bus_lock_path(char *buf, size_t bufsize) {
     size_t n = confstr(_CS_DARWIN_USER_TEMP_DIR, temp_dir, sizeof(temp_dir));
     if (n > 1 && n < sizeof(temp_dir) && temp_dir[0] == '/') {
         struct stat st;
-        if (stat(temp_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (stat(temp_dir, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == getuid()) {
             size_t len = strlen(temp_dir);
             if (len > 0 && temp_dir[len - 1] == '/') {
                 r = snprintf(buf, bufsize, "%sciy_x79_bus_%u.lock", temp_dir, (unsigned)getuid());
@@ -150,7 +153,7 @@ const char *ciy_bus_lock_path(char *buf, size_t bufsize) {
     const char *tmp = getenv("TMPDIR");
     if (tmp && tmp[0] == '/') {
         struct stat st;
-        if (stat(tmp, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (stat(tmp, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == getuid()) {
             size_t len = strlen(tmp);
             if (len > 0 && tmp[len - 1] == '/') {
                 r = snprintf(buf, bufsize, "%sciy_x79_bus_%u.lock", tmp, (unsigned)getuid());
@@ -177,18 +180,18 @@ static int ciy_open_lock_file(void) {
     if (fd < 0) {
         return -1;
     }
-#if defined(CIY_ENABLE_TEST_HOOKS)
-    if (getenv("CIY_TESTING") != NULL) {
-        strncpy(s_test_lock_path, user_path, sizeof(s_test_lock_path) - 1);
-        s_test_lock_path[sizeof(s_test_lock_path) - 1] = '\0';
-    }
-#endif
     struct stat st;
     if (fstat(fd, &st) != 0 || st.st_uid != getuid() || !S_ISREG(st.st_mode)) {
         close(fd);
         return -1;
     }
     fchmod(fd, 0600);
+#if defined(CIY_ENABLE_TEST_HOOKS)
+    if (getenv("CIY_TESTING") != NULL) {
+        strncpy(s_test_lock_path, user_path, sizeof(s_test_lock_path) - 1);
+        s_test_lock_path[sizeof(s_test_lock_path) - 1] = '\0';
+    }
+#endif
     return fd;
 }
 
@@ -301,6 +304,9 @@ static bool ciy_request(CIYDevice *d, bool out, uint8_t bRequest, uint8_t report
 }
 
 bool ciy_get_state(CIYDevice *d, CIYLightingState *out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
     if (!d) return false;
     uint8_t buf[CIY_REPORT_0A_SIZE] = {CIY_REPORT_0A_ID};
     uint32_t done = 0;
@@ -361,8 +367,8 @@ bool ciy_execute_transfer_plan(CIYDevice *d, const CIYTransferPlan *plan,
         } else if (step->type == CIY_PLAN_STEP_DELAY) {
             // In 5-ms-Schritten schlafen, damit cancel_check schnell greift
             uint32_t ms = step->delay_ms;
-            uint32_t chunks = (ms + 4) / 5;
-            for (uint32_t c = 0; c < chunks; c++) {
+            uint64_t chunks = ((uint64_t)ms + 4ULL) / 5ULL;
+            for (uint64_t c = 0; c < chunks; c++) {
                 ciy_nanosleep_uninterrupted(5 * 1000 * 1000L);
                 if (cancel_check && cancel_check(cancel_ctx)) {
                     ok = false;
@@ -421,6 +427,7 @@ static void ciy_build_profile_apply(uint8_t rgb[CIY_PLANAR_RGB_SIZE], const int 
 }
 
 void ciy_build_wasd_and_arrows_profile(uint8_t rgb[CIY_PLANAR_RGB_SIZE], bool baseBlue) {
+    if (!rgb) return;
     memset(rgb, 0, CIY_PLANAR_RGB_SIZE);
     const int wasd_idx[] = {15, 10, 16, 22};
     const int arrow_idx[] = {89, 84, 90, 96};
@@ -429,12 +436,14 @@ void ciy_build_wasd_and_arrows_profile(uint8_t rgb[CIY_PLANAR_RGB_SIZE], bool ba
 }
 
 void ciy_build_solid_color_profile(uint8_t rgb[CIY_PLANAR_RGB_SIZE], uint8_t r, uint8_t g, uint8_t b) {
+    if (!rgb) return;
     memset(&rgb[0], r, CIY_LED_COUNT);
     memset(&rgb[CIY_LED_COUNT], g, CIY_LED_COUNT);
     memset(&rgb[2 * CIY_LED_COUNT], b, CIY_LED_COUNT);
 }
 
 void ciy_build_all_red_profile(uint8_t rgb[CIY_PLANAR_RGB_SIZE]) {
+    if (!rgb) return;
     ciy_build_solid_color_profile(rgb, 0xFF, 0x00, 0x00);
 }
 
@@ -446,6 +455,9 @@ static int hex_digit_val(char c) {
 }
 
 bool ciy_parse_hex_color(const char *str, uint8_t *r, uint8_t *g, uint8_t *b) {
+    if (r) *r = 0;
+    if (g) *g = 0;
+    if (b) *b = 0;
     if (!str || !r || !g || !b) return false;
     while (*str && (*str == ' ' || *str == '\t' || *str == '\r' || *str == '\n')) str++;
     if (*str == '#') str++;
@@ -593,13 +605,58 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
                 return NULL; // Unbekanntes Escape
             }
         }
-        if (out) {
-            if (written + 1 >= limit) return NULL;
-            out[written++] = *p;
-        } else {
-            if (written + 1 < limit) written++;
+        unsigned char c0 = (unsigned char)*p;
+        if (c0 < 0x20) {
+            // RFC 8259 §7: Rohe unescapete Control-Characters (0x00..0x1F) unzulässig
+            return NULL;
         }
-        p++;
+        if (c0 < 0x80) {
+            if (out) {
+                if (written + 1 >= limit) return NULL;
+                out[written++] = (char)c0;
+            } else {
+                if (written + 1 < limit) written++;
+            }
+            p++;
+            continue;
+        }
+
+        // Strikte RFC 3629 UTF-8-Validierung (lehnt Overlong-NUL, CESU-8-Surrogates, >U+10FFFF & Fragmente ab)
+        size_t utf8_len = 0;
+        if (c0 >= 0xC2 && c0 <= 0xDF) {
+            unsigned char c1 = (unsigned char)p[1];
+            if (c1 < 0x80 || c1 > 0xBF) return NULL;
+            utf8_len = 2;
+        } else if (c0 >= 0xE0 && c0 <= 0xEF) {
+            unsigned char c1 = (unsigned char)p[1];
+            if (c1 < 0x80 || c1 > 0xBF) return NULL;
+            if (c0 == 0xE0 && c1 < 0xA0) return NULL;  // 3-Byte Overlong
+            if (c0 == 0xED && c1 >= 0xA0) return NULL; // CESU-8 / UTF-16 Surrogates U+D800..U+DFFF
+            unsigned char c2 = (unsigned char)p[2];
+            if (c2 < 0x80 || c2 > 0xBF) return NULL;
+            utf8_len = 3;
+        } else if (c0 >= 0xF0 && c0 <= 0xF4) {
+            unsigned char c1 = (unsigned char)p[1];
+            if (c1 < 0x80 || c1 > 0xBF) return NULL;
+            if (c0 == 0xF0 && c1 < 0x90) return NULL; // 4-Byte Overlong
+            if (c0 == 0xF4 && c1 > 0x8F) return NULL; // > U+10FFFF
+            unsigned char c2 = (unsigned char)p[2];
+            if (c2 < 0x80 || c2 > 0xBF) return NULL;
+            unsigned char c3 = (unsigned char)p[3];
+            if (c3 < 0x80 || c3 > 0xBF) return NULL;
+            utf8_len = 4;
+        } else {
+            return NULL;
+        }
+
+        if (out) {
+            if (written + utf8_len >= limit) return NULL;
+            memcpy(&out[written], p, utf8_len);
+            written += utf8_len;
+        } else {
+            if (written + utf8_len < limit) written += utf8_len;
+        }
+        p += utf8_len;
     }
     if (*p != '"') return NULL;
     if (out) {
@@ -608,54 +665,95 @@ static const char *parse_json_str(const char *p, char *out, size_t max_len) {
     return p + 1;
 }
 
-static const char *skip_json_string(const char *p) {
-    const char *next = parse_json_str(p, NULL, CIY_JSON_MAX_STRLEN);
-    if (!next) return NULL;
-    return next;
+static bool is_json_delim(char c) {
+    return (c == '\0' || c == ',' || c == '}' || c == ']' ||
+            c == ' ' || c == '\t' || c == '\r' || c == '\n');
 }
 
-static const char *skip_json_val(const char *p) {
+static const char *skip_json_number(const char *p) {
+    if (!p || !*p) return NULL;
+    if (*p == '-') p++;
+    if (*p == '0') {
+        p++;
+        if (*p >= '0' && *p <= '9') return NULL;
+    } else if (*p >= '1' && *p <= '9') {
+        while (*p >= '0' && *p <= '9') p++;
+    } else {
+        return NULL;
+    }
+    if (*p == '.') {
+        p++;
+        if (!(*p >= '0' && *p <= '9')) return NULL;
+        while (*p >= '0' && *p <= '9') p++;
+    }
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        if (*p == '+' || *p == '-') p++;
+        if (!(*p >= '0' && *p <= '9')) return NULL;
+        while (*p >= '0' && *p <= '9') p++;
+    }
+    if (!is_json_delim(*p)) return NULL;
+    return p;
+}
+
+static const char *skip_json_val_depth(const char *p, int depth) {
+    if (depth > CIY_JSON_MAX_DEPTH) return NULL;
     p = skip_ws(p);
     if (!p || !*p) return NULL;
     if (*p == '"') {
         return parse_json_str(p, NULL, CIY_JSON_MAX_STRLEN);
     }
     if (*p == '{') {
-        int depth = 1;
-        p++;
-        while (*p && depth > 0) {
-            if (*p == '"') {
-                p = skip_json_string(p);
-                if (!p) return NULL;
-                continue;
+        if (depth + 1 > CIY_JSON_MAX_DEPTH) return NULL;
+        p = skip_ws(p + 1);
+        if (*p == '}') return p + 1;
+        while (*p) {
+            if (*p != '"') return NULL;
+            p = parse_json_str(p, NULL, CIY_JSON_MAX_STRLEN);
+            if (!p) return NULL;
+            p = skip_ws(p);
+            if (*p != ':') return NULL;
+            p = skip_json_val_depth(p + 1, depth + 1);
+            if (!p) return NULL;
+            p = skip_ws(p);
+            if (*p == ',') {
+                p = skip_ws(p + 1);
+                if (*p == '}' || !*p) return NULL;
+            } else if (*p == '}') {
+                return p + 1;
+            } else {
+                return NULL;
             }
-            if (*p == '{') depth++;
-            else if (*p == '}') depth--;
-            p++;
         }
-        if (depth > 0) return NULL;
-        return p;
+        return NULL;
     }
     if (*p == '[') {
-        int depth = 1;
-        p++;
-        while (*p && depth > 0) {
-            if (*p == '"') {
-                p = skip_json_string(p);
-                if (!p) return NULL;
-                continue;
+        if (depth + 1 > CIY_JSON_MAX_DEPTH) return NULL;
+        p = skip_ws(p + 1);
+        if (*p == ']') return p + 1;
+        while (*p) {
+            p = skip_json_val_depth(p, depth + 1);
+            if (!p) return NULL;
+            p = skip_ws(p);
+            if (*p == ',') {
+                p = skip_ws(p + 1);
+                if (*p == ']' || !*p) return NULL;
+            } else if (*p == ']') {
+                return p + 1;
+            } else {
+                return NULL;
             }
-            if (*p == '[') depth++;
-            else if (*p == ']') depth--;
-            p++;
         }
-        if (depth > 0) return NULL;
-        return p;
+        return NULL;
     }
-    while (*p && *p != ',' && *p != '}' && *p != ']' && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
-        p++;
-    }
-    return p;
+    if (strncmp(p, "true", 4) == 0 && is_json_delim(p[4])) return p + 4;
+    if (strncmp(p, "false", 5) == 0 && is_json_delim(p[5])) return p + 5;
+    if (strncmp(p, "null", 4) == 0 && is_json_delim(p[4])) return p + 4;
+    return skip_json_number(p);
+}
+
+static const char *skip_json_val(const char *p) {
+    return skip_json_val_depth(p, 0);
 }
 
 bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
@@ -852,13 +950,19 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
                     p = skip_ws(p);
                     if (*p == ',') {
                         p = skip_ws(p + 1);
-                        if (*p == '}') {
+                        if (*p == '}' || !*p) {
                             if (out_res) {
                                 snprintf(out_res->error_field, sizeof(out_res->error_field), "slots");
                                 snprintf(out_res->error_message, sizeof(out_res->error_message), "Trailing comma im 'slots'-Objekt unzulässig");
                             }
                             return false;
                         }
+                    } else if (*p != '}') {
+                        if (out_res) {
+                            snprintf(out_res->error_field, sizeof(out_res->error_field), "slots");
+                            snprintf(out_res->error_message, sizeof(out_res->error_message), "Erwartetes ',' oder '}' im 'slots'-Objekt");
+                        }
+                        return false;
                     }
                 }
                 if (*p != '}') {
@@ -923,13 +1027,19 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
             p = skip_ws(p);
             if (*p == ',') {
                 p = skip_ws(p + 1);
-                if (*p == '}') {
+                if (*p == '}' || !*p) {
                     if (out_res) {
                         snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
                         snprintf(out_res->error_message, sizeof(out_res->error_message), "Trailing comma im Profil-Objekt unzulässig");
                     }
                     return false;
                 }
+            } else if (*p != '}') {
+                if (out_res) {
+                    snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
+                    snprintf(out_res->error_message, sizeof(out_res->error_message), "Erwartetes ',' oder '}' im Profil-Objekt");
+                }
+                return false;
             }
         }
 
@@ -957,13 +1067,19 @@ bool ciy_validate_profile_json(const char *json, CIYValidationResult *out_res) {
         p = skip_ws(p);
         if (*p == ',') {
             p = skip_ws(p + 1);
-            if (*p == ']') {
+            if (*p == ']' || !*p) {
                 if (out_res) {
                     snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
                     snprintf(out_res->error_message, sizeof(out_res->error_message), "Trailing comma im Profil-Array unzulässig");
                 }
                 return false;
             }
+        } else if (*p != ']') {
+            if (out_res) {
+                snprintf(out_res->error_field, sizeof(out_res->error_field), "syntax");
+                snprintf(out_res->error_message, sizeof(out_res->error_message), "JSON-Array nicht mit ']' geschlossen");
+            }
+            return false;
         }
     }
 
@@ -1069,7 +1185,8 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
         return NULL;
     }
 
-    char *buf = (char *)malloc((size_t)st.st_size + 1);
+    size_t expected_size = (size_t)st.st_size;
+    char *buf = (char *)malloc(expected_size + 2);
     if (!buf) {
         fclose(f);
         if (out_res) {
@@ -1080,9 +1197,12 @@ char *ciy_read_text_file_with_result(const char *path, size_t *out_size, CIYVali
         return NULL;
     }
 
-    size_t read_bytes = fread(buf, 1, (size_t)st.st_size, f);
+    size_t read_bytes = fread(buf, 1, expected_size + 1, f);
+    bool io_err = (ferror(f) != 0);
+    struct stat st_after;
+    bool size_changed = (fstat(fd, &st_after) != 0 || st_after.st_size != st.st_size);
     fclose(f);
-    if (read_bytes != (size_t)st.st_size || memchr(buf, '\0', read_bytes) != NULL) {
+    if (io_err || size_changed || read_bytes != expected_size || memchr(buf, '\0', read_bytes) != NULL) {
         free(buf);
         if (out_res) {
             out_res->read_error = CIYFileReadErrorReadFailed;
@@ -1129,17 +1249,25 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
     }
 
     const char *p = skip_ws(json);
+    if (!p || !*p) return false;
     bool in_array = (*p == '[');
     if (in_array) {
         p = skip_ws(p + 1);
+        if (*p == ']') return false;
+    } else if (*p != '{') {
+        return false;
     }
 
     int profile_index = 0;
     bool found_target = false;
+    uint8_t matched_rgb[CIY_PLANAR_RGB_SIZE] = {0};
+    char matched_name[64] = {0};
+    int matched_count = 0;
+    uint8_t matched_brightness = CIY_MAX_BRIGHTNESS;
 
     while (*p && *p != ']') {
         p = skip_ws(p);
-        if (*p != '{') break;
+        if (*p != '{') return false;
         p = skip_ws(p + 1);
         profile_index++;
 
@@ -1172,8 +1300,9 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
                 }
             } else if (strcmp(key, "brightness") == 0) {
                 char *endptr = NULL;
+                errno = 0;
                 long b = strtol(p, &endptr, 10);
-                if (endptr != p && b >= 0 && b <= CIY_MAX_BRIGHTNESS) {
+                if (endptr != p && errno != ERANGE && is_json_delim(*endptr) && b >= 0 && b <= CIY_MAX_BRIGHTNESS) {
                     prof_brightness = (uint8_t)b;
                 }
                 p = skip_json_val(p);
@@ -1201,8 +1330,9 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
                             uint8_t r = 0, g = 0, b = 0;
                             if (ciy_parse_hex_color(hex_val, &r, &g, &b)) {
                                 char *endptr = NULL;
+                                errno = 0;
                                 long slot = strtol(slot_key, &endptr, 10);
-                                if (endptr != slot_key && *endptr == '\0' && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
+                                if (endptr != slot_key && *endptr == '\0' && errno != ERANGE && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
                                     int idx = (int)(slot + 1);
                                     temp_rgb[idx] = r;
                                     temp_rgb[CIY_LED_COUNT + idx] = g;
@@ -1221,10 +1351,13 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
                         p = skip_ws(p);
                         if (*p == ',') {
                             p = skip_ws(p + 1);
-                            if (*p == '}') return false;
+                            if (*p == '}' || !*p) return false;
+                        } else if (*p != '}') {
+                            return false;
                         }
                     }
-                    if (*p == '}') p = skip_ws(p + 1);
+                    if (*p != '}') return false;
+                    p = skip_ws(p + 1);
                 }
             } else if (key[0] >= '0' && key[0] <= '9') {
                 if (*p == '"') {
@@ -1234,8 +1367,9 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
                     uint8_t r = 0, g = 0, b = 0;
                     if (ciy_parse_hex_color(hex_val, &r, &g, &b)) {
                         char *endptr = NULL;
+                        errno = 0;
                         long slot = strtol(key, &endptr, 10);
-                        if (endptr != key && *endptr == '\0' && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
+                        if (endptr != key && *endptr == '\0' && errno != ERANGE && slot >= 0 && slot < (CIY_LED_COUNT - 1)) {
                             int idx = (int)(slot + 1);
                             temp_rgb[idx] = r;
                             temp_rgb[CIY_LED_COUNT + idx] = g;
@@ -1258,51 +1392,71 @@ bool ciy_parse_profile_json_with_brightness(const char *json, const char *target
             p = skip_ws(p);
             if (*p == ',') {
                 p = skip_ws(p + 1);
-                if (*p == '}') return false;
+                if (*p == '}' || !*p) return false;
+            } else if (*p != '}') {
+                return false;
             }
         }
 
-        if (*p == '}') p = skip_ws(p + 1);
+        if (*p != '}') return false;
+        p = skip_ws(p + 1);
 
-        bool match = false;
-        if (!target_profile || target_profile[0] == '\0') {
-            match = true;
-        } else {
-            if (prof_name[0] && strcasecmp(prof_name, target_profile) == 0) {
+        if (!found_target) {
+            bool match = false;
+            if (!target_profile || target_profile[0] == '\0') {
                 match = true;
             } else {
-                char *endptr = NULL;
-                long req_idx = strtol(target_profile, &endptr, 10);
-                if (endptr != target_profile && *endptr == '\0' && req_idx == profile_index) {
+                if (prof_name[0] && strcasecmp(prof_name, target_profile) == 0) {
                     match = true;
+                } else {
+                    char *endptr = NULL;
+                    errno = 0;
+                    long req_idx = strtol(target_profile, &endptr, 10);
+                    if (endptr != target_profile && *endptr == '\0' && errno != ERANGE && req_idx == profile_index) {
+                        match = true;
+                    }
                 }
             }
-        }
 
-        if (in_array) {
-            p = skip_ws(p);
-            if (*p == ',') {
-                p = skip_ws(p + 1);
-                if (*p == ']') return false;
+            if (match && valid_count > 0) {
+                memcpy(matched_rgb, temp_rgb, CIY_PLANAR_RGB_SIZE);
+                strncpy(matched_name, prof_name, sizeof(matched_name) - 1);
+                matched_name[sizeof(matched_name) - 1] = '\0';
+                matched_count = valid_count;
+                matched_brightness = prof_brightness;
+                found_target = true;
             }
-        }
-
-        if (match && valid_count > 0) {
-            memcpy(rgb, temp_rgb, CIY_PLANAR_RGB_SIZE);
-            if (out_name && max_name_len > 0) {
-                strncpy(out_name, prof_name, max_name_len - 1);
-                out_name[max_name_len - 1] = '\0';
-            }
-            if (out_slots_count) *out_slots_count = valid_count;
-            if (out_brightness) *out_brightness = prof_brightness;
-            found_target = true;
-            break;
         }
 
         if (!in_array) break;
+
+        p = skip_ws(p);
+        if (*p == ',') {
+            p = skip_ws(p + 1);
+            if (*p == ']' || !*p) return false;
+        } else if (*p != ']') {
+            return false;
+        }
     }
 
-    return found_target;
+    p = skip_ws(p);
+    if (in_array) {
+        if (*p != ']') return false;
+        p = skip_ws(p + 1);
+    }
+    p = skip_ws(p);
+    if (*p != '\0') return false;
+
+    if (!found_target) return false;
+
+    memcpy(rgb, matched_rgb, CIY_PLANAR_RGB_SIZE);
+    if (out_name && max_name_len > 0) {
+        strncpy(out_name, matched_name, max_name_len - 1);
+        out_name[max_name_len - 1] = '\0';
+    }
+    if (out_slots_count) *out_slots_count = matched_count;
+    if (out_brightness) *out_brightness = matched_brightness;
+    return true;
 }
 
 bool ciy_parse_profile_json(const char *json, const char *target_profile,
@@ -1317,6 +1471,10 @@ bool ciy_load_profile_file_with_brightness(const char *path, const char *target_
                                            char *out_name, size_t max_name_len,
                                            int *out_slots_count,
                                            uint8_t *out_brightness) {
+    if (rgb) memset(rgb, 0, CIY_PLANAR_RGB_SIZE);
+    if (out_name && max_name_len > 0) out_name[0] = '\0';
+    if (out_slots_count) *out_slots_count = 0;
+    if (out_brightness) *out_brightness = CIY_MAX_BRIGHTNESS;
     if (!path || !rgb) return false;
 
     char *buf = ciy_read_text_file(path, NULL);

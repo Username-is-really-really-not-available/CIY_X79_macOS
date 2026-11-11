@@ -7,9 +7,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
-#include <math.h>
 #include <string.h>
+#include <math.h>
 
 #include "ciy_protocol.h"
 #include "../layouts/ciy_layout.h"
@@ -25,7 +26,7 @@ typedef enum {
 
 /// Lineare Interpolation eines 8-Bit-Farbkanals mit Rundung auf das nächste Integer.
 CIY_INLINE uint8_t ciy_gradient_lerp_channel(uint8_t c1, uint8_t c2, float t) {
-    if (t <= 0.0f) return c1;
+    if (isnan(t) || t <= 0.0f) return c1;
     if (t >= 1.0f) return c2;
     float v = (float)c1 + t * ((float)c2 - (float)c1);
     int rounded = (int)(v + 0.5f);
@@ -37,6 +38,8 @@ CIY_INLINE uint8_t ciy_gradient_lerp_channel(uint8_t c1, uint8_t c2, float t) {
 /// Ermittelt das Zentrum in Key-Units (U) und die Zeile (0..4) für einen Matrix-Slot.
 /// Gibt false zurück, falls der Slot im Layout nicht vorhanden ist.
 CIY_INLINE bool ciy_gradient_get_slot_coords(int slot, float *out_u_center, float *out_row) {
+    if (out_u_center) *out_u_center = 0.0f;
+    if (out_row) *out_row = 0.0f;
     if (slot < 0 || slot > CIY_MAX_MATRIX_SLOT) return false;
 
     const CIYKeyboardLayout *layout = ciy_layout_x79_iso_de();
@@ -85,6 +88,9 @@ CIY_INLINE bool ciy_gradient_calculate_slot_color(int slot,
                                                   uint8_t r2, uint8_t g2, uint8_t b2,
                                                   CIYGradientDirection direction,
                                                   uint8_t *out_r, uint8_t *out_g, uint8_t *out_b) {
+    if (out_r) *out_r = 0;
+    if (out_g) *out_g = 0;
+    if (out_b) *out_b = 0;
     if (!out_r || !out_g || !out_b) return false;
 
     float u_center = 0.0f;

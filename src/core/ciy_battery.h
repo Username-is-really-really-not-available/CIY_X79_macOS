@@ -187,14 +187,14 @@ CIY_INLINE size_t ciy_battery_list_sources(CIYBatteryInfo *out_sources, size_t m
                     CFNumberGetValue(maxRef, kCFNumberIntType, &maxCap);
                 }
 
-                if (curCap >= 0 && maxCap > 0) {
-                    int p = (int)(((int64_t)curCap * 100) / (int64_t)maxCap);
-                    if (p < 0) p = 0;
-                    if (p > 100) p = 100;
-                    info.percent = p;
-                } else {
-                    info.percent = -1;
-                }
+        if (curCap >= 0 && maxCap > 0) {
+            int64_t raw_p = ((int64_t)curCap * 100) / (int64_t)maxCap;
+            if (raw_p < 0) raw_p = 0;
+            if (raw_p > 100) raw_p = 100;
+            info.percent = (int)raw_p;
+        } else {
+            info.percent = -1;
+        }
 
                 // Charging status
                 CFBooleanRef chargingRef = (CFBooleanRef)CFDictionaryGetValue(desc, CFSTR(kIOPSIsChargingKey));
@@ -396,6 +396,13 @@ CIY_INLINE bool ciy_battery_get_info(CIYBatterySourceType preferred_type, CIYBat
 /// Parst einen Ziel-String wie "1-0", "space", "nav" oder eine Liste wie "14,9,15,21".
 CIY_INLINE bool ciy_battery_parse_target(const char *target_str, int *out_slots,
                                          size_t max_slots, size_t *out_count) {
+    if (out_count) {
+        *out_count = 0;
+    }
+    if (out_slots && max_slots > 0) {
+        size_t init_cnt = (max_slots <= CIY_LED_COUNT) ? max_slots : CIY_LED_COUNT;
+        memset(out_slots, 0, init_cnt * sizeof(int));
+    }
     if (!target_str || !out_slots || max_slots == 0 || !out_count) return false;
 
     if (strcmp(target_str, "1-0") == 0 || strcmp(target_str, "1..0") == 0 || strcmp(target_str, "numbers") == 0) {
@@ -431,6 +438,7 @@ CIY_INLINE bool ciy_battery_parse_target(const char *target_str, int *out_slots,
         char *end = NULL;
         long val = strtol(p, &end, 10);
         if (end == p || val < 0 || val > CIY_MAX_MATRIX_SLOT) {
+            if (count > 0) memset(out_slots, 0, count * sizeof(int));
             return false;
         }
         out_slots[count++] = (int)val;
@@ -440,7 +448,10 @@ CIY_INLINE bool ciy_battery_parse_target(const char *target_str, int *out_slots,
     }
 
     while (*p == ' ' || *p == '\t' || *p == ',') p++;
-    if (*p != '\0') return false; // Überzählige oder unlesbare Zeichen vorhanden
+    if (*p != '\0') {
+        if (count > 0) memset(out_slots, 0, count * sizeof(int));
+        return false; // Überzählige oder unlesbare Zeichen vorhanden
+    }
 
     if (count == 0) return false;
     *out_count = count;
@@ -459,10 +470,12 @@ CIY_INLINE bool ciy_battery_calculate_overlay(const uint8_t *base_planar_rgb,
                                              size_t target_count,
                                              bool segmented,
                                              uint8_t out_planar_rgb[CIY_PLANAR_RGB_SIZE]) {
-    if (!target_slots || target_count == 0 || !out_planar_rgb) return false;
+    if (!target_slots || target_count == 0 || target_count > CIY_LED_COUNT || !out_planar_rgb) return false;
 
     if (base_planar_rgb) {
-        memcpy(out_planar_rgb, base_planar_rgb, CIY_PLANAR_RGB_SIZE);
+        if (base_planar_rgb != out_planar_rgb) {
+            memcpy(out_planar_rgb, base_planar_rgb, CIY_PLANAR_RGB_SIZE);
+        }
     } else {
         memset(out_planar_rgb, 0, CIY_PLANAR_RGB_SIZE);
     }
@@ -477,7 +490,7 @@ CIY_INLINE bool ciy_battery_calculate_overlay(const uint8_t *base_planar_rgb,
         // Einzeltaste (z. B. Leertaste): kontinuierliche Statusanzeige (immer 1 aktive Taste)
         active_count = 1;
     } else if (p > 0) {
-        active_count = (size_t)((p * target_count + 99) / 100);
+        active_count = (size_t)(((uint64_t)p * (uint64_t)target_count + 99ULL) / 100ULL);
         if (active_count > target_count) active_count = target_count;
     }
 
@@ -500,7 +513,7 @@ CIY_INLINE bool ciy_battery_calculate_overlay(const uint8_t *base_planar_rgb,
                 b = CIY_BATTERY_COLOR_CYAN_B;
             } else if (segmented && target_count > 1) {
                 // Segmentierte Ampelfarbe pro Taste
-                int key_p = (int)(((i + 1) * 100) / target_count);
+                int key_p = (int)(((uint64_t)(i + 1) * 100ULL) / (uint64_t)target_count);
                 ciy_battery_get_color(key_p, false, &r, &g, &b);
             } else {
                 r = lvl_r;

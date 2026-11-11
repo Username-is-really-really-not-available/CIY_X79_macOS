@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,72 @@ static void test_gradient_planar_generation(void) {
     printf("[Test 5] Planar RGB Puffer-Generierung... PASSED\n");
 }
 
+static void test_gradient_null_guards_boundaries_and_poisoning(void) {
+    // 1a/1b: Extremwerte für lerp_channel (-INFINITY / +INFINITY / NAN)
+    assert(ciy_gradient_lerp_channel(10, 240, -INFINITY) == 10);
+    assert(ciy_gradient_lerp_channel(10, 240, INFINITY) == 240);
+    assert(ciy_gradient_lerp_channel(10, 240, NAN) == 10);
+
+    // 1c: Vollständige NULL-Matrix für alle Header-APIs
+    float u = 0.0f, row = 0.0f;
+    assert(ciy_gradient_get_slot_coords(1, NULL, &row));
+    assert(fabs(row - 0.0f) < 0.001f);
+    assert(ciy_gradient_get_slot_coords(1, &u, NULL));
+    assert(fabs(u - 0.5f) < 0.001f);
+    assert(ciy_gradient_get_slot_coords(1, NULL, NULL));
+
+    assert(!ciy_gradient_get_slot_coords(-1, NULL, NULL));
+    assert(!ciy_gradient_get_slot_coords(0, &u, &row));   // Matrix-Loch Slot 0
+    assert(!ciy_gradient_get_slot_coords(124, &u, &row)); // Matrix-Loch Slot 124
+    assert(!ciy_gradient_get_slot_coords(125, &u, &row)); // Out-of-bounds (> 124)
+    assert(!ciy_gradient_get_slot_coords(INT_MIN, &u, &row));
+    assert(!ciy_gradient_get_slot_coords(INT_MAX, &u, &row));
+
+    uint8_t r = 0, g = 0, b = 0;
+    assert(!ciy_gradient_calculate_slot_color(1, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, NULL, &g, &b));
+    assert(!ciy_gradient_calculate_slot_color(1, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, &r, NULL, &b));
+    assert(!ciy_gradient_calculate_slot_color(1, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, &r, &g, NULL));
+    assert(!ciy_gradient_calculate_slot_color(1, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, NULL, NULL, NULL));
+    assert(!ciy_gradient_calculate_slot_color(-1, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, &r, &g, &b));
+    assert(!ciy_gradient_calculate_slot_color(0, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, &r, &g, &b));
+    assert(!ciy_gradient_calculate_slot_color(125, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, &r, &g, &b));
+    assert(!ciy_gradient_calculate_slot_color(INT_MIN, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_VERTICAL, &r, &g, &b));
+    assert(!ciy_gradient_calculate_slot_color(INT_MAX, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_VERTICAL, &r, &g, &b));
+
+    assert(!ciy_gradient_generate_planar(NULL, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL));
+
+    // Canary-geschützter Planar-Puffer
+    struct {
+        uint8_t pre[16];
+        uint8_t planar[CIY_PLANAR_RGB_SIZE];
+        uint8_t post[16];
+    } guarded;
+    memset(guarded.pre, 0xAA, sizeof(guarded.pre));
+    memset(guarded.planar, 0xAA, sizeof(guarded.planar));
+    memset(guarded.post, 0x55, sizeof(guarded.post));
+    assert(ciy_gradient_generate_planar(guarded.planar, 255, 128, 64, 10, 20, 30, CIY_GRADIENT_VERTICAL));
+    assert(guarded.planar[0] == 0);   // LED 0 unbenutzt, deterministisch genullt
+    assert(guarded.planar[125] == 0); // Slot 124 (LED 125) ist Matrix-Loch -> 0
+    for (size_t i = 0; i < 16; i++) {
+        assert(guarded.pre[i] == 0xAA);
+        assert(guarded.post[i] == 0x55);
+    }
+
+    // 3b: 0xAA-Poisoning für Fehlerpfade
+    memset(&u, 0xAA, sizeof(u));
+    memset(&row, 0xAA, sizeof(row));
+    assert(!ciy_gradient_get_slot_coords(-1, &u, &row));
+    assert(u == 0.0f && row == 0.0f);
+
+    memset(&r, 0xAA, sizeof(r));
+    memset(&g, 0xAA, sizeof(g));
+    memset(&b, 0xAA, sizeof(b));
+    assert(!ciy_gradient_calculate_slot_color(-1, 255, 0, 0, 0, 255, 0, CIY_GRADIENT_HORIZONTAL, &r, &g, &b));
+    assert(r == 0 && g == 0 && b == 0);
+
+    printf("[Test 6] NULL-Guards, Canary-Puffer & 0xAA-Poisoning... PASSED\n");
+}
+
 int main(void) {
     printf("=== Starte CIY Gradient Unit-Tests (ASan/UBSan) ===\n");
     test_gradient_channel_lerp();
@@ -108,6 +175,7 @@ int main(void) {
     test_gradient_horizontal();
     test_gradient_vertical();
     test_gradient_planar_generation();
+    test_gradient_null_guards_boundaries_and_poisoning();
     printf("=== Alle CIY Gradient Unit-Tests erfolgreich bestanden! ===\n");
     return 0;
 }

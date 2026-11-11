@@ -63,9 +63,64 @@ int main() {
     assert(last_sent[0] == CIY_REPORT_0B_ID);
     assert(last_sent[1 + 2] == 255);
 
-    // 7. ciy_close
+    // 7. Abgebrochene / kurze HID-Transfers & Fehlerpfade (1b, 1c, 3b)
+    // 7a. ciy_get_state(&dev, nullptr) validiert Format ohne Out-Struct
+    assert(ciy_get_state(&dev, nullptr));
+
+    // 7b. hid_get_feature_report < 0 (Transferfehler)
+    hid_mock_set_fail_get(true);
+    CIYLightingState poisoned_st;
+    memset(&poisoned_st, 0xAA, sizeof(poisoned_st));
+    assert(!ciy_get_state(&dev, &poisoned_st));
+    assert(poisoned_st.mode == 0 && poisoned_st.brightness == 0);
+    hid_mock_set_fail_get(false);
+
+    // 7c. Abgeschnittene Feature-Reports: 0 Bytes, 5 Bytes, 41 Bytes -> müssen abgelehnt werden!
+    const size_t short_lens[] = {0, 5, 41};
+    for (size_t sl : short_lens) {
+        hid_mock_set_feature_report_response(resp, sl);
+        assert(!ciy_get_state(&dev, &st));
+        assert(!ciy_get_state(&dev, nullptr));
+    }
+    // Exakt 42 Bytes -> Erfolg
+    hid_mock_set_feature_report_response(resp, 42);
+    assert(ciy_get_state(&dev, &st));
+
+    // 7d. hid_send_feature_report < 0 (Schreibfehler)
+    hid_mock_set_fail_send(true);
+    assert(!ciy_set_state(&dev, new_st));
+    assert(!ciy_send_planar_rgb(&dev, rgb, sizeof(rgb)));
+    CIYTransferPlan plan;
+    assert(ciy_build_state_transfer_plan(&plan, new_st));
+    assert(!ciy_execute_transfer_plan(&dev, &plan, nullptr, nullptr));
+    hid_mock_set_fail_send(false);
+
+    // 8. ciy_close & NULL-Guards
     ciy_close(&dev);
     assert(dev.dev == nullptr);
+    ciy_close(&dev);     // Doppeltes Schließen sicher
+    ciy_close(nullptr);  // NULL sicher
+    assert(!ciy_open(nullptr));
+
+    // 9. hid_enumerate liefert path == NULL, hid_open_path schlägt fehl, hid_init schlägt fehl
+    CIYDevice poisoned_dev;
+    memset(&poisoned_dev, 0xAA, sizeof(poisoned_dev));
+    hid_mock_set_enumerate_null_path(true);
+    assert(!ciy_open(&poisoned_dev));
+    assert(poisoned_dev.dev == nullptr); // Deterministisch auf NULL gesetzt
+    hid_mock_set_enumerate_null_path(false);
+
+    memset(&poisoned_dev, 0xAA, sizeof(poisoned_dev));
+    hid_mock_set_open_fail(true);
+    assert(!ciy_open(&poisoned_dev));
+    assert(poisoned_dev.dev == nullptr);
+    hid_mock_set_open_fail(false);
+
+    memset(&poisoned_dev, 0xAA, sizeof(poisoned_dev));
+    hid_mock_set_init_fail(true);
+    assert(!ciy_open(&poisoned_dev));
+    assert(poisoned_dev.dev == nullptr);
+    hid_mock_set_init_fail(false);
 
     std::cout << "Alle Linux hidapi Backend Tests erfolgreich bestanden!\n";
     return 0;

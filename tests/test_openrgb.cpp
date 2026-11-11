@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cassert>
+#include <climits>
 #include <vector>
 #include <cstring>
 #include "RGBController.h"
@@ -247,6 +248,97 @@ static void test_mode_switching()
     std::cout << "PASSED\n";
 }
 
+static void test_send_direct_bounds_and_null_guards()
+{
+    std::cout << "[Test 5] OpenRGB SendDirect Bounds (INT_MIN/INT_MAX, asymmetrische Vektoren) & NULL-Guards... " << std::flush;
+    hid_mock_reset();
+
+    // 1c: CIYController mit nullptr-Handle und nullptr-Pfad darf niemals dereferenzieren
+    {
+        CIYController null_ctrl(nullptr, nullptr);
+        assert(null_ctrl.GetLocation().empty());
+        assert(null_ctrl.GetSerial().empty());
+        std::vector<RGBColor> cols = {ToRGBColor(255, 0, 0)};
+        std::vector<int> idxs = {2};
+        assert(!null_ctrl.SendDirect(cols, idxs));
+        assert(!null_ctrl.SetMode(19, 0, 0, 5));
+        uint8_t m = 0xAA, c = 0xAA, s = 0xAA, b = 0xAA;
+        assert(!null_ctrl.GetState(m, c, s, b));
+        assert(m == 0 && c == 0 && s == 0 && b == 0);
+    }
+
+    // 1c: RGBController_CIYX79(nullptr) Null-Guard im Konstruktor & Update-Pfaden
+    {
+        RGBController_CIYX79 bad_rgb_ctrl(nullptr);
+        assert(bad_rgb_ctrl.location.empty());
+        assert(bad_rgb_ctrl.serial.empty());
+        bad_rgb_ctrl.DeviceUpdateLEDs();
+        bad_rgb_ctrl.DeviceUpdateMode();
+    }
+
+    // 1a & 1b: SendDirect mit INT_MIN, -1, 0, 125, 126, INT_MAX und asymmetrischen Vektoren
+    hid_device* raw_dev = hid_open_path("/dev/hidraw1");
+    assert(raw_dev != nullptr);
+    CIYController ctrl(raw_dev, "/dev/hidraw1");
+
+    // Fall A: colors größer als led_indices + Rand-/Extremindizes
+    std::vector<RGBColor> more_colors = {
+        ToRGBColor(10, 20, 30),   // INT_MIN -> ignoriert
+        ToRGBColor(40, 50, 60),   // -1 -> ignoriert
+        ToRGBColor(11, 22, 33),   // LED 0 -> geschrieben
+        ToRGBColor(44, 55, 66),   // LED 125 -> geschrieben
+        ToRGBColor(70, 80, 90),   // 126 -> ignoriert
+        ToRGBColor(91, 92, 93),   // INT_MAX -> ignoriert
+        ToRGBColor(99, 99, 99)    // Überschüssiges Element ohne Index -> ignoriert
+    };
+    std::vector<int> edge_indices = {INT_MIN, -1, 0, 125, 126, INT_MAX};
+    assert(ctrl.SendDirect(more_colors, edge_indices));
+
+    size_t sent_len = 0;
+    const unsigned char* sent = hid_mock_get_last_sent(&sent_len);
+    assert(sent != nullptr && sent_len == CIY_REPORT_0B_SIZE);
+    assert(sent[0] == CIY_REPORT_0B_ID);
+    // LED 0
+    assert(sent[1 + 0] == 11);
+    assert(sent[1 + CIY_LED_COUNT + 0] == 22);
+    assert(sent[1 + 2 * CIY_LED_COUNT + 0] == 33);
+    // LED 125
+    assert(sent[1 + 125] == 44);
+    assert(sent[1 + CIY_LED_COUNT + 125] == 55);
+    assert(sent[1 + 2 * CIY_LED_COUNT + 125] == 66);
+    // Alle übrigen LEDs (1..124) müssen 0 sein
+    for (int led = 1; led < 125; led++) {
+        assert(sent[1 + led] == 0);
+        assert(sent[1 + CIY_LED_COUNT + led] == 0);
+        assert(sent[1 + 2 * CIY_LED_COUNT + led] == 0);
+    }
+
+    // Fall B: led_indices größer als colors (std::min verhindert Vektor-Überleser unter ASan)
+    std::vector<RGBColor> fewer_colors = {ToRGBColor(200, 100, 50)};
+    std::vector<int> many_indices = {15, 16, 17, 18, INT_MAX, INT_MIN};
+    assert(ctrl.SendDirect(fewer_colors, many_indices));
+    sent = hid_mock_get_last_sent(&sent_len);
+    assert(sent != nullptr && sent_len == CIY_REPORT_0B_SIZE);
+    assert(sent[1 + 15] == 200 && sent[1 + CIY_LED_COUNT + 15] == 100 && sent[1 + 2 * CIY_LED_COUNT + 15] == 50);
+    assert(sent[1 + 16] == 0);
+
+    // Fall C: Leere Vektoren und abgebrochene HID-Reports in GetState / Detector
+    std::vector<RGBColor> empty_colors;
+    std::vector<int> empty_indices;
+    assert(ctrl.SendDirect(empty_colors, empty_indices));
+
+    const uint8_t truncated_4b[4] = {0x0A, 19, 0, 2};
+    hid_mock_set_feature_report_response(truncated_4b, sizeof(truncated_4b));
+    uint8_t gm = 0, gc = 0, gs = 0, gb = 0;
+    assert(!ctrl.GetState(gm, gc, gs, gb));
+
+    hid_mock_set_fail_get(true);
+    assert(!ctrl.GetState(gm, gc, gs, gb));
+    hid_mock_set_fail_get(false);
+
+    std::cout << "PASSED\n";
+}
+
 int main()
 {
     std::cout << "=== Starte OpenRGB Contribution Bundle Unit-Tests ===\n";
@@ -254,6 +346,7 @@ int main()
     test_matrix_and_dual_cell_enter();
     test_direct_mode_rgb_transfer();
     test_mode_switching();
+    test_send_direct_bounds_and_null_guards();
     ResourceManager::get()->ClearControllers();
     std::cout << "=== Alle OpenRGB Unit-Tests erfolgreich bestanden! ===\n";
     return 0;

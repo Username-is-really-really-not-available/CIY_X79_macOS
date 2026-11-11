@@ -1,6 +1,9 @@
 // Hardware-freie Tests für ciy_hid (Pufferaufbau, Validierung).
 // Ausführen: ./scripts/run_tests.sh
 #include <assert.h>
+#include <limits.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1078,9 +1081,10 @@ static void test_transfer_plan(void) {
     assert(plan.steps[2].brightness == 3);
 
     // Ungültige Parameter für Plan-Aufbau
+    CIYTransferPlan bad_plan;
     assert(!ciy_build_transfer_plan(NULL, rgb, sizeof(rgb), 3, "X", 1));
-    assert(!ciy_build_transfer_plan(&plan, NULL, sizeof(rgb), 3, "X", 1));
-    assert(!ciy_build_transfer_plan(&plan, rgb, sizeof(rgb) - 1, 3, "X", 1));
+    assert(!ciy_build_transfer_plan(&bad_plan, NULL, sizeof(rgb), 3, "X", 1));
+    assert(!ciy_build_transfer_plan(&bad_plan, rgb, sizeof(rgb) - 1, 3, "X", 1));
 
     // 2. Plan-Ausführung prüfen
     CIYDevice dev = {0};
@@ -1477,6 +1481,723 @@ static void test_test_lockfile_atexit_cleanup(void) {
     assert(stat(child_path, &st) != 0 && errno == ENOENT);
 }
 
+// ===========================================================================
+// Phase 1 CWE-Top-25 Blind-Spot-Matrix Tests (1a..3b + Seed-Corpus)
+// ===========================================================================
+
+static bool cancel_after_first_chunk(void *ctx) {
+    int *calls = (int *)ctx;
+    (*calls)++;
+    // Aufruf 1: Vorab-Check vor der Schleife; Aufruf 2: Vorab-Check Schritt 0;
+    // Aufruf 3: Nach dem 1. 5-ms-Delay-Chunk -> sofort abbrechen (kein Endlos-Sleep!)
+    return (*calls >= 3);
+}
+
+static void test_cwe_1a_integer_overflow_and_delay_wraparound(void) {
+    CIYDevice dev = {0};
+    assert(ciy_open(&dev));
+
+    // Referenz: Bei 50 ms wird mindestens 1 Chunk geschlafen und bei Aufruf 3 abgebrochen
+    CIYTransferPlan plan;
+    memset(&plan, 0, sizeof(plan));
+    plan.step_count = 1;
+    plan.steps[0].type = CIY_PLAN_STEP_DELAY;
+    plan.steps[0].delay_ms = 50;
+    int calls = 0;
+    assert(!ciy_execute_transfer_plan(&dev, &plan, cancel_after_first_chunk, &calls));
+    assert(calls == 3);
+
+    // 1a: Delay-Wraparound bei delay_ms = UINT32_MAX und UINT32_MAX - 3
+    const uint32_t wrap_delays[] = {UINT32_MAX, UINT32_MAX - 3u};
+    for (size_t i = 0; i < sizeof(wrap_delays) / sizeof(wrap_delays[0]); i++) {
+        plan.steps[0].delay_ms = wrap_delays[i];
+        calls = 0;
+        bool ok = ciy_execute_transfer_plan(&dev, &plan, cancel_after_first_chunk, &calls);
+        assert(!ok && calls == 3);
+    }
+
+    // 1a: ciy_send_planar_rgb / ciy_apply_custom_profile_with_brightness mit rgb_len = 379 & SIZE_MAX
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+    assert(!ciy_send_planar_rgb(&dev, rgb, CIY_REPORT_0B_SIZE)); // 379 != 378
+    assert(!ciy_send_planar_rgb(&dev, rgb, SIZE_MAX));
+    assert(!ciy_apply_custom_profile_with_brightness(&dev, rgb, CIY_REPORT_0B_SIZE, 5));
+    assert(!ciy_apply_custom_profile_with_brightness(&dev, rgb, SIZE_MAX, 5));
+    ciy_close(&dev);
+
+    // 1a: ciy_build_profile mit count = -1, INT_MIN sowie Indizes INT_MIN / INT_MAX
+    int single_idx[1] = {15};
+    memset(rgb, 0xAA, sizeof(rgb));
+    ciy_build_profile(rgb, single_idx, -1, true, true, false);
+    for (size_t i = 0; i < sizeof(rgb); i++) assert(rgb[i] == 0x00);
+
+    memset(rgb, 0xAA, sizeof(rgb));
+    ciy_build_profile(rgb, single_idx, INT_MIN, true, true, true);
+    for (int i = 0; i < CIY_LED_COUNT; i++) {
+        assert(rgb[i] == 0x00 && rgb[CIY_LED_COUNT + i] == 0x00 && rgb[2 * CIY_LED_COUNT + i] == 0xFF);
+    }
+
+    const int extreme_indices[] = {INT_MIN, -1, 0, 125, 126, INT_MAX};
+    ciy_build_profile(rgb, extreme_indices, 6, true, false, false);
+    assert(rgb[0] == 0xFF && rgb[125] == 0xFF);
+    for (int i = 1; i < 125; i++) assert(rgb[i] == 0x00);
+}
+
+static void test_cwe_1b_off_by_one_boundaries(void) {
+    // 1. Exakt 524288 Bytes (512 * 1024) Erfolg vs. 524289 Bytes Ablehnung
+    char path[256];
+    snprintf(path, sizeof(path), "/tmp/ciy_exact_512k_%d.json", (int)getpid());
+    unlink(path);
+
+    const char *json_head = "{\"name\":\"Exact512K\",\"slots\":{\"0\":\"#FF0000\"}}";
+    size_t head_len = strlen(json_head);
+    const size_t exact_512k = 512 * 1024; // 524288
+    char *file_buf = (char *)malloc(exact_512k + 1);
+    assert(file_buf != NULL);
+    memset(file_buf, ' ', exact_512k + 1);
+    memcpy(file_buf, json_head, head_len);
+
+    FILE *f = fopen(path, "wb");
+    assert(f != NULL);
+    assert(fwrite(file_buf, 1, exact_512k, f) == exact_512k);
+    fclose(f);
+
+    size_t read_sz = 0;
+    CIYValidationResult vres;
+    char *loaded_txt = ciy_read_text_file_with_result(path, &read_sz, &vres);
+    assert(loaded_txt != NULL);
+    assert(read_sz == exact_512k);
+    assert(vres.read_error == CIYFileReadErrorNone);
+    free(loaded_txt);
+    assert(ciy_validate_profile_file(path, &vres) && vres.is_valid);
+
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char prof_name[64];
+    int slots_cnt = 0;
+    uint8_t bright = 0;
+    assert(ciy_load_profile_file_with_brightness(path, NULL, rgb, prof_name, sizeof(prof_name), &slots_cnt, &bright));
+    assert(slots_cnt == 1 && strcmp(prof_name, "Exact512K") == 0);
+
+    // 524289 Bytes (+1 Byte über 512 KB) -> strikte Ablehnung
+    f = fopen(path, "wb");
+    assert(f != NULL);
+    assert(fwrite(file_buf, 1, exact_512k + 1, f) == exact_512k + 1);
+    fclose(f);
+
+    read_sz = 777;
+    assert(ciy_read_text_file_with_result(path, &read_sz, &vres) == NULL);
+    assert(read_sz == 0 && vres.read_error == CIYFileReadErrorTooLarge);
+    assert(!ciy_validate_profile_file(path, &vres));
+    assert(!ciy_load_profile_file_with_brightness(path, NULL, rgb, prof_name, sizeof(prof_name), &slots_cnt, &bright));
+    unlink(path);
+    free(file_buf);
+
+    // 2. ciy_build_profile Canary-Test für Rand-LEDs 0, 125 (CIY_LED_COUNT - 1), -1, 126
+    struct {
+        uint8_t pre[16];
+        uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+        uint8_t post[16];
+    } canary_prof;
+    memset(canary_prof.pre, 0xAA, sizeof(canary_prof.pre));
+    memset(canary_prof.post, 0x55, sizeof(canary_prof.post));
+    const int edge_leds[] = {-1, 0, CIY_LED_COUNT - 1, CIY_LED_COUNT};
+    ciy_build_profile(canary_prof.rgb, edge_leds, 4, true, true, false);
+    assert(canary_prof.rgb[0] == 0xFF && canary_prof.rgb[CIY_LED_COUNT] == 0xFF && canary_prof.rgb[2 * CIY_LED_COUNT] == 0x00);
+    assert(canary_prof.rgb[125] == 0xFF && canary_prof.rgb[CIY_LED_COUNT + 125] == 0xFF && canary_prof.rgb[2 * CIY_LED_COUNT + 125] == 0x00);
+    for (int i = 1; i < 125; i++) {
+        assert(canary_prof.rgb[i] == 0 && canary_prof.rgb[CIY_LED_COUNT + i] == 0 && canary_prof.rgb[2 * CIY_LED_COUNT + i] == 0);
+    }
+    for (size_t i = 0; i < 16; i++) {
+        assert(canary_prof.pre[i] == 0xAA && canary_prof.post[i] == 0x55);
+    }
+
+    // 3. slot_key & hex_val exakt 31 Bytes (Erfolg) vs. 32 Bytes (Ablehnung in char[32])
+    const char *slot_31_ok = "{\"name\":\"S31\",\"slots\":{\"0000000000000000000000000000124\":\"#FF00AA\"}}";
+    const char *slot_32_fail = "{\"name\":\"S32\",\"slots\":{\"00000000000000000000000000000124\":\"#FF00AA\"}}";
+    assert(ciy_validate_profile_json(slot_31_ok, &vres));
+    assert(ciy_parse_profile_json_with_brightness(slot_31_ok, NULL, rgb, prof_name, sizeof(prof_name), &slots_cnt, &bright));
+    assert(slots_cnt == 1 && rgb[125] == 0xFF && rgb[2 * CIY_LED_COUNT + 125] == 0xAA);
+    assert(!ciy_validate_profile_json(slot_32_fail, &vres));
+    assert(!ciy_parse_profile_json_with_brightness(slot_32_fail, NULL, rgb, prof_name, sizeof(prof_name), &slots_cnt, &bright));
+
+    const char *hex_31_ok = "{\"name\":\"H31\",\"slots\":{\"14\":\"   #112233                     \"}}";
+    const char *hex_32_fail = "{\"name\":\"H32\",\"slots\":{\"14\":\"   #112233                      \"}}";
+    assert(ciy_validate_profile_json(hex_31_ok, &vres));
+    assert(ciy_parse_profile_json_with_brightness(hex_31_ok, NULL, rgb, prof_name, sizeof(prof_name), &slots_cnt, &bright));
+    assert(slots_cnt == 1 && rgb[15] == 0x11 && rgb[CIY_LED_COUNT + 15] == 0x22 && rgb[2 * CIY_LED_COUNT + 15] == 0x33);
+    assert(!ciy_validate_profile_json(hex_32_fail, &vres));
+    assert(!ciy_parse_profile_json_with_brightness(hex_32_fail, NULL, rgb, prof_name, sizeof(prof_name), &slots_cnt, &bright));
+
+    // 4. out_name mit max_name_len = 0, 1, 2 (Canary-Prüfung)
+    const char *short_json = "{\"name\":\"XYZ\",\"slots\":{\"0\":\"#FF0000\"}}";
+    char name_canary[8];
+    memset(name_canary, 0xAA, sizeof(name_canary));
+    assert(ciy_parse_profile_json_with_brightness(short_json, NULL, rgb, name_canary, 0, &slots_cnt, &bright));
+    assert((unsigned char)name_canary[0] == 0xAA); // max_name_len = 0 berührt Puffer nicht
+
+    memset(name_canary, 0xAA, sizeof(name_canary));
+    assert(ciy_parse_profile_json_with_brightness(short_json, NULL, rgb, name_canary, 1, &slots_cnt, &bright));
+    assert(name_canary[0] == '\0' && (unsigned char)name_canary[1] == 0xAA);
+
+    memset(name_canary, 0xAA, sizeof(name_canary));
+    assert(ciy_parse_profile_json_with_brightness(short_json, NULL, rgb, name_canary, 2, &slots_cnt, &bright));
+    assert(name_canary[0] == 'X' && name_canary[1] == '\0' && (unsigned char)name_canary[2] == 0xAA);
+
+    // 5. step->length = 379 (Erfolg) vs. 380 (+1 Off-by-One Ablehnung)
+    CIYDevice dev = {0};
+    assert(ciy_open(&dev));
+    CIYTransferPlan plan;
+    assert(ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "StepEdge", 1));
+    assert(plan.steps[0].length == 379);
+    assert(ciy_execute_transfer_plan(&dev, &plan, NULL, NULL));
+    plan.steps[0].length = 380; // Exakt +1 über CIY_REPORT_0B_SIZE (379)
+    assert(!ciy_execute_transfer_plan(&dev, &plan, NULL, NULL));
+    ciy_close(&dev);
+}
+
+static void test_cwe_1c_null_pointer_matrix(void) {
+    assert(!ciy_open(NULL));
+    ciy_close(NULL);
+    CIYDevice closed_dev = {NULL};
+    ciy_close(&closed_dev);
+
+    CIYDevice open_dev = {0};
+    assert(ciy_open(&open_dev));
+
+    CIYLightingState st = {19, 0, 2, 5};
+    assert(!ciy_get_state(NULL, &st));
+    assert(!ciy_get_state(NULL, NULL));
+    assert(!ciy_get_state(&closed_dev, &st));
+    assert(ciy_get_state(&open_dev, NULL)); // Formatprüfung ohne Out-Pointer
+
+    assert(!ciy_set_state(NULL, st));
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE] = {0};
+    assert(!ciy_send_planar_rgb(NULL, rgb, sizeof(rgb)));
+    assert(!ciy_apply_custom_profile(NULL, rgb, sizeof(rgb)));
+    assert(!ciy_apply_custom_profile(&open_dev, NULL, sizeof(rgb)));
+    assert(!ciy_apply_custom_profile_with_brightness(NULL, rgb, sizeof(rgb), 5));
+    assert(!ciy_apply_custom_profile_with_brightness_cancelable(NULL, rgb, sizeof(rgb), 5, NULL, NULL));
+
+    CIYTransferPlan plan;
+    assert(ciy_build_transfer_plan(&plan, rgb, sizeof(rgb), 5, "N", 1));
+    assert(!ciy_execute_transfer_plan(NULL, &plan, NULL, NULL));
+    assert(!ciy_execute_transfer_plan(&open_dev, NULL, NULL, NULL));
+    assert(!ciy_execute_transfer_plan(&closed_dev, &plan, NULL, NULL));
+    ciy_close(&open_dev);
+
+    // Teil-NULLs bei ciy_parse_hex_color
+    uint8_t r = 0, g = 0, b = 0;
+    assert(!ciy_parse_hex_color("#FF00AA", NULL, &g, &b));
+    assert(!ciy_parse_hex_color("#FF00AA", &r, NULL, &b));
+    assert(!ciy_parse_hex_color("#FF00AA", &r, &g, NULL));
+    assert(!ciy_parse_hex_color(NULL, NULL, NULL, NULL));
+
+    // NULL-Guards für die 3 Void-Builder in src/core/ciy_hid.c:423-439
+    ciy_build_all_red_profile(NULL);
+    ciy_build_solid_color_profile(NULL, 0x11, 0x22, 0x33);
+    ciy_build_wasd_and_arrows_profile(NULL, true);
+
+    // ciy_validate_profile_json(bad, NULL) über sämtliche Fehlerzweige ohne out_res
+    const char *bad_branches[] = {
+        "",
+        "   ",
+        "[]",
+        "123",
+        "[123]",
+        "{\"unterminated",
+        "{\"name\" \"missing_colon\"}",
+        "{\"name\": 123, \"slots\": {\"0\": \"#FF0000\"}}",
+        "{\"name\": \"bad\\q\", \"slots\": {\"0\": \"#FF0000\"}}",
+        "{\"brightness\": 9, \"slots\": {\"0\": \"#FF0000\"}}",
+        "{\"slots\": 123}",
+        "{\"slots\": {\"bad\\q\": \"#FF0000\"}}",
+        "{\"slots\": {\"0\" \"#FF0000\"}}",
+        "{\"slots\": {\"125\": \"#FF0000\"}}",
+        "{\"slots\": {\"0\": 123}}",
+        "{\"slots\": {\"0\": \"#FF\\q\"}}",
+        "{\"slots\": {\"0\": \"#ZZZZZZ\"}}",
+        "{\"slots\": {\"0\": \"#FF0000\", }}",
+        "{\"slots\": {\"0\": \"#FF0000\"",
+        "{\"125\": \"#FF0000\"}",
+        "{\"0\": 123}",
+        "{\"0\": \"#ZZZZZZ\"}",
+        "{\"extra\": \"unterminated, \"slots\": {\"0\": \"#FF0000\"}}",
+        "{\"slots\": {\"0\": \"#FF0000\"}, }",
+        "[{\"slots\": {\"0\": \"#FF0000\"}}, ]",
+        "[{\"slots\": {\"0\": \"#FF0000\"}}",
+        "{\"slots\": {\"0\": \"#FF0000\"}} trailing"
+    };
+    assert(!ciy_validate_profile_json(NULL, NULL));
+    for (size_t i = 0; i < sizeof(bad_branches) / sizeof(bad_branches[0]); i++) {
+        assert(!ciy_validate_profile_json(bad_branches[i], NULL));
+    }
+    assert(ciy_validate_profile_json("{\"slots\": {\"0\": \"#FF0000\"}}", NULL));
+
+    // Optionale NULL-Ausgabeparameter bei parse & load
+    assert(!ciy_parse_profile_json_with_brightness(NULL, NULL, rgb, NULL, 0, NULL, NULL));
+    assert(!ciy_parse_profile_json_with_brightness("{\"0\":\"#FF0000\"}", NULL, NULL, NULL, 0, NULL, NULL));
+    assert(ciy_parse_profile_json_with_brightness("{\"0\":\"#FF0000\"}", NULL, rgb, NULL, 0, NULL, NULL));
+    assert(!ciy_load_profile_file_with_brightness(NULL, NULL, rgb, NULL, 0, NULL, NULL));
+    assert(!ciy_load_profile_file_with_brightness("tests/fixtures/valid_profile.json", NULL, NULL, NULL, 0, NULL, NULL));
+    assert(ciy_load_profile_file_with_brightness("tests/fixtures/valid_profile.json", NULL, rgb, NULL, 0, NULL, NULL));
+}
+
+static void test_cwe_2a_deep_nesting_and_mixed_brackets(void) {
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    CIYValidationResult vres;
+
+    // 1. Moderate Verschachtelung (Tiefe 16) -> zulässig
+    const char *depth16 = "{\"name\":\"D16\",\"extra\":[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]],\"slots\":{\"0\":\"#FF0000\"}}";
+    assert(ciy_validate_profile_json(depth16, &vres) && vres.is_valid);
+    assert(ciy_parse_profile_json_with_brightness(depth16, NULL, rgb, NULL, 0, NULL, NULL));
+
+    // 2. 10.000-fache Verschachtelung (Arrays & Objekte): kein Stack-Overflow, lineare Laufzeit (< 0.5s)
+    const size_t nest_depth = 10000;
+    const char *arr_head = "{\"name\":\"DeepArr\",\"extra\":";
+    const char *tail = ",\"slots\":{\"0\":\"#FF0000\"}}";
+    size_t arr_len = strlen(arr_head) + nest_depth + 1 + nest_depth + strlen(tail);
+    char *deep_arr = (char *)malloc(arr_len + 1);
+    assert(deep_arr != NULL);
+    size_t pos = 0;
+    memcpy(deep_arr + pos, arr_head, strlen(arr_head)); pos += strlen(arr_head);
+    memset(deep_arr + pos, '[', nest_depth); pos += nest_depth;
+    deep_arr[pos++] = '1';
+    memset(deep_arr + pos, ']', nest_depth); pos += nest_depth;
+    memcpy(deep_arr + pos, tail, strlen(tail)); pos += strlen(tail);
+    deep_arr[pos] = '\0';
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    bool deep_arr_valid = ciy_validate_profile_json(deep_arr, &vres);
+    bool deep_arr_parsed = ciy_parse_profile_json_with_brightness(deep_arr, NULL, rgb, NULL, 0, NULL, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double elapsed_arr = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+    assert(elapsed_arr < 0.5);
+    assert(!deep_arr_valid && !deep_arr_parsed);
+
+    // Ungeschlossene 10.000-fache Verschachtelung wird bereits heute sicher abgelehnt
+    deep_arr[strlen(arr_head) + nest_depth] = '\0';
+    assert(!ciy_validate_profile_json(deep_arr, &vres));
+    assert(!ciy_parse_profile_json_with_brightness(deep_arr, NULL, rgb, NULL, 0, NULL, NULL));
+    free(deep_arr);
+
+    // 10.000-fach verschachteltes Objekt {"a":{"a":...1...}}
+    size_t obj_len = strlen(arr_head) + nest_depth * 5 + 1 + nest_depth + strlen(tail);
+    char *deep_obj = (char *)malloc(obj_len + 1);
+    assert(deep_obj != NULL);
+    pos = 0;
+    memcpy(deep_obj + pos, arr_head, strlen(arr_head)); pos += strlen(arr_head);
+    for (size_t i = 0; i < nest_depth; i++) {
+        memcpy(deep_obj + pos, "{\"a\":", 5);
+        pos += 5;
+    }
+    deep_obj[pos++] = '1';
+    memset(deep_obj + pos, '}', nest_depth); pos += nest_depth;
+    memcpy(deep_obj + pos, tail, strlen(tail)); pos += strlen(tail);
+    deep_obj[pos] = '\0';
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    bool deep_obj_valid = ciy_validate_profile_json(deep_obj, &vres);
+    bool deep_obj_parsed = ciy_parse_profile_json_with_brightness(deep_obj, NULL, rgb, NULL, 0, NULL, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double elapsed_obj = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+    assert(elapsed_obj < 0.5);
+    assert(!deep_obj_valid && !deep_obj_parsed);
+    free(deep_obj);
+
+    // 3. Gemischte / inkonsistente Klammern {[}] und [{]}
+    const char *mixed1 = "{\"name\":\"Mixed1\",\"extra\":{[}],\"slots\":{\"0\":\"#FF0000\"}}";
+    const char *mixed2 = "{\"name\":\"Mixed2\",\"extra\":[{]},\"slots\":{\"0\":\"#FF0000\"}}";
+    bool m1_v = ciy_validate_profile_json(mixed1, &vres);
+    bool m1_p = ciy_parse_profile_json_with_brightness(mixed1, NULL, rgb, NULL, 0, NULL, NULL);
+    bool m2_v = ciy_validate_profile_json(mixed2, &vres);
+    bool m2_p = ciy_parse_profile_json_with_brightness(mixed2, NULL, rgb, NULL, 0, NULL, NULL);
+    assert(!m1_v && !m1_p && !m2_v && !m2_p);
+}
+
+static void test_cwe_2b_prefix_truncation_asan(void) {
+    // Byte-für-Byte Präfix-Truncation (len = 0 .. N-1) in exakten malloc(len + 1) ASan-Heap-Puffern
+    // Deckt ab: abgeschnittenes UTF-8-BOM ("\xEF", "\xEF\xBB"), Surrogates, Zahlen, Kolons, Strings, Objekte, Arrays
+    const char *samples[] = {
+        "\xEF\xBB\xBF{\"name\":\"Party \\uD83C\\uDF89\",\"brightness\":4,\"slots\":{\"0\":\"#FF0000\",\"14\":\"#00FF00\"}}",
+        "[{\"name\":\"P1\",\"slots\":{\"1\":\"#123\"}},{\"name\":\"P2\",\"brightness\":5,\"14\":\"#ABCDEF\"}]"
+    };
+
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char out_name[64];
+    int out_cnt = 0;
+    uint8_t out_bright = 0;
+    CIYValidationResult vres;
+
+    for (size_t s = 0; s < sizeof(samples) / sizeof(samples[0]); s++) {
+        size_t full_len = strlen(samples[s]);
+        // Vollständiger Payload muss valide sein
+        assert(ciy_validate_profile_json(samples[s], &vres));
+        assert(ciy_parse_profile_json_with_brightness(samples[s], NULL, rgb, out_name, sizeof(out_name), &out_cnt, &out_bright));
+
+        size_t parse_false_positives = 0;
+        for (size_t len = 0; len < full_len; len++) {
+            char *exact_prefix = (char *)malloc(len + 1);
+            assert(exact_prefix != NULL);
+            if (len > 0) {
+                memcpy(exact_prefix, samples[s], len);
+            }
+            exact_prefix[len] = '\0';
+
+            // ciy_validate_profile_json MUSS jedes unvollständige Präfix ablehnen!
+            assert(!ciy_validate_profile_json(exact_prefix, &vres));
+
+            bool parsed_ok = ciy_parse_profile_json_with_brightness(
+                exact_prefix, NULL, rgb, out_name, sizeof(out_name), &out_cnt, &out_bright);
+            if (s == 0 && len <= 3) {
+                // Leer sowie abgeschnittenes BOM ("\xEF", "\xEF\xBB", "\xEF\xBB\xBF") müssen false liefern
+                assert(!parsed_ok);
+            }
+            if (parsed_ok) {
+                parse_false_positives++;
+            }
+
+            free(exact_prefix);
+        }
+        assert(parse_false_positives == 0);
+    }
+}
+
+static void test_cwe_2c_control_chars_utf8_and_nul_injection(void) {
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    CIYValidationResult vres;
+
+    // 1. \u0000-Injektion in "name", "slots" (Key & Value), Flat-Key und Unknown-Feldern -> MUSS abgelehnt werden
+    const char *escaped_nul_cases[] = {
+        "{\"name\":\"Esc\\u0000Nul\",\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"OK\",\"slots\":{\"0\\u0000\":\"#FF0000\"}}",
+        "{\"name\":\"OK\",\"slots\":{\"\\u0000\":\"#FF0000\"}}",
+        "{\"name\":\"OK\",\"slots\":{\"0\":\"#FF0000\\u0000\"}}",
+        "{\"0\\u0000\":\"#FF0000\"}",
+        "{\"name\":\"OK\",\"extra\":\"abc\\u0000def\",\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"OK\",\"extra\":[\"\\u0000\"],\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"OK\",\"extra\":{\"k\":\"\\u0000\"},\"slots\":{\"0\":\"#FF0000\"}}"
+    };
+    for (size_t i = 0; i < sizeof(escaped_nul_cases) / sizeof(escaped_nul_cases[0]); i++) {
+        assert(!ciy_validate_profile_json(escaped_nul_cases[i], &vres));
+        assert(!ciy_parse_profile_json_with_brightness(escaped_nul_cases[i], NULL, rgb, NULL, 0, NULL, NULL));
+    }
+
+    // 2. In-Memory-NUL mitten im Token (exakter ASan-Puffer)
+    const char raw_nul_mem[] = "{\"name\":\"Abc\0Def\",\"slots\":{\"0\":\"#FF0000\"}}";
+    char *heap_nul = (char *)malloc(sizeof(raw_nul_mem));
+    assert(heap_nul != NULL);
+    memcpy(heap_nul, raw_nul_mem, sizeof(raw_nul_mem));
+    assert(!ciy_validate_profile_json(heap_nul, &vres));
+    assert(!ciy_parse_profile_json_with_brightness(heap_nul, NULL, rgb, NULL, 0, NULL, NULL));
+    free(heap_nul);
+
+    // 3. Rohe unescapete Control-Characters 0x01..0x1F in JSON-Strings (RFC 8259 §7)
+    size_t ctrl_accepted = 0;
+    for (unsigned int c = 0x01; c <= 0x1F; c++) {
+        char ctrl_json[128];
+        int n = snprintf(ctrl_json, sizeof(ctrl_json),
+                         "{\"name\":\"Ctrl%cName\",\"slots\":{\"0\":\"#FF0000\"}}", (char)c);
+        assert(n > 0 && (size_t)n < sizeof(ctrl_json));
+        char *exact = (char *)malloc((size_t)n + 1);
+        assert(exact != NULL);
+        memcpy(exact, ctrl_json, (size_t)n + 1);
+        bool v = ciy_validate_profile_json(exact, &vres);
+        bool p = ciy_parse_profile_json_with_brightness(exact, NULL, rgb, NULL, 0, NULL, NULL);
+        if (v || p) ctrl_accepted++;
+        free(exact);
+    }
+    assert(ctrl_accepted == 0);
+
+    // 4. Ungültiges Roh-UTF-8: Overlong-NUL \xC0\x80, Overlongs, CESU-8 Surrogates, Continuation, \xFE/\xFF, >U+10FFFF, Truncated
+    const char *bad_utf8_seqs[] = {
+        "\xC0\x80",             // Overlong NUL
+        "\xC0\xAF",             // Overlong '/'
+        "\xE0\x80\x80",         // 3-Byte Overlong NUL
+        "\xF0\x80\x80\x80",     // 4-Byte Overlong NUL
+        "\xED\xA0\x80",         // CESU-8 High Surrogate U+D800
+        "\xED\xBF\xBF",         // CESU-8 Low Surrogate U+DFFF
+        "\x80",                 // Isoliertes Continuation-Byte
+        "\xFE",                 // Ungültiges UTF-8 Startbyte 0xFE
+        "\xFF",                 // Ungültiges UTF-8 Startbyte 0xFF
+        "\xF4\x90\x80\x80",     // Codepoint U+110000 (> U+10FFFF)
+        "\xC3",                 // Abgeschnittene 2-Byte-Sequenz vor '"'
+        "\xE2\x82",             // Abgeschnittene 3-Byte-Sequenz vor '"'
+        "\xF0\x9F\x8E"          // Abgeschnittene 4-Byte-Sequenz vor '"'
+    };
+    size_t bad_utf8_accepted = 0;
+    for (size_t i = 0; i < sizeof(bad_utf8_seqs) / sizeof(bad_utf8_seqs[0]); i++) {
+        char buf[160];
+        int n = snprintf(buf, sizeof(buf), "{\"name\":\"%s\",\"slots\":{\"0\":\"#FF0000\"}}", bad_utf8_seqs[i]);
+        assert(n > 0 && (size_t)n < sizeof(buf));
+        char *exact = (char *)malloc((size_t)n + 1);
+        assert(exact != NULL);
+        memcpy(exact, buf, (size_t)n + 1);
+        bool v = ciy_validate_profile_json(exact, &vres);
+        bool p = ciy_parse_profile_json_with_brightness(exact, NULL, rgb, NULL, 0, NULL, NULL);
+        if (v || p) bad_utf8_accepted++;
+        free(exact);
+    }
+    assert(bad_utf8_accepted == 0);
+
+    // 5. Ungültige Primitivwerte in Zusatzfeldern (RFC 8259)
+    const char *bad_primitives[] = {
+        "{\"name\":\"P\",\"extra\":nonsense,\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"P\",\"extra\":NaN,\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"P\",\"extra\":Infinity,\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"P\",\"extra\":tru,\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"P\",\"extra\":fals,\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"P\",\"extra\":nul,\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"P\",\"extra\":01,\"slots\":{\"0\":\"#FF0000\"}}",
+        "{\"name\":\"P\",\"extra\":--1,\"slots\":{\"0\":\"#FF0000\"}}"
+    };
+    size_t bad_prim_accepted = 0;
+    for (size_t i = 0; i < sizeof(bad_primitives) / sizeof(bad_primitives[0]); i++) {
+        bool v = ciy_validate_profile_json(bad_primitives[i], &vres);
+        bool p = ciy_parse_profile_json_with_brightness(bad_primitives[i], NULL, rgb, NULL, 0, NULL, NULL);
+        if (v || p) bad_prim_accepted++;
+    }
+    assert(bad_prim_accepted == 0);
+}
+
+typedef struct {
+    const char *path;
+    atomic_bool stop;
+} ConcurrentWriterCtx;
+
+static void *concurrent_file_writer_thread(void *arg) {
+    ConcurrentWriterCtx *ctx = (ConcurrentWriterCtx *)arg;
+    const char *small_json = "{\"name\":\"RaceSmall\",\"slots\":{\"0\":\"#FF0000\"}}";
+    char large_json[2048];
+    memset(large_json, ' ', sizeof(large_json));
+    memcpy(large_json, "{\"name\":\"RaceLarge\",\"slots\":{\"14\":\"#00FF00\"}}", 45);
+    large_json[sizeof(large_json) - 1] = '\0';
+
+    int iter = 0;
+    while (!atomic_load_explicit(&ctx->stop, memory_order_relaxed)) {
+        int fd = open(ctx->path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
+        if (fd >= 0) {
+            const char *payload = (iter % 2 == 0) ? small_json : large_json;
+            size_t len = (iter % 2 == 0) ? strlen(small_json) : (sizeof(large_json) - 1);
+            (void)write(fd, payload, len);
+            close(fd);
+        }
+        iter++;
+    }
+    return NULL;
+}
+
+static void test_cwe_3a_toctou_atexit_and_concurrent_growth(void) {
+    // 1. Subprozess-Test: Abgelehntes FIFO-Lockfile darf bei Prozessende NICHT durch atexit gelöscht werden
+    int pipefd[2];
+    assert(pipe(pipefd) == 0);
+
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        close(pipefd[0]);
+        char child_lock_path[PATH_MAX];
+        assert(ciy_bus_lock_path(child_lock_path, sizeof(child_lock_path)) != NULL);
+        unlink(child_lock_path);
+        assert(mkfifo(child_lock_path, 0600) == 0);
+
+        size_t plen = strlen(child_lock_path) + 1;
+        assert(write(pipefd[1], child_lock_path, plen) == (ssize_t)plen);
+        close(pipefd[1]);
+
+        // FIFO muss von ciy_bus_lock abgewiesen werden
+        assert(!ciy_bus_lock());
+        exit(0); // Triggert atexit(ciy_cleanup_test_lockfile)
+    }
+    close(pipefd[1]);
+    char child_fifo[PATH_MAX] = {0};
+    ssize_t rd = read(pipefd[0], child_fifo, sizeof(child_fifo) - 1);
+    close(pipefd[0]);
+    assert(rd > 0);
+
+    int status = 0;
+    assert(waitpid(pid, &status, 0) == pid);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    struct stat fifo_st;
+    bool fifo_survived = (lstat(child_fifo, &fifo_st) == 0 && S_ISFIFO(fifo_st.st_mode));
+    if (fifo_survived) {
+        unlink(child_fifo);
+    }
+    assert(fifo_survived);
+
+    // 2. Konkurrierendes Dateiwachstum / Schrumpfen nach fstat() unter ASan
+    char race_path[256];
+    snprintf(race_path, sizeof(race_path), "/tmp/ciy_toctou_race_%d.json", (int)getpid());
+    unlink(race_path);
+    {
+        FILE *init_f = fopen(race_path, "wb");
+        assert(init_f != NULL);
+        fputs("{\"name\":\"Init\",\"slots\":{\"0\":\"#FF0000\"}}", init_f);
+        fclose(init_f);
+    }
+
+    ConcurrentWriterCtx wctx = {.path = race_path, .stop = false};
+    pthread_t writer_tid;
+    assert(pthread_create(&writer_tid, NULL, concurrent_file_writer_thread, &wctx) == 0);
+
+    for (int i = 0; i < 60; i++) {
+        size_t sz = 0;
+        CIYValidationResult res;
+        char *buf = ciy_read_text_file_with_result(race_path, &sz, &res);
+        if (buf != NULL) {
+            assert(buf[sz] == '\0');
+            assert(memchr(buf, '\0', sz) == NULL);
+            free(buf);
+        }
+    }
+    atomic_store_explicit(&wctx.stop, true, memory_order_relaxed);
+    pthread_join(writer_tid, NULL);
+    unlink(race_path);
+
+    // 3. TMPDIR-Härtung (nicht-existierendes Verzeichnis, reguläre Datei statt Verzeichnis, fremdes /tmp)
+    const char *orig_testing = getenv("CIY_TESTING");
+    char saved_testing[64] = {0};
+    if (orig_testing) strncpy(saved_testing, orig_testing, sizeof(saved_testing) - 1);
+    const char *orig_tmp = getenv("TMPDIR");
+    char saved_tmp[PATH_MAX] = {0};
+    if (orig_tmp) strncpy(saved_tmp, orig_tmp, sizeof(saved_tmp) - 1);
+
+    unsetenv("CIY_TESTING");
+    char lock_buf[PATH_MAX];
+    char fake_tmp_file[256];
+    snprintf(fake_tmp_file, sizeof(fake_tmp_file), "/tmp/ciy_not_a_dir_%d", (int)getpid());
+    FILE *ft = fopen(fake_tmp_file, "w");
+    assert(ft != NULL);
+    fclose(ft);
+
+    setenv("TMPDIR", fake_tmp_file, 1);
+    const char *resolved = ciy_bus_lock_path(lock_buf, sizeof(lock_buf));
+    assert(resolved != NULL && strncmp(resolved, fake_tmp_file, strlen(fake_tmp_file)) != 0);
+    unlink(fake_tmp_file);
+
+    setenv("TMPDIR", "/tmp/ciy_nonexistent_tmpdir_xyz_999", 1);
+    resolved = ciy_bus_lock_path(lock_buf, sizeof(lock_buf));
+    assert(resolved != NULL);
+
+    if (orig_tmp) setenv("TMPDIR", saved_tmp, 1); else unsetenv("TMPDIR");
+    if (orig_testing) setenv("CIY_TESTING", saved_testing, 1);
+}
+
+static void test_cwe_3b_poisoned_outputs_on_error(void) {
+    // 1. ciy_validate_profile_json & ciy_validate_profile_file mit 0xAA-Poisoning (aktiv grün)
+    CIYValidationResult vres;
+    memset(&vres, 0xAA, sizeof(vres));
+    assert(!ciy_validate_profile_json("{\"slots\":{}}", &vres));
+    assert(vres.is_valid == false);
+    assert(vres.profile_count == 0);
+    assert(vres.total_keys_count == 0);
+    assert(vres.read_error == CIYFileReadErrorNone);
+    assert(strcmp(vres.error_field, "slots") == 0);
+    assert(vres.error_message[0] != '\0');
+
+    memset(&vres, 0xAA, sizeof(vres));
+    assert(!ciy_validate_profile_file("tests/fixtures/invalid_color.json", &vres));
+    assert(vres.is_valid == false);
+    assert(vres.profile_count == 0);
+    assert(vres.total_keys_count == 0);
+    assert(vres.error_field[0] != '\0' && vres.error_message[0] != '\0');
+
+    // 2. ciy_parse_profile_json_with_brightness mit 0xAA-Poisoning bei ungültigem JSON (aktiv grün)
+    uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+    char name[64];
+    int slots_count;
+    uint8_t brightness;
+    memset(rgb, 0xAA, sizeof(rgb));
+    memset(name, 0xAA, sizeof(name));
+    memset(&slots_count, 0xAA, sizeof(slots_count));
+    memset(&brightness, 0xAA, sizeof(brightness));
+    assert(!ciy_parse_profile_json_with_brightness("broken_json", NULL, rgb, name, sizeof(name), &slots_count, &brightness));
+    for (size_t i = 0; i < sizeof(rgb); i++) assert(rgb[i] == 0);
+    assert(name[0] == '\0');
+    assert(slots_count == 0);
+    assert(brightness == CIY_MAX_BRIGHTNESS);
+
+    // 3. ciy_load_profile_file_with_brightness, ciy_get_state, ciy_parse_hex_color bei Fehler
+    memset(rgb, 0xAA, sizeof(rgb));
+    memset(name, 0xAA, sizeof(name));
+    memset(&slots_count, 0xAA, sizeof(slots_count));
+    memset(&brightness, 0xAA, sizeof(brightness));
+    assert(!ciy_load_profile_file_with_brightness("/tmp/ciy_missing_poison_test.json", NULL,
+                                                  rgb, name, sizeof(name), &slots_count, &brightness));
+    assert(rgb[0] == 0 && name[0] == '\0' && slots_count == 0 && brightness == CIY_MAX_BRIGHTNESS);
+
+    CIYDevice dev = {0};
+    assert(ciy_open(&dev));
+    CIYLightingState st;
+    memset(&st, 0xAA, sizeof(st));
+    setenv("CIY_TESTING_FAIL_GET_REPORTS", "1", 1);
+    assert(!ciy_get_state(&dev, &st));
+    unsetenv("CIY_TESTING_FAIL_GET_REPORTS");
+    ciy_close(&dev);
+    assert(st.mode == 0 && st.color == 0 && st.speed == 0 && st.brightness == 0);
+
+    uint8_t r = 0xAA, g = 0xAA, b = 0xAA;
+    assert(!ciy_parse_hex_color("#ZZZZZZ", &r, &g, &b));
+    assert(r == 0 && g == 0 && b == 0);
+}
+
+static void test_fuzz_corpus_files(void) {
+    struct CorpusCase {
+        const char *path;
+        int mode; // 1 = valid, 0 = invalid
+    };
+    static const struct CorpusCase corpus[] = {
+        {"tests/fuzz_corpus/01_valid_minimal.json", 1},
+        {"tests/fuzz_corpus/02_valid_bom_unicode_surrogate.json", 1},
+        {"tests/fuzz_corpus/03_valid_multi_flat_and_nested.json", 1},
+        {"tests/fuzz_corpus/04_valid_boundary_lengths.json", 1},
+        {"tests/fuzz_corpus/05_invalid_deep_nesting.json", 0},
+        {"tests/fuzz_corpus/06_invalid_mixed_brackets.json", 0},
+        {"tests/fuzz_corpus/07_invalid_truncated_mid_object.json", 0},
+        {"tests/fuzz_corpus/08_invalid_truncated_unicode_escape.json", 0},
+        {"tests/fuzz_corpus/09_invalid_raw_control_chars.json", 0},
+        {"tests/fuzz_corpus/10_invalid_overlong_utf8_and_cesu8.json", 0},
+        {"tests/fuzz_corpus/11_invalid_escaped_nul.json", 0},
+        {"tests/fuzz_corpus/12_invalid_embedded_raw_nul.json", 0},
+        {"tests/fuzz_corpus/13_invalid_unknown_primitive.json", 0},
+        {"tests/fuzz_corpus/14_invalid_integer_overflow_slots_brightness.json", 0},
+        {"tests/fuzz_corpus/15_invalid_string_buffer_off_by_one.json", 0}
+    };
+
+    for (size_t i = 0; i < sizeof(corpus) / sizeof(corpus[0]); i++) {
+        // Prüfe zunächst, dass jede Corpus-Datei regulär auf Platte existiert
+        int fd = open(corpus[i].path, O_RDONLY | O_NOFOLLOW);
+        assert(fd >= 0);
+        struct stat st;
+        assert(fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0);
+        close(fd);
+
+        CIYValidationResult vres;
+        uint8_t rgb[CIY_PLANAR_RGB_SIZE];
+        char name[64];
+        int count = 0;
+        uint8_t bright = 0;
+
+        bool file_valid = ciy_validate_profile_file(corpus[i].path, &vres);
+        bool file_loaded = ciy_load_profile_file_with_brightness(
+            corpus[i].path, NULL, rgb, name, sizeof(name), &count, &bright);
+
+        if (corpus[i].mode == 1) {
+            assert(file_valid && vres.is_valid);
+            assert(file_loaded && count > 0);
+        } else {
+            assert(!file_valid && !vres.is_valid);
+            assert(!file_loaded);
+            char *raw = ciy_read_text_file(corpus[i].path, NULL);
+            if (raw) {
+                assert(!ciy_parse_profile_json_with_brightness(
+                    raw, NULL, rgb, name, sizeof(name), &count, &bright));
+                free(raw);
+            }
+        }
+    }
+}
+
 int main(void) {
     if (!getenv("CIY_TESTING")) {
         setenv("CIY_TESTING", "1", 1);
@@ -1517,6 +2238,15 @@ int main(void) {
     test_bus_lock_path_isolated_per_user();
     test_lockfile_rejects_fifo();
     test_lockfile_rejects_symlink();
+    test_cwe_1a_integer_overflow_and_delay_wraparound();
+    test_cwe_1b_off_by_one_boundaries();
+    test_cwe_1c_null_pointer_matrix();
+    test_cwe_2a_deep_nesting_and_mixed_brackets();
+    test_cwe_2b_prefix_truncation_asan();
+    test_cwe_2c_control_chars_utf8_and_nul_injection();
+    test_cwe_3a_toctou_atexit_and_concurrent_growth();
+    test_cwe_3b_poisoned_outputs_on_error();
+    test_fuzz_corpus_files();
     puts("Alle Tests bestanden.");
     return 0;
 }

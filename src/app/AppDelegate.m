@@ -2656,9 +2656,8 @@ static NSArray<NSDictionary *> *KeyPalette(void) {
         readmePath = [[[NSBundle mainBundle] resourcePath]
                       stringByAppendingPathComponent:@"README.md"];
     }
-    if ([[NSFileManager defaultManager] fileExistsAtPath:readmePath]) {
-        [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:readmePath]];
-    } else {
+    BOOL opened = readmePath ? [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:readmePath]] : NO;
+    if (!opened) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = CIYL(@"CIY X79 RGB Control (macOS)");
         alert.informativeText = CIYL(@"Further information and hardware details can be found in the included README.md documentation.");

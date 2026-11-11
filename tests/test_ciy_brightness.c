@@ -220,6 +220,40 @@ static void test_apply_slots(void) {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. 0xAA-Poisoning & Unverändertheits-Garantie für In-Place-Puffer bei Fehlern
+// ---------------------------------------------------------------------------
+static void test_error_handling_poisoned_buffers(void) {
+    struct {
+        uint8_t pre[16];
+        uint8_t planar[CIY_PLANAR_RGB_SIZE];
+        uint8_t post[16];
+    } guarded;
+
+    memset(guarded.pre, 0x55, sizeof(guarded.pre));
+    memset(guarded.planar, 0xAA, sizeof(guarded.planar));
+    memset(guarded.post, 0x55, sizeof(guarded.post));
+
+    // Bei NULL-Maske müssen apply_planar und apply_slots false liefern
+    // und den In-Place-Puffer (0xAA) sowie Canaries (0x55) garantiert unverändert lassen
+    assert(!ciy_brightness_apply_planar(guarded.planar, NULL));
+    assert(!ciy_brightness_apply_slots(guarded.planar, NULL));
+
+    for (size_t i = 0; i < sizeof(guarded.planar); i++) {
+        assert(guarded.planar[i] == 0xAA);
+    }
+    for (size_t i = 0; i < 16; i++) {
+        assert(guarded.pre[i] == 0x55);
+        assert(guarded.post[i] == 0x55);
+    }
+
+    // Extremwerte für scale_channel: 255 * 255 (Clamping auf 100%, kein Overflow)
+    assert(ciy_brightness_scale_channel(255, 255) == 255);
+    assert(ciy_brightness_scale_channel(0, 255) == 0);
+
+    printf("[Test 3b] Deterministischer In-Place-Schutz bei Fehlern (0xAA-Poisoning)... PASSED\n");
+}
+
+// ---------------------------------------------------------------------------
 // 4. CLI Integrationstests via fork/execv (optional, wenn Binärpfad übergeben)
 // ---------------------------------------------------------------------------
 static void run_cli_argv(const char *cli_path, const char *const args[], char *out_buf, size_t buf_size, int *out_exit_code) {
@@ -427,6 +461,7 @@ int main(int argc, char **argv) {
     test_scale_channel();
     test_apply_planar();
     test_apply_slots();
+    test_error_handling_poisoned_buffers();
 
     const char *cli_binary = (argc > 1) ? argv[1] : NULL;
     test_cli_integration(cli_binary);

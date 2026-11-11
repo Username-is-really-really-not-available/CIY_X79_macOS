@@ -233,10 +233,12 @@ CIY_INLINE bool ciy_template_generate_slots(const CIYTemplate *tpl,
                                            const uint8_t *custom_accent,
                                            const uint8_t *custom_bg,
                                            uint8_t out_slots[CIY_MAX_MATRIX_SLOT + 1][3]) {
+    if (out_slots) {
+        memset(out_slots, 0, sizeof(uint8_t) * (CIY_MAX_MATRIX_SLOT + 1) * 3);
+    }
     if (!tpl || !out_slots) {
         return false;
     }
-    memset(out_slots, 0, sizeof(uint8_t) * (CIY_MAX_MATRIX_SLOT + 1) * 3);
 
     const uint8_t *accent = custom_accent ? custom_accent : tpl->default_accent;
     const uint8_t *bg = custom_bg ? custom_bg : tpl->default_bg;
@@ -309,10 +311,12 @@ CIY_INLINE bool ciy_template_generate_planar(const CIYTemplate *tpl,
                                              const uint8_t *custom_accent,
                                              const uint8_t *custom_bg,
                                              uint8_t out_planar_rgb[CIY_PLANAR_RGB_SIZE]) {
+    if (out_planar_rgb) {
+        memset(out_planar_rgb, 0, CIY_PLANAR_RGB_SIZE);
+    }
     if (!tpl || !out_planar_rgb) {
         return false;
     }
-    memset(out_planar_rgb, 0, CIY_PLANAR_RGB_SIZE);
 
     uint8_t slots[CIY_MAX_MATRIX_SLOT + 1][3];
     if (!ciy_template_generate_slots(tpl, custom_accent, custom_bg, slots)) {

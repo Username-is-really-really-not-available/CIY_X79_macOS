@@ -8,8 +8,8 @@ RGBController_CIYX79::RGBController_CIYX79(CIYController* controller_ptr)
     vendor      = "CIY";
     type        = "Keyboard";
     description = "CIY X79 68-Key / 65% Compact RGB Mechanical Keyboard (ISO-DE)";
-    location    = controller->GetLocation();
-    serial      = controller->GetSerial();
+    location    = controller ? controller->GetLocation() : "";
+    serial      = controller ? controller->GetSerial() : "";
 
     // Mode 0: Direct (Benutzerdefiniert per-LED Matrix, sw_mode 19)
     mode direct_mode;
@@ -86,7 +86,7 @@ RGBController_CIYX79::RGBController_CIYX79(CIYController* controller_ptr)
 
     // Init state from controller if possible
     uint8_t d_mode = 19, d_color = 0, d_speed = 2, d_bright = 5;
-    if (controller->GetState(d_mode, d_color, d_speed, d_bright))
+    if (controller && controller->GetState(d_mode, d_color, d_speed, d_bright))
     {
         for (size_t i = 0; i < modes.size(); i++)
         {
@@ -282,6 +282,8 @@ void RGBController_CIYX79::SetupZones()
 
 void RGBController_CIYX79::DeviceUpdateLEDs()
 {
+    if (!controller) return;
+    if (active_mode < 0 || active_mode >= (int)modes.size()) return;
     if (modes[active_mode].value == 19)
     {
         controller->SendDirect(colors, led_hardware_indices);
@@ -290,6 +292,8 @@ void RGBController_CIYX79::DeviceUpdateLEDs()
 
 void RGBController_CIYX79::DeviceUpdateMode()
 {
+    if (!controller) return;
+    if (active_mode < 0 || active_mode >= (int)modes.size()) return;
     const mode& m = modes[active_mode];
     if (m.value == 19)
     {

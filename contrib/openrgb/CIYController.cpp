@@ -102,6 +102,11 @@ bool CIYController::SetMode(uint8_t mode, uint8_t color, uint8_t speed, uint8_t 
 
 bool CIYController::GetState(uint8_t &mode, uint8_t &color, uint8_t &speed, uint8_t &brightness)
 {
+    mode = 0;
+    color = 0;
+    speed = 0;
+    brightness = 0;
+
     std::lock_guard<std::mutex> lock(bus_mutex);
     if (!dev) return false;
 

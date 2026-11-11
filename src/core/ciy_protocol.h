@@ -43,7 +43,8 @@ extern "C" {
 #define CIY_MAX_COLOR          10
 #define CIY_MAX_SPEED          4
 #define CIY_MAX_BRIGHTNESS     5
-#define CIY_JSON_MAX_STRLEN    4096
+#define CIY_JSON_MAX_STRLEN 4096
+#define CIY_JSON_MAX_DEPTH  64
 
 typedef struct {
     uint8_t mode;       // 0..20
@@ -91,10 +92,12 @@ CIY_INLINE bool ciy_protocol_validate_state(CIYLightingState st) {
 /// Kodiert einen Beleuchtungsstatus in einen 42-Byte Report 0x0A.
 /// Lehnt Werte außerhalb des gültigen Bereichs strikt mit false ab.
 CIY_INLINE bool ciy_protocol_encode_0a(CIYLightingState st, uint8_t out_buf[CIY_REPORT_0A_SIZE]) {
+    if (out_buf) {
+        memset(out_buf, 0, CIY_REPORT_0A_SIZE);
+    }
     if (!out_buf || !ciy_protocol_validate_state(st)) {
         return false;
     }
-    memset(out_buf, 0, CIY_REPORT_0A_SIZE);
     out_buf[0] = CIY_REPORT_0A_ID;
     out_buf[1] = st.mode;
     out_buf[2] = st.color;
@@ -107,6 +110,9 @@ CIY_INLINE bool ciy_protocol_encode_0a(CIYLightingState st, uint8_t out_buf[CIY_
 /// Clampt Modus, Farbe, Tempo und Helligkeit defensiv auf die gültigen Hardware-Grenzen.
 /// out_st darf NULL sein (reine Formatprüfung).
 CIY_INLINE bool ciy_protocol_decode_0a(const uint8_t *in_buf, size_t len, CIYLightingState *out_st) {
+    if (out_st) {
+        memset(out_st, 0, sizeof(*out_st));
+    }
     if (!in_buf || len < CIY_REPORT_0A_SIZE || in_buf[0] != CIY_REPORT_0A_ID) {
         return false;
     }
@@ -159,8 +165,10 @@ CIY_INLINE bool ciy_build_transfer_plan(CIYTransferPlan *out_plan,
                                            const uint8_t *rgb, size_t length,
                                            uint8_t brightness,
                                            const char *profile_name, int keys_count) {
+    if (out_plan) {
+        memset(out_plan, 0, sizeof(*out_plan));
+    }
     if (!out_plan || !rgb || length != CIY_PLANAR_RGB_SIZE) return false;
-    memset(out_plan, 0, sizeof(*out_plan));
 
     if (profile_name && profile_name[0] != '\0') {
         strncpy(out_plan->profile_name, profile_name, sizeof(out_plan->profile_name) - 1);
@@ -210,8 +218,10 @@ CIY_INLINE bool ciy_build_transfer_plan(CIYTransferPlan *out_plan,
 
 /// Baut einen hardwarefreien 1-Schritt-Übertragungsplan für eine globale Statusänderung (Report 0x0A).
 CIY_INLINE bool ciy_build_state_transfer_plan(CIYTransferPlan *out_plan, CIYLightingState st) {
+    if (out_plan) {
+        memset(out_plan, 0, sizeof(*out_plan));
+    }
     if (!out_plan || !ciy_protocol_validate_state(st)) return false;
-    memset(out_plan, 0, sizeof(*out_plan));
 
     snprintf(out_plan->profile_name, sizeof(out_plan->profile_name), "Mode %u", st.mode);
     out_plan->keys_count = 0;

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -238,12 +239,116 @@ static void test_battery_overflow_protection(void) {
     int p = (int)(((int64_t)curCap * 100) / (int64_t)maxCap);
     assert(p == 50);
 
-    // Grenzfall INT32_MAX
-    int max_int = 2147483647;
+    // Grenzfall INT32_MAX / INT32_MAX
+    int max_int = INT_MAX;
     int p_max = (int)(((int64_t)max_int * 100) / (int64_t)max_int);
     assert(p_max == 100);
 
-    printf("[Test 6] 64-Bit Integer-Arithmetik gegen Überlauf (SEC-T5-004)... PASSED\n");
+    // 1a: 64-Bit-Kapazitäts-Clamping bei extremem Verhältnis (curCap = INT_MAX, maxCap = 1)
+    int64_t raw_pct64 = ((int64_t)INT_MAX * 100) / 1;
+    int clamped64 = (raw_pct64 < 0) ? 0 : ((raw_pct64 > 100) ? 100 : (int)raw_pct64);
+    assert(clamped64 == 100);
+
+    // Mock-Prozent-Clamping für Extremwerte (-999999 -> -1, 999999 -> 100)
+    setenv("CIY_BATTERY_MOCK_PERCENT", "999999", 1);
+    CIYBatteryInfo hi_info;
+    assert(ciy_battery_get_info(CIY_BATTERY_SOURCE_INTERNAL, &hi_info));
+    assert(hi_info.percent == 100);
+    setenv("CIY_BATTERY_MOCK_PERCENT", "-999999", 1);
+    assert(ciy_battery_get_info(CIY_BATTERY_SOURCE_INTERNAL, &hi_info));
+    assert(hi_info.percent == -1);
+    unsetenv("CIY_BATTERY_MOCK_PERCENT");
+
+    // 1a & 1b: ciy_battery_calculate_overlay mit Rand-Slots (0, 124) und Out-of-Range-Slots (INT_MIN, -1, 125, INT_MAX)
+    struct {
+        uint8_t pre[16];
+        uint8_t planar[CIY_PLANAR_RGB_SIZE];
+        uint8_t post[16];
+    } guarded;
+    memset(guarded.pre, 0xAA, sizeof(guarded.pre));
+    memset(guarded.post, 0x55, sizeof(guarded.post));
+
+    int edge_slots[] = {INT_MIN, -1, 0, 124, 125, INT_MAX};
+    assert(ciy_battery_calculate_overlay(NULL, 100, false, edge_slots, 6, true, guarded.planar));
+    // Slot 0 -> LED 1, Slot 124 -> LED 125 müssen gesetzt sein; LED 0 bleibt 0; Canaries intakt
+    assert(guarded.planar[0] == 0);
+    assert(guarded.planar[1] != 0 || guarded.planar[CIY_LED_COUNT + 1] != 0);
+    assert(guarded.planar[125] != 0 || guarded.planar[CIY_LED_COUNT + 125] != 0);
+    for (size_t i = 0; i < 16; i++) {
+        assert(guarded.pre[i] == 0xAA);
+        assert(guarded.post[i] == 0x55);
+    }
+
+    // 1a: Overflow-Guard für target_count > CIY_LED_COUNT / SIZE_MAX in ciy_battery_calculate_overlay
+    int oversized_slots[CIY_LED_COUNT + 2];
+    for (size_t i = 0; i < CIY_LED_COUNT + 2; i++) {
+        oversized_slots[i] = (int)(i % (CIY_MAX_MATRIX_SLOT + 1));
+    }
+    bool over_count_ok = ciy_battery_calculate_overlay(NULL, 50, false, oversized_slots, CIY_LED_COUNT + 1, true, guarded.planar);
+    assert(!over_count_ok);
+    assert(!ciy_battery_calculate_overlay(NULL, 50, false, edge_slots, SIZE_MAX, true, guarded.planar));
+
+    printf("[Test 6] 64-Bit Integer-Arithmetik & Overlay-Bounds (SEC-T5-004)... PASSED\n");
+}
+
+static void test_battery_null_guards_and_poisoned_outputs(void) {
+    // 1c: Vollständige NULL-Guards für alle ciy_battery_*-Funktionen
+    uint8_t r = 0xAA, g = 0xAA, b = 0xAA;
+    ciy_battery_get_color(80, false, NULL, &g, &b);
+    ciy_battery_get_color(80, false, &r, NULL, &b);
+    ciy_battery_get_color(80, false, &r, &g, NULL);
+    ciy_battery_get_color(80, false, NULL, NULL, NULL);
+    assert(r == 0xAA && g == 0xAA && b == 0xAA);
+
+    unsetenv("CIY_BATTERY_MOCK_PERCENT");
+    assert(!ciy_battery_check_mocks(NULL));
+    setenv("CIY_BATTERY_MOCK_PERCENT", "55", 1);
+    assert(ciy_battery_check_mocks(NULL));
+    unsetenv("CIY_BATTERY_MOCK_PERCENT");
+
+    CIYBatteryInfo sources[2];
+    assert(ciy_battery_list_sources(NULL, 2) == 0);
+    assert(ciy_battery_list_sources(sources, 0) == 0);
+    assert(ciy_battery_list_sources(NULL, 0) == 0);
+    assert(!ciy_battery_get_info(CIY_BATTERY_SOURCE_INTERNAL, NULL));
+
+    int slots[16];
+    size_t count = 0;
+    assert(!ciy_battery_parse_target(NULL, slots, 16, &count));
+    assert(!ciy_battery_parse_target("1-0", NULL, 16, &count));
+    assert(!ciy_battery_parse_target("1-0", slots, 0, &count));
+    assert(!ciy_battery_parse_target("1-0", slots, 16, NULL));
+    assert(!ciy_battery_parse_target(NULL, NULL, 0, NULL));
+    // Exakte Slot-Grenzen 0 und 124 vs. -1 und 125
+    assert(ciy_battery_parse_target("0,124", slots, 16, &count) && count == 2 && slots[0] == 0 && slots[1] == 124);
+    assert(!ciy_battery_parse_target("-1", slots, 16, &count));
+    assert(!ciy_battery_parse_target("125", slots, 16, &count));
+
+    uint8_t out_planar[CIY_PLANAR_RGB_SIZE];
+    assert(!ciy_battery_calculate_overlay(NULL, 50, false, NULL, 4, false, out_planar));
+    assert(!ciy_battery_calculate_overlay(NULL, 50, false, slots, 0, false, out_planar));
+    assert(!ciy_battery_calculate_overlay(NULL, 50, false, slots, 2, false, NULL));
+
+    // 3b: 0xAA-Poisoning für Fehlerpfade
+    CIYBatteryInfo poisoned_info;
+    memset(&poisoned_info, 0xAA, sizeof(poisoned_info));
+    bool has_ups = ciy_battery_get_info(CIY_BATTERY_SOURCE_UPS, &poisoned_info);
+    if (!has_ups) {
+        assert(poisoned_info.percent == -1);
+        assert(poisoned_info.is_present == false);
+        assert(poisoned_info.is_charging == false);
+        assert(poisoned_info.type == CIY_BATTERY_SOURCE_UPS);
+        assert(memchr(poisoned_info.name, '\0', sizeof(poisoned_info.name)) != NULL);
+    }
+
+    int poisoned_slots[16];
+    size_t poisoned_count;
+    memset(poisoned_slots, 0xAA, sizeof(poisoned_slots));
+    memset(&poisoned_count, 0xAA, sizeof(poisoned_count));
+    assert(!ciy_battery_parse_target("14,9,BAD", poisoned_slots, 16, &poisoned_count));
+    assert(poisoned_count == 0 && poisoned_slots[0] == 0 && poisoned_slots[1] == 0);
+
+    printf("[Test 7] NULL-Guards & 0xAA-Poisoning bei Fehlerpfaden... PASSED\n");
 }
 
 int main(void) {
@@ -254,6 +359,7 @@ int main(void) {
     test_battery_mocks();
     test_battery_unreadable_sources();
     test_battery_overflow_protection();
+    test_battery_null_guards_and_poisoned_outputs();
     printf("=== Alle CIY Battery Unit-Tests erfolgreich bestanden! ===\n");
     return 0;
 }
